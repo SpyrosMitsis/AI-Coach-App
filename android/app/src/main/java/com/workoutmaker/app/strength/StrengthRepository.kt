@@ -114,6 +114,10 @@ class StrengthRepository @Inject constructor(
         dao.insertTombstone(TombstoneEntity("workout", id))
     }
 
+    // Swallowed errors are still logged so failures aren't invisible in logcat.
+    private fun <T> Result<T>.logFailure(op: String): Result<T> =
+        onFailure { android.util.Log.w("StrengthRepo", "$op failed", it) }
+
     // --- D1: custom exercises ---------------------------------------------
     suspend fun loadAndRegisterCustom() {
         // Prefer local; pull from cloud if local empty (e.g. after reinstall).
@@ -125,7 +129,7 @@ class StrengthRepository @Inject constructor(
                     dao.insertCustomExercises(cloud.map { CustomExerciseEntity(it.name, it.muscle, it.category, it.compound) })
                     local = dao.customExercises()
                 }
-            }
+            }.logFailure("loadAndRegisterCustom/cloud")
         }
         ExerciseCatalog.registerCustom(local.map { Exercise(it.name, it.muscle, it.category, it.compound) })
     }
@@ -286,7 +290,7 @@ class StrengthRepository @Inject constructor(
         )
         return runCatching {
             genJson.decodeFromString(com.workoutmaker.app.data.GenerateResult.serializer(), raw).workout
-        }.getOrNull()
+        }.logFailure("generateAiStrength/parse").getOrNull()
     }
 
     /** Restore strength history + routines from the cloud if the local DB is empty
@@ -347,7 +351,7 @@ class StrengthRepository @Inject constructor(
         missing.forEach { dao.insertWorkout(WorkoutEntity(it.id, it.name, it.started_at, it.ended_at, it.duration_sec, it.total_volume_kg, it.note)) }
         if (cs.isNotEmpty()) dao.insertSets(cs.map { SetEntity(it.id, it.workout_id, it.exercise_name, it.muscle, it.idx, it.weight_kg, it.reps, it.rpe, it.is_warmup) })
         missing.size
-    }.getOrDefault(0)
+    }.logFailure("mergeFromCloud").getOrDefault(0)
 
     /**
      * Persist a finished workout locally, then best-effort push each exercise to

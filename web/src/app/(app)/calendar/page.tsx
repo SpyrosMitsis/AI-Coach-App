@@ -15,6 +15,7 @@ import { CalendarRange, Check, ChevronRight, Lock, LockOpen, RefreshCw, Sparkles
 
 const TYPE_COLOR: Record<string, string> = {
   run: "bg-primary/70",
+  ride: "bg-sky-500/70",
   strength: "bg-sand/70",
   rest: "bg-muted-foreground/40",
 };
@@ -50,6 +51,7 @@ export default function CalendarPage() {
   const [request, setRequest] = useState("");
   const [lockRequest, setLockRequest] = useState(true);
   const [banner, setBanner] = useState<string | null>(null);
+  const [moveDate, setMoveDate] = useState("");
 
   const year = cursor.getFullYear();
   const month = cursor.getMonth();
@@ -112,6 +114,18 @@ export default function CalendarPage() {
       if (error) throw error;
     },
     onSuccess: invalidate,
+    onError: fail,
+  });
+
+  // Server-side move: the Intervals.icu/watch event follows the new date.
+  const move = useMutation({
+    mutationFn: (vars: { id: string; date: string }) => api.moveWorkout(vars.id, vars.date),
+    onSuccess: (r, vars) => {
+      setBanner(r.event_moved ? "✓ Moved — watch schedule updated." : "✓ Moved.");
+      setMoveDate("");
+      setSelected(vars.date);
+      invalidate();
+    },
     onError: fail,
   });
 
@@ -333,6 +347,25 @@ export default function CalendarPage() {
                         <Check className="h-4 w-4" /> Mark done
                       </Button>
                     )
+                  )}
+                  {!selectedWorkout.completed && (
+                    <div className="flex items-center gap-2 text-sm">
+                      <span className="text-muted-foreground">Move to</span>
+                      <input
+                        type="date"
+                        value={moveDate}
+                        onChange={(e) => setMoveDate(e.target.value)}
+                        className="rounded-md border border-input bg-transparent px-2 py-1 text-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                      />
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        disabled={!moveDate || moveDate === selected || move.isPending}
+                        onClick={() => move.mutate({ id: selectedWorkout.id, date: moveDate })}
+                      >
+                        {move.isPending ? "Moving…" : "Move"}
+                      </Button>
+                    </div>
                   )}
                 </>
               ) : selectedActs.length === 0 ? (

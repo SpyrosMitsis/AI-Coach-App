@@ -90,15 +90,6 @@ class OnboardingViewModel @Inject constructor(private val repo: WorkoutRepositor
     }
 }
 
-private val GOALS = listOf(
-    "5K pace", "10K pace", "Half Marathon", "Marathon pace",
-    "General fitness", "Muscle gain", "Body recomposition", "Hybrid athlete",
-)
-private val LEVELS = listOf("Beginner", "Intermediate", "Advanced")
-private val DAYS = listOf("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun")
-private val DURATIONS = listOf(30, 45, 60, 90)
-private val EQUIPMENT = listOf("Bodyweight", "Dumbbells", "Full gym", "Barbell + rack")
-
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
 fun OnboardingScreen(vm: OnboardingViewModel = hiltViewModel()) {

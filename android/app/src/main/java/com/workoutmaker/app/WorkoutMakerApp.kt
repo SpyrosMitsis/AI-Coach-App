@@ -20,6 +20,8 @@ class WorkoutMakerApp : Application(), Configuration.Provider {
         com.workoutmaker.app.notify.Notifications.ensureChannels(this)
         // Schedule the recurring 7am wellness check-in reminder.
         CheckinReminderScheduler.schedule(this)
+        // Evening "how did it feel?" prompt that feeds the autoregulation loop.
+        com.workoutmaker.app.work.FeedbackPromptScheduler.schedule(this)
         // Flush any strength changes made offline last session (runs when online).
         com.workoutmaker.app.work.StrengthSync.request(this)
     }

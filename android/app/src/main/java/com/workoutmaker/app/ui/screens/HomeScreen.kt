@@ -66,11 +66,23 @@ class HomeViewModel @Inject constructor(
     val generating = MutableStateFlow(false)
     val error = MutableStateFlow<String?>(null)
 
+    // When the data on screen was last fetched successfully (null until the
+    // first load) — lets the header distinguish fresh from stale/offline data.
+    val lastSyncAt = MutableStateFlow<Long?>(null)
+    val offline = MutableStateFlow(false)
+
     fun load() = viewModelScope.launch {
         loading.value = true
         runCatching { repo.dailySummary() }
-            .onSuccess { summary.value = it }
-            .onFailure { error.value = it.message }
+            .onSuccess {
+                summary.value = it
+                lastSyncAt.value = System.currentTimeMillis()
+                offline.value = false
+            }
+            .onFailure {
+                error.value = it.message
+                offline.value = summary.value != null
+            }
         runCatching { repo.intervalsStats() }.onSuccess { fitness.value = it }
         loading.value = false
     }
@@ -169,9 +181,20 @@ fun HomeScreen(vm: HomeViewModel = hiltViewModel()) {
     }
 
     val today = java.time.LocalDate.now().toString()
+    val lastSyncAt by vm.lastSyncAt.collectAsStateSafe()
+    val offline by vm.offline.collectAsStateSafe()
+    val syncNote = when {
+        offline -> "$today · offline — showing last data"
+        lastSyncAt != null -> {
+            val t = java.time.Instant.ofEpochMilli(lastSyncAt!!)
+                .atZone(java.time.ZoneId.systemDefault()).toLocalTime()
+            "$today · synced ${t.format(java.time.format.DateTimeFormatter.ofPattern("HH:mm"))}"
+        }
+        else -> today
+    }
     ScreenScaffold(
         title = "Today",
-        subtitle = today,
+        subtitle = syncNote,
         isRefreshing = loading,
         onRefresh = { vm.load() },
     ) { mod ->

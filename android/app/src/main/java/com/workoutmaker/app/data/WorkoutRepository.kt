@@ -42,13 +42,40 @@ class WorkoutRepository @Inject constructor(
 
     val auth get() = supabase.auth
 
-    suspend fun signIn(email: String, password: String) =
+    // Swallowed errors are still logged so failures aren't invisible in logcat.
+    private fun <T> Result<T>.logFailure(op: String): Result<T> =
+        onFailure { android.util.Log.w(TAG, "$op failed", it) }
+
+    suspend fun signIn(email: String, password: String) {
         supabase.auth.signInWith(Email) { this.email = email; this.password = password }
+        invalidateProfileCache()
+    }
 
     suspend fun signUp(email: String, password: String) =
         supabase.auth.signUpWith(Email) { this.email = email; this.password = password }
 
-    suspend fun signOut() = supabase.auth.signOut()
+    suspend fun signOut() {
+        supabase.auth.signOut()
+        invalidateProfileCache()
+    }
+
+    // --- Profile row cache ----------------------------------------------------
+    // loadProfile / isOnboardingComplete / loadKnowledge / autoPlanEnabled all
+    // used to fire their own full-row select; serve them from one cached fetch,
+    // invalidated whenever this client writes the profile.
+    @Volatile
+    private var profileRowCache: Map<String, JsonElement>? = null
+
+    private suspend fun profileRow(): Map<String, JsonElement>? {
+        profileRowCache?.let { return it }
+        val rows: List<Map<String, JsonElement>> =
+            supabase.postgrest.from("user_profiles").select { filter { eq("id", uid()) } }.decodeList()
+        return rows.firstOrNull()?.also { profileRowCache = it }
+    }
+
+    private fun invalidateProfileCache() {
+        profileRowCache = null
+    }
 
     // --- Edge functions ------------------------------------------------------
     suspend fun dailySummary(): DailySummary =
@@ -65,7 +92,12 @@ class WorkoutRepository @Inject constructor(
 
     suspend fun connectIntervals(athleteId: String, apiKey: String): String =
         supabase.functions.invoke("connect-intervals") {
-            setBody("""{"athleteId":"$athleteId","apiKey":"$apiKey"}""")
+            setBody(
+                kotlinx.serialization.json.buildJsonObject {
+                    put("athleteId", JsonPrimitive(athleteId))
+                    put("apiKey", JsonPrimitive(apiKey))
+                }.toString(),
+            )
         }.body()
 
     suspend fun testLlmKey(req: TestKeyRequest): TestKeyResponse =
@@ -75,12 +107,15 @@ class WorkoutRepository @Inject constructor(
             }.body(),
         )
 
+    private fun workoutIdBody(workoutId: String): String =
+        kotlinx.serialization.json.buildJsonObject { put("workout_id", JsonPrimitive(workoutId)) }.toString()
+
     suspend fun pushWorkout(workoutId: String): String =
-        supabase.functions.invoke("push-workout") { setBody("""{"workout_id":"$workoutId"}""") }.body()
+        supabase.functions.invoke("push-workout") { setBody(workoutIdBody(workoutId)) }.body()
 
     // Delete a planned workout (and its Intervals.icu/watch event) server-side.
     suspend fun deletePlannedWorkout(workoutId: String): String =
-        supabase.functions.invoke("delete-workout") { setBody("""{"workout_id":"$workoutId"}""") }.body()
+        supabase.functions.invoke("delete-workout") { setBody(workoutIdBody(workoutId)) }.body()
 
     // Delete a logged/manual completed activity (and its Intervals event if it was one).
     suspend fun deleteCompletedActivity(intervalsId: String) {
@@ -142,7 +177,7 @@ class WorkoutRepository @Inject constructor(
 
     // Fire-and-forget refresh of the rolling athlete "training memory".
     suspend fun refreshMemory() {
-        runCatching { supabase.functions.invoke("refresh-memory") }
+        runCatching { supabase.functions.invoke("refresh-memory") }.logFailure("refreshMemory")
     }
 
     suspend fun generationLogs(limit: Long = 20): List<GenerationLogRow> =
@@ -155,6 +190,7 @@ class WorkoutRepository @Inject constructor(
         supabase.postgrest.from("user_profiles").update(mapOf("active_llm_provider" to provider.key)) {
             filter { eq("id", uid()) }
         }
+        invalidateProfileCache()
     }
 
     // --- Coach chat ----------------------------------------------------------
@@ -192,19 +228,13 @@ class WorkoutRepository @Inject constructor(
     // --- Training profile + Intervals ---------------------------------------
     suspend fun loadProfile(): TrainingProfile? =
         runCatching {
-            val rows: List<Map<String, JsonElement>> =
-                supabase.postgrest.from("user_profiles").select {
-                    filter { eq("id", uid()) }
-                }.decodeList()
-            val onboarding = rows.firstOrNull()?.get("onboarding") as? JsonObject ?: return@runCatching null
+            val onboarding = profileRow()?.get("onboarding") as? JsonObject ?: return@runCatching null
             json.decodeFromJsonElement(TrainingProfile.serializer(), onboarding)
-        }.getOrNull()
+        }.logFailure("loadProfile").getOrNull()
 
     suspend fun isOnboardingComplete(): Boolean = runCatching {
-        val rows: List<Map<String, JsonElement>> =
-            supabase.postgrest.from("user_profiles").select { filter { eq("id", uid()) } }.decodeList()
-        (rows.firstOrNull()?.get("onboarding_complete") as? JsonPrimitive)?.content?.toBoolean() ?: false
-    }.getOrDefault(false)
+        (profileRow()?.get("onboarding_complete") as? JsonPrimitive)?.content?.toBoolean() ?: false
+    }.logFailure("isOnboardingComplete").getOrDefault(false)
 
     suspend fun saveProfile(profile: TrainingProfile) {
         val onboarding = json.encodeToJsonElement(TrainingProfile.serializer(), profile)
@@ -214,22 +244,20 @@ class WorkoutRepository @Inject constructor(
                 "onboarding_complete" to kotlinx.serialization.json.JsonPrimitive(true),
             ),
         ) { filter { eq("id", uid()) } }
+        invalidateProfileCache()
     }
 
     // --- Coach knowledge (durable injuries/equipment/preferences) -----------
     suspend fun loadKnowledge(): String =
         runCatching {
-            val rows: List<Map<String, JsonElement>> =
-                supabase.postgrest.from("user_profiles").select {
-                    filter { eq("id", uid()) }
-                }.decodeList()
-            (rows.firstOrNull()?.get("coach_knowledge") as? JsonPrimitive)?.content ?: ""
-        }.getOrDefault("")
+            (profileRow()?.get("coach_knowledge") as? JsonPrimitive)?.content ?: ""
+        }.logFailure("loadKnowledge").getOrDefault("")
 
     suspend fun saveKnowledge(text: String) {
         supabase.postgrest.from("user_profiles").update(
             mapOf("coach_knowledge" to kotlinx.serialization.json.JsonPrimitive(text)),
         ) { filter { eq("id", uid()) } }
+        invalidateProfileCache()
     }
 
     suspend fun connectIntervalsVerified(athleteId: String, apiKey: String): ConnectIntervalsResult =
@@ -255,11 +283,17 @@ class WorkoutRepository @Inject constructor(
             }.body(),
         )
 
-    // P7: move a planned workout to another date (RLS-scoped, client-side).
-    // Note: this updates the in-app plan; the Intervals.icu event isn't moved.
+    // P7: move a planned workout to another date — server-side, so the
+    // Intervals.icu/watch event moves with it.
     suspend fun reschedulePlanned(plannedId: String, newDate: String) {
-        supabase.postgrest.from("planned_workouts")
-            .update(mapOf("date" to JsonPrimitive(newDate))) { filter { eq("id", plannedId) } }
+        supabase.functions.invoke("move-workout") {
+            setBody(
+                kotlinx.serialization.json.buildJsonObject {
+                    put("workout_id", JsonPrimitive(plannedId))
+                    put("new_date", JsonPrimitive(newDate))
+                }.toString(),
+            )
+        }
     }
 
     // Lock/unlock a planned session so the weekly re-planner leaves it fixed.
@@ -357,19 +391,18 @@ class WorkoutRepository @Inject constructor(
             supabase.postgrest.from("week_plans").select {
                 filter { eq("start_date", start) }
             }.decodeList<WeekPlanRow>().firstOrNull()
-        }.getOrNull()
+        }.logFailure("weekPlan").getOrNull()
 
     suspend fun setAutoPlan(enabled: Boolean) {
         supabase.postgrest.from("user_profiles").update(mapOf("auto_plan" to enabled)) {
             filter { eq("id", uid()) }
         }
+        invalidateProfileCache()
     }
 
     suspend fun autoPlanEnabled(): Boolean = runCatching {
-        val rows: List<Map<String, JsonElement>> =
-            supabase.postgrest.from("user_profiles").select { filter { eq("id", uid()) } }.decodeList()
-        (rows.firstOrNull()?.get("auto_plan") as? JsonPrimitive)?.content?.toBoolean() ?: false
-    }.getOrDefault(false)
+        (profileRow()?.get("auto_plan") as? JsonPrimitive)?.content?.toBoolean() ?: false
+    }.logFailure("autoPlanEnabled").getOrDefault(false)
 
     suspend fun scheduleTemplate(req: ScheduleRequest): ScheduleResult =
         json.decodeFromString(
@@ -415,9 +448,9 @@ class WorkoutRepository @Inject constructor(
     // plan-week already feeds actual load + adherence into the LLM prompt, so
     // re-planning here intelligently accounts for over/under-training and swaps.
     suspend fun adaptWeek(weekStart: String, today: String): AdaptResult {
-        val planned = runCatching { plannedWorkouts(weekStart) }.getOrDefault(emptyList())
+        val planned = runCatching { plannedWorkouts(weekStart) }.logFailure("adaptWeek/planned").getOrDefault(emptyList())
             .filter { it.date in weekStart..today }
-        val actsByDate = runCatching { completedActivities(weekStart) }.getOrDefault(emptyList())
+        val actsByDate = runCatching { completedActivities(weekStart) }.logFailure("adaptWeek/activities").getOrDefault(emptyList())
             .groupBy { it.date }
         var reconciled = 0
         var missed = 0
@@ -426,7 +459,7 @@ class WorkoutRepository @Inject constructor(
             if (p.date >= today) continue   // only reconcile the past
             val matched = actsByDate[p.date].orEmpty().any { typeMatches(p.type, it.type) }
             if (matched) {
-                runCatching { markPlannedComplete(p.id, p.date, true, "from_actual", null) }
+                runCatching { markPlannedComplete(p.id, p.date, true, "from_actual", null) }.logFailure("adaptWeek/markComplete")
                 reconciled++
             } else {
                 missed++
@@ -434,7 +467,7 @@ class WorkoutRepository @Inject constructor(
         }
         // Re-plan today → +6: deletes non-completed/non-locked in range and
         // regenerates around what actually happened and your current fitness.
-        val r = runCatching { planWeek(PlanWeekRequest(start_date = today)) }.getOrNull()
+        val r = runCatching { planWeek(PlanWeekRequest(start_date = today)) }.logFailure("adaptWeek/planWeek").getOrNull()
         if (r == null || r.error != null) {
             return AdaptResult(reconciled, missed, false,
                 "Reconciled $reconciled · $missed missed", r?.error ?: "re-plan failed")
@@ -509,4 +542,8 @@ class WorkoutRepository @Inject constructor(
     }
 
     private fun uid(): String = supabase.auth.currentUserOrNull()?.id ?: ""
+
+    private companion object {
+        const val TAG = "WorkoutRepo"
+    }
 }

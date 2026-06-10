@@ -6,9 +6,9 @@
 // fold them into <=120 words of durable notes, and saves it on the profile.
 
 import { handleOptions, json } from "../_shared/cors.ts";
-import { adminClient, decryptSecret, getUserId } from "../_shared/supabase.ts";
+import { adminClient, getUserId } from "../_shared/supabase.ts";
 import { llmGenerateWithFallback } from "../_shared/llm.ts";
-import type { LlmProvider } from "../_shared/types.ts";
+import { llmAccess } from "../_shared/llm_keys.ts";
 
 const SYSTEM = `You maintain a running coach's private notes about ONE athlete.
 Fold new evidence into the existing notes. Keep DURABLE patterns (how they
@@ -44,11 +44,7 @@ Deno.serve(async (req) => {
       `RECENT FEEDBACK:\n${fbLines}\n\nRECENT SESSIONS:\n${wkLines}\n\n` +
       `Return the updated notes only.`;
 
-    const chain: LlmProvider[] = [profile.active_llm_provider, ...(profile.llm_fallback_chain ?? [])].filter(Boolean);
-    const resolveKey = async (provider: LlmProvider): Promise<string | null> => {
-      const { data } = await admin.from("llm_api_keys").select("api_key_encrypted").eq("user_id", userId).eq("provider", provider).maybeSingle();
-      return data?.api_key_encrypted ? await decryptSecret(admin, data.api_key_encrypted) : null;
-    };
+    const { chain, resolveKey } = llmAccess(admin, userId, profile);
 
     const outcome = await llmGenerateWithFallback(chain, { prompt, systemPrompt: SYSTEM }, resolveKey);
     const memory = outcome.text.trim().slice(0, 1200);

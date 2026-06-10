@@ -9,7 +9,8 @@
 //     user with user_profiles.auto_plan = true.
 
 import { handleOptions, json } from "../_shared/cors.ts";
-import { adminClient, decryptSecret, getUserId } from "../_shared/supabase.ts";
+import { adminClient, getUserId } from "../_shared/supabase.ts";
+import { llmAccess } from "../_shared/llm_keys.ts";
 import { estimateCostUsd, extractJson, llmGenerateWithFallback } from "../_shared/llm.ts";
 import {
   buildWeekPrompt,
@@ -127,17 +128,8 @@ async function planForUser(admin: SupabaseClient, userId: string, start: string,
     wellness3d, weeklyKm, weeklyTssTarget, hrZones, contextBlocks,
   });
 
-  const chain: LlmProvider[] = [profile.active_llm_provider, ...(profile.llm_fallback_chain ?? [])].filter(Boolean);
+  const { chain, resolveKey } = llmAccess(admin, userId, profile);
   if (chain.length === 0) throw new Error("No AI provider configured");
-  const keyCache = new Map<string, string | null>();
-  const resolveKey = async (provider: LlmProvider): Promise<string | null> => {
-    if (keyCache.has(provider)) return keyCache.get(provider)!;
-    const { data } = await admin.from("llm_api_keys").select("api_key_encrypted")
-      .eq("user_id", userId).eq("provider", provider).maybeSingle();
-    const key = data?.api_key_encrypted ? await decryptSecret(admin, data.api_key_encrypted) : null;
-    keyCache.set(provider, key);
-    return key;
-  };
 
   let outcome = await llmGenerateWithFallback(chain, { prompt: userPrompt, systemPrompt: WEEK_SYSTEM_PROMPT }, resolveKey);
   let v = validateWeekPlan(safeJson(outcome.text));
@@ -194,7 +186,7 @@ async function planForUser(admin: SupabaseClient, userId: string, start: string,
       try {
         const ev = await createEvent(profile.intervals_athlete_id, phys.apiKey, {
           date: row.date, name: session.title, description: renderIntervalsWorkout(session),
-          type: session.type === "run" ? "Run" : "WeightTraining",
+          type: session.type === "run" ? "Run" : session.type === "ride" ? "Ride" : "WeightTraining",
         });
         pushed++;
         if (id) await admin.from("planned_workouts").update({ intervals_event_id: ev.id, pushed_at: new Date().toISOString() }).eq("id", id);

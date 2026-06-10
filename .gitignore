@@ -7,3 +7,13 @@ node_modules/
 supabase/.branches/
 supabase/.temp/
 *.log
+
+# build/tooling artifacts
+*.tsbuildinfo
+*.apk
+*.aab
+.gradle/
+local.properties
+
+# personal data exports (test fixtures live in android/app/src/*/resources)
+/strong*.csv

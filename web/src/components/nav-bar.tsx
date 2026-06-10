@@ -2,12 +2,13 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { Activity, CalendarDays, Dumbbell, History, LineChart, Settings } from "lucide-react";
+import { Activity, CalendarDays, Dumbbell, History, LineChart, MessageCircle, Settings } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 const items = [
   { href: "/dashboard", label: "Home", icon: Activity },
   { href: "/calendar", label: "Calendar", icon: CalendarDays },
+  { href: "/coach", label: "Coach", icon: MessageCircle },
   { href: "/strength", label: "Strength", icon: Dumbbell },
   { href: "/running", label: "Running", icon: LineChart },
   { href: "/history", label: "History", icon: History },

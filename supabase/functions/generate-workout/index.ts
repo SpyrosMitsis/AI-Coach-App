@@ -35,7 +35,7 @@ import {
   weatherBlock,
 } from "../_shared/context.ts";
 import { computeRecovery } from "../_shared/recovery.ts";
-import type { LlmProvider } from "../_shared/types.ts";
+import { llmAccess } from "../_shared/llm_keys.ts";
 
 const DAY = 86_400_000;
 const daysBetween = (a: string, b: Date) => Math.floor((b.getTime() - new Date(a).getTime()) / DAY);
@@ -115,7 +115,11 @@ Deno.serve(async (req) => {
     ]);
 
     // 5. decide type --------------------------------------------------------
-    const runs = acts.filter((a) => (a.type ?? "").toLowerCase().includes("run"));
+    const isRide = requestedType === "ride";
+    const runs = acts.filter((a) => {
+      const t = (a.type ?? "").toLowerCase();
+      return isRide ? (t.includes("ride") || t.includes("bike") || t.includes("cycl")) : t.includes("run");
+    });
     const now = new Date(date + "T12:00:00");
     const daysSinceLastRun = runs.length ? daysBetween(runs[0].date, now) : 99;
     const hardEffort = acts.find((a) => (a.tss ?? 0) > 60);
@@ -241,6 +245,8 @@ Deno.serve(async (req) => {
         daysSinceLastHard,
         requestedDuration,
         experience: onboarding.experience ?? "Intermediate",
+        sport: type === "ride" ? "ride" : "run",
+        ftp: typeof onboarding.ftp === "number" ? onboarding.ftp : undefined,
       });
     }
 
@@ -302,29 +308,10 @@ Return the revised workout as JSON only, same schema.`;
     }
 
     // 7. resolve fallback chain + keys, then generate ----------------------
-    const chain: LlmProvider[] = [
-      profile.active_llm_provider,
-      ...(profile.llm_fallback_chain ?? []),
-    ].filter(Boolean);
+    const { chain, resolveKey } = llmAccess(admin, userId, profile);
     if (chain.length === 0) {
       return json({ error: "No AI provider configured. Add an API key in Settings." }, 400);
     }
-
-    const keyCache = new Map<string, string | null>();
-    const resolveKey = async (provider: LlmProvider): Promise<string | null> => {
-      if (keyCache.has(provider)) return keyCache.get(provider)!;
-      const { data } = await admin
-        .from("llm_api_keys")
-        .select("api_key_encrypted")
-        .eq("user_id", userId)
-        .eq("provider", provider)
-        .maybeSingle();
-      const key = data?.api_key_encrypted
-        ? await decryptSecret(admin, data.api_key_encrypted)
-        : null;
-      keyCache.set(provider, key);
-      return key;
-    };
 
     let outcome;
     try {
@@ -460,7 +447,7 @@ Return the revised workout as JSON only, same schema.`;
             date,
             name: validated.title,
             description,
-            type: validated.type === "run" ? "Run" : "Workout",
+            type: validated.type === "run" ? "Run" : validated.type === "ride" ? "Ride" : "Workout",
           });
           intervalsEventId = ev.id;
           await admin

@@ -28,7 +28,7 @@ Intervals.icu keys; there are no platform-level API costs.
 | Path                 | What                                                        |
 |----------------------|------------------------------------------------------------|
 | `supabase/migrations`| Schema, RLS, exercise library, crypto RPCs, cron           |
-| `supabase/functions` | 6 Deno Edge Functions + shared `_shared/` modules          |
+| `supabase/functions` | 14 Deno Edge Functions + shared `_shared/` modules         |
 | `supabase/seed.sql`  | One sample athlete with 30 days of training history        |
 | `web`                | Next.js 14 app (App Router, Tailwind, shadcn-style, Recharts)|
 | `android`            | Android Studio project (Compose, Hilt, Supabase SDK, Room) |
@@ -85,7 +85,7 @@ supabase db push                     # runs everything in supabase/migrations
 openssl rand -base64 48 | xargs -I{} supabase secrets set ENCRYPTION_KEY="{}"
 
 # 3) functions
-supabase functions deploy            # deploys all 6 functions
+supabase functions deploy            # deploys all functions
 
 # 4) enable the 30-min sync cron (one-time, run in the SQL editor):
 #    alter database postgres set "app.functions_base_url" = 'https://YOUR-REF.functions.supabase.co';
@@ -98,9 +98,22 @@ supabase functions deploy            # deploys all 6 functions
 | `connect-intervals` | Verify + encrypt-store Intervals.icu creds                  |
 | `sync-intervals`    | Cache activities + CTL/ATL/TSB (cron every 30 min)          |
 | `generate-workout`  | Full AI generation flow → planned_workouts → Intervals push |
+| `plan-week`         | Periodized 7-day microcycle in one shot (also the auto-plan cron) |
+| `plan-block`        | Multi-week periodized block toward the goal race            |
+| `coach-chat`        | Agentic coach: native tool calling + SSE streaming          |
 | `push-workout`      | Push an existing plan to the Intervals.icu calendar         |
+| `push-strength`     | Push a logged strength session to Intervals.icu             |
+| `delete-workout`    | Delete a plan + its Intervals.icu/watch event               |
+| `schedule-template` | Schedule a saved workout template onto the calendar         |
+| `refresh-memory`    | Maintain the rolling athlete "training memory"              |
+| `intervals-stats`   | Live Intervals.icu physiology (zones, thresholds)           |
 | `test-llm-key`      | Validate a provider key with a minimal call                 |
 | `daily-summary`     | Readiness score + dashboard payload                         |
+
+Unit tests live next to the shared modules (`_shared/*_test.ts`):
+```bash
+cd supabase/functions && deno test _shared/
+```
 
 ---
 

@@ -7,6 +7,37 @@ import type {
   Workout,
 } from "@shared/types";
 
+// Translate raw edge-function/provider errors into something a human can act
+// on. Falls through to the raw message for anything unrecognized.
+export function humanizeError(raw: string): string {
+  const m = raw.toLowerCase();
+  if (m.includes("no ai provider configured") || m.includes("no llm key")) {
+    return "No AI provider is set up yet — add an API key in Settings → LLM.";
+  }
+  if (m.includes("all providers in fallback chain failed")) {
+    return "All of your AI providers failed — check your API keys in Settings → LLM (a key may be invalid or out of credit).";
+  }
+  if (m.includes("http 401") || m.includes("invalid api key") || m.includes("invalid x-api-key")) {
+    return "An API key was rejected — re-check it in Settings.";
+  }
+  if (m.includes("http 429") || m.includes("rate limit")) {
+    return "The AI provider is rate-limiting you — wait a minute and try again, or switch the active provider.";
+  }
+  if (m.includes("could not parse workout")) {
+    return "The AI returned something unusable this time — try generating again (this usually works on retry).";
+  }
+  if (m.includes("intervals") && (m.includes("403") || m.includes("401"))) {
+    return "Intervals.icu rejected your credentials — re-connect it in Settings.";
+  }
+  if (m.includes("profile not found")) {
+    return "Your profile isn't set up yet — finish onboarding first.";
+  }
+  if (m.includes("failed to fetch") || m.includes("network")) {
+    return "Network problem — check your connection and try again.";
+  }
+  return raw;
+}
+
 // Thin wrapper over supabase.functions.invoke that surfaces the JSON error
 // bodies our Edge Functions return.
 async function invoke<T>(name: string, body?: unknown): Promise<T> {
@@ -15,15 +46,14 @@ async function invoke<T>(name: string, body?: unknown): Promise<T> {
   if (error) {
     // functions.invoke wraps non-2xx; try to read the JSON body for detail.
     const ctx = (error as unknown as { context?: Response }).context;
+    let detail: string | null = null;
     if (ctx) {
       try {
         const parsed = await ctx.json();
-        throw new Error(parsed.error ?? parsed.detail ?? error.message);
-      } catch {
-        /* fall through */
-      }
+        detail = String(parsed.error ?? parsed.detail ?? "") || null;
+      } catch { /* non-JSON error body */ }
     }
-    throw new Error(error.message);
+    throw new Error(humanizeError(detail ?? error.message));
   }
   return data as T;
 }
@@ -38,7 +68,7 @@ export const api = {
 
   generateWorkout: (args: {
     date?: string;
-    type?: "run" | "strength" | "auto";
+    type?: "run" | "ride" | "strength" | "auto";
     duration?: number;
     push?: boolean;
     request?: string; // free-text "Friday social 10k with friends"
@@ -65,6 +95,15 @@ export const api = {
 
   pushWorkout: (workout_id: string) =>
     invoke<{ ok: boolean; intervals_event_id: string }>("push-workout", { workout_id }),
+
+  coachChat: (messages: { role: "user" | "assistant"; content: string }[], conversationId?: string | null) =>
+    invoke<{ reply: string; conversation_id: string | null; provider: string; tools_used?: string[] }>(
+      "coach-chat",
+      { messages, mode: "chat", conversationId: conversationId ?? undefined, purpose: "plan" },
+    ),
+
+  moveWorkout: (workout_id: string, new_date: string) =>
+    invoke<{ ok: boolean; event_moved: boolean }>("move-workout", { workout_id, new_date }),
 
   testLlmKey: (provider: LlmProvider, apiKey: string, sampleGeneration = false) =>
     invoke<{

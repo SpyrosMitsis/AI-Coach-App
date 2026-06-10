@@ -14,7 +14,7 @@
 import type { Workout } from "./types.ts";
 
 export const WORKOUT_JSON_SCHEMA = `{
-  "type": "run | strength | rest",
+  "type": "run | ride | strength | rest",
   "title": "string",
   "duration_minutes": number,
   "tss_estimate": number,
@@ -111,12 +111,12 @@ fences, no commentary. It MUST exactly match this schema:
 ${WORKOUT_JSON_SCHEMA}
 
 Rules:
-- "type" is exactly one of: run, strength, rest.
+- "type" is exactly one of: run, ride, strength, rest.
 - Every numeric field is a JSON number; use null where a field does not apply
   (weight_kg for runs, pace_zone/hr_zone for strength).
 - "reps" is a string so it can hold ranges/notations like "8-10", "AMRAP",
   "400m", "20s".
-- For runs set pace_zone/hr_zone on work intervals (weight_kg null). For
+- For runs/rides set pace_zone/hr_zone on work intervals (weight_kg null). For
   strength set sets/reps/weight_kg/rest_seconds and include the target RIR in
   notes (pace_zone/hr_zone null).
 - For a rest day return type "rest" with recovery guidance in coach_note.
@@ -211,9 +211,14 @@ interface RunContext {
   daysSinceLastHard: number;
   requestedDuration: number;
   experience: string;
+  // Endurance sport. Defaults to running; "ride" reframes the session as
+  // cycling (FTP/power-aware, no impact constraints, set "type":"ride").
+  sport?: "run" | "ride";
+  ftp?: number;
 }
 
 export function buildRunPrompt(c: RunContext): string {
+  const sport = c.sport ?? "run";
   const zones = c.hrZones.map((z) => `${z.zone}: ${z.min}-${z.max} bpm`).join(", ");
   const tsbInterp =
     c.tsb > 5 ? "fresh — quality OK"
@@ -223,8 +228,11 @@ export function buildRunPrompt(c: RunContext): string {
   const proposedMax = (c.weeklyKm * 0.1).toFixed(1);
   const acwrNote = c.acwr == null ? "n/a"
     : `${c.acwr.toFixed(2)} (${c.acwr > 1.5 ? "HIGH injury risk — hold volume" : c.acwr < 0.8 ? "detraining zone — can build" : "in the safe 0.8-1.3 band"})`;
+  const rideNote = sport === "ride"
+    ? `\n\nThis is a CYCLING session ("type":"ride"): apply the same endurance science (80/20, phase, TSB).${c.ftp ? ` FTP is ${c.ftp}W — reference %FTP for interval targets in notes.` : ""} Cycling has no impact cost, so longer Z2 durations are fine; intervals still follow work:rest norms.`
+    : "";
 
-  return `Generate today's RUNNING workout.
+  return `Generate today's ${sport === "ride" ? "CYCLING" : "RUNNING"} workout.
 
 ATHLETE CONTEXT
 - Goal: ${c.goal}${c.targetPace ? ` (target pace ${c.targetPace})` : ""}
@@ -235,8 +243,8 @@ ATHLETE CONTEXT
 - Acute:chronic workload ratio: ${acwrNote}
 - 3-day wellness (1-5): energy ${c.wellness3d.energy.toFixed(1)}, soreness ${c.wellness3d.soreness.toFixed(1)}, sleep ${c.wellness3d.sleep.toFixed(1)}
 - Volume last 7 days: ${c.weeklyKm.toFixed(1)} km — single added distance should not push weekly volume up by more than ~${proposedMax} km (10% rule)
-- Days since last run: ${c.daysSinceLastRun}; since last hard effort: ${c.daysSinceLastHard}
-- Requested duration: ${c.requestedDuration} min
+- Days since last ${sport}: ${c.daysSinceLastRun}; since last hard effort: ${c.daysSinceLastHard}
+- Requested duration: ${c.requestedDuration} min${rideNote}
 
 Pick the session type and intensity from phase + TSB + wellness + the 80/20 rule.
 Avoid hard quality if a hard effort was within the last 2 days, ACWR is high, or
@@ -284,61 +292,8 @@ each exercise's notes. Respect 48h muscle recovery and weekly volume landmarks.
 Return JSON only.`;
 }
 
-// Structural validation + light coercion of an LLM-produced workout.
-export function validateWorkout(obj: unknown): { ok: boolean; workout?: Workout; error?: string } {
-  if (!obj || typeof obj !== "object") return { ok: false, error: "not an object" };
-  const w = obj as Record<string, unknown>;
-
-  if (!["run", "strength", "rest"].includes(w.type as string)) {
-    return { ok: false, error: `invalid type: ${w.type}` };
-  }
-  if (typeof w.title !== "string") return { ok: false, error: "missing title" };
-  if (!Array.isArray(w.sections)) return { ok: false, error: "sections must be an array" };
-
-  const num = (v: unknown, d = 0) => (typeof v === "number" && isFinite(v) ? v : d);
-
-  const type = w.type as Workout["type"];
-  const clamp = (v: number, lo: number, hi: number) => Math.max(lo, Math.min(hi, v));
-
-  const workout: Workout = {
-    type,
-    title: typeof w.title === "string" && w.title.trim() ? w.title.trim() : (type === "rest" ? "Rest day" : "Workout"),
-    duration_minutes: Math.max(0, num(w.duration_minutes)),
-    tss_estimate: clamp(num(w.tss_estimate), 0, 400),
-    rpe_target: clamp(num(w.rpe_target), 0, 10),
-    coach_note: typeof w.coach_note === "string" ? w.coach_note : "",
-    sections: (w.sections as unknown[]).map((s) => {
-      const sec = s as Record<string, unknown>;
-      return {
-        name: typeof sec.name === "string" ? sec.name : "Block",
-        duration_minutes: num(sec.duration_minutes),
-        exercises: Array.isArray(sec.exercises)
-          ? (sec.exercises as unknown[]).map((e) => {
-            const ex = e as Record<string, unknown>;
-            // Guardrails: zero out fields that don't apply to the modality so a
-            // run never carries weights and strength never carries pace/HR zones.
-            const isRun = type === "run";
-            return {
-              name: typeof ex.name === "string" ? ex.name : "Exercise",
-              sets: num(ex.sets, 1),
-              reps: ex.reps == null ? "" : String(ex.reps),
-              weight_kg: !isRun && typeof ex.weight_kg === "number" ? ex.weight_kg : null,
-              pace_zone: isRun && typeof ex.pace_zone === "string" ? ex.pace_zone : null,
-              hr_zone: isRun && typeof ex.hr_zone === "string" ? ex.hr_zone : null,
-              rest_seconds: typeof ex.rest_seconds === "number" ? ex.rest_seconds : null,
-              notes: typeof ex.notes === "string" ? ex.notes : "",
-            };
-          })
-          : [],
-      };
-    }),
-  };
-  // A rest day needs no sections; everything else should have at least one.
-  if (type !== "rest" && workout.sections.length === 0) {
-    return { ok: false, error: "workout has no sections" };
-  }
-  return { ok: true, workout };
-}
+// Structural validation + light coercion of LLM output — now zod-based.
+export { validateWorkout } from "./workout_schema.ts";
 
 // ============================================================================
 // Weekly microcycle planning — the "mature" planner: a coherent 7-day block.
@@ -404,33 +359,5 @@ ${WEEK_JSON_SCHEMA}
 Return EXACTLY 7 day objects, one per listed date, in order. Each "session" follows the workout schema; rest days use type "rest" with guidance in coach_note.`;
 }
 
-export interface WeekDay { date: string; weekday: string; session: Workout }
-export interface WeekPlan { week_focus: string; rationale: string; days: WeekDay[] }
-
-export function validateWeekPlan(obj: unknown): { ok: boolean; plan?: WeekPlan; error?: string } {
-  if (!obj || typeof obj !== "object") return { ok: false, error: "not an object" };
-  const o = obj as Record<string, unknown>;
-  if (!Array.isArray(o.days) || o.days.length === 0) return { ok: false, error: "missing days[]" };
-  const days: WeekDay[] = [];
-  for (const d of o.days as unknown[]) {
-    const day = d as Record<string, unknown>;
-    const date = typeof day.date === "string" ? day.date : "";
-    const weekday = typeof day.weekday === "string" ? day.weekday : "";
-    if (!date) continue;
-    const v = validateWorkout(day.session);
-    // A day that won't validate degrades to a rest day rather than failing the week.
-    const session: Workout = v.ok && v.workout
-      ? v.workout
-      : { type: "rest", title: "Rest day", duration_minutes: 0, tss_estimate: 0, rpe_target: 0, sections: [], coach_note: "Recovery." };
-    days.push({ date, weekday, session });
-  }
-  if (days.length === 0) return { ok: false, error: "no valid days" };
-  return {
-    ok: true,
-    plan: {
-      week_focus: typeof o.week_focus === "string" ? o.week_focus : "General",
-      rationale: typeof o.rationale === "string" ? o.rationale : "",
-      days,
-    },
-  };
-}
+export { validateWeekPlan } from "./workout_schema.ts";
+export type { WeekDay, WeekPlan } from "./workout_schema.ts";

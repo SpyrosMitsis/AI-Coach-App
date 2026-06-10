@@ -18,20 +18,75 @@ export interface ToolDef {
   name: string;
   kind: "read" | "act";
   description: string;
-  args: string; // human description of the args shape
+  args: string; // human description of the args shape (JSON-protocol prompt)
+  schema: Record<string, unknown>; // JSON Schema (native tool calling)
 }
 
+const NO_ARGS = { type: "object", properties: {}, additionalProperties: false };
+
 export const TOOL_CATALOG: ToolDef[] = [
-  { name: "get_fitness", kind: "read", args: "{}", description: "Current fitness: CTL (fitness), ATL (fatigue), TSB (form), weekly TSS load and acute:chronic ratio." },
-  { name: "get_recent_activities", kind: "read", args: "{ days?: number = 14 }", description: "Recently completed activities from Intervals.icu (type, date, distance, duration, HR, TSS)." },
-  { name: "get_planned_week", kind: "read", args: "{ week_start?: 'YYYY-MM-DD' }", description: "The planned sessions for a week (title, type, completed, locked). Defaults to the current week." },
-  { name: "get_strength_summary", kind: "read", args: "{}", description: "Recent strength sessions and 28-day working-set volume per muscle group." },
-  { name: "get_profile", kind: "read", args: "{}", description: "Athlete profile: goal, experience, available days, session length, equipment, injuries, thresholds (LTHR/FTP/pace) and upcoming races." },
-  { name: "plan_week", kind: "act", args: "{ start_date?: 'YYYY-MM-DD' }", description: "Generate/regenerate a full training week (pushes near-term sessions to the watch). Use after agreeing a plan with the athlete." },
-  { name: "generate_workout", kind: "act", args: "{ date?: 'YYYY-MM-DD', type?: 'run'|'strength'|'auto', duration?: number, request?: string, lock?: boolean }", description: "Create one workout on a date. Pass `request` for a specific session ('easy 8k', 'upper-body push'); set lock=true to fix it." },
-  { name: "set_goal_race", kind: "act", args: "{ name: string, date: 'YYYY-MM-DD' }", description: "Set the athlete's goal race; this anchors periodization and taper." },
-  { name: "remember", kind: "act", args: "{ fact: string }", description: "Save a durable fact/preference/constraint about the athlete (e.g. 'dislikes burpees', 'left knee niggle')." },
+  {
+    name: "get_fitness", kind: "read", args: "{}", schema: NO_ARGS,
+    description: "Current fitness: CTL (fitness), ATL (fatigue), TSB (form), weekly TSS load and acute:chronic ratio.",
+  },
+  {
+    name: "get_recent_activities", kind: "read", args: "{ days?: number = 14 }",
+    schema: { type: "object", properties: { days: { type: "number", description: "Lookback window in days (default 14, max 60)" } } },
+    description: "Recently completed activities from Intervals.icu (type, date, distance, duration, HR, TSS).",
+  },
+  {
+    name: "get_planned_week", kind: "read", args: "{ week_start?: 'YYYY-MM-DD' }",
+    schema: { type: "object", properties: { week_start: { type: "string", description: "Week start date YYYY-MM-DD (defaults to the current week's Monday)" } } },
+    description: "The planned sessions for a week (title, type, completed, locked). Defaults to the current week.",
+  },
+  {
+    name: "get_strength_summary", kind: "read", args: "{}", schema: NO_ARGS,
+    description: "Recent strength sessions and 28-day working-set volume per muscle group.",
+  },
+  {
+    name: "get_profile", kind: "read", args: "{}", schema: NO_ARGS,
+    description: "Athlete profile: goal, experience, available days, session length, equipment, injuries, thresholds (LTHR/FTP/pace) and upcoming races.",
+  },
+  {
+    name: "plan_week", kind: "act", args: "{ start_date?: 'YYYY-MM-DD' }",
+    schema: { type: "object", properties: { start_date: { type: "string", description: "YYYY-MM-DD; defaults to today" } } },
+    description: "Generate/regenerate a full training week (pushes near-term sessions to the watch). Use after agreeing a plan with the athlete.",
+  },
+  {
+    name: "generate_workout", kind: "act",
+    args: "{ date?: 'YYYY-MM-DD', type?: 'run'|'strength'|'auto', duration?: number, request?: string, lock?: boolean }",
+    schema: {
+      type: "object",
+      properties: {
+        date: { type: "string", description: "YYYY-MM-DD; defaults to today" },
+        type: { type: "string", enum: ["run", "strength", "auto"] },
+        duration: { type: "number", description: "Target minutes (default 60)" },
+        request: { type: "string", description: "Free-text session request, e.g. 'easy 8k' or 'upper-body push'" },
+        lock: { type: "boolean", description: "Fix the session so re-planning won't replace it" },
+      },
+    },
+    description: "Create one workout on a date. Pass `request` for a specific session ('easy 8k', 'upper-body push'); set lock=true to fix it.",
+  },
+  {
+    name: "set_goal_race", kind: "act", args: "{ name: string, date: 'YYYY-MM-DD' }",
+    schema: {
+      type: "object",
+      properties: { name: { type: "string" }, date: { type: "string", description: "YYYY-MM-DD" } },
+      required: ["name", "date"],
+    },
+    description: "Set the athlete's goal race; this anchors periodization and taper.",
+  },
+  {
+    name: "remember", kind: "act", args: "{ fact: string }",
+    schema: { type: "object", properties: { fact: { type: "string" } }, required: ["fact"] },
+    description: "Save a durable fact/preference/constraint about the athlete (e.g. 'dislikes burpees', 'left knee niggle').",
+  },
 ];
+
+/** Tool definitions in the shape native tool-calling APIs expect. */
+export function nativeToolDefs(): { name: string; description: string; input_schema: Record<string, unknown> }[] {
+  return TOOL_CATALOG.map((t) => ({ name: t.name, description: t.description, input_schema: t.schema }));
+}
 
 export function toolCatalogPrompt(): string {
   const lines = TOOL_CATALOG.map((t) => `- ${t.name}(${t.args}) — ${t.description}`);

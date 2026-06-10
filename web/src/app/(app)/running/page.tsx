@@ -5,6 +5,7 @@ import { useQuery } from "@tanstack/react-query";
 import { createClient } from "@/lib/supabase-browser";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { ZonesRaces } from "@/components/zones-races";
+import { RacePlan } from "@/components/race-plan";
 import {
   Bar, BarChart, Cell, Line, LineChart, Pie, PieChart, ResponsiveContainer, Tooltip, XAxis, YAxis,
 } from "recharts";
@@ -102,6 +103,8 @@ export default function RunningPage() {
       </header>
 
       <ZonesRaces />
+
+      <RacePlan />
 
       <div className="grid gap-4 sm:grid-cols-2">
         <Card>

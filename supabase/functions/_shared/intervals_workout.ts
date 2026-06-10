@@ -160,7 +160,7 @@ function renderStrengthSections(w: Pick<Workout, "sections">): string {
 // Render a full Workout to Intervals.icu description text. The coach note is
 // appended at the END as plain prose so it never disrupts step parsing.
 export function renderIntervalsWorkout(w: Workout): string {
-  const body = w.type === "run"
+  const body = w.type === "run" || w.type === "ride"
     ? w.sections.map((s) => renderEnduranceSection(s).join("\n")).join("\n\n")
     : renderStrengthSections(w);
   return (w.coach_note ? `${body}\n\n${w.coach_note}` : body).trim();

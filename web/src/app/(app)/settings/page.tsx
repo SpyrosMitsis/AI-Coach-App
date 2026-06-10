@@ -10,6 +10,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { cn } from "@/lib/utils";
 import type { OnboardingData } from "@shared/types";
+import { DataExport } from "@/components/data-export";
 import { ChevronRight, Cpu, Activity, Moon, Sun } from "lucide-react";
 
 const GOALS = ["5K pace", "10K pace", "Half Marathon", "Marathon pace", "General fitness", "Muscle gain", "Body recomposition", "Hybrid athlete"];
@@ -170,6 +171,9 @@ export default function SettingsPage() {
           />
         </CardContent>
       </Card>
+
+      {/* Data export --------------------------------------------------------- */}
+      <DataExport />
     </div>
   );
 }

@@ -212,6 +212,26 @@ export async function deleteEvent(athleteId: string, apiKey: string, eventId: st
   });
 }
 
+// Update fields on an existing calendar event (e.g. move it to another date).
+export async function updateEvent(
+  athleteId: string,
+  apiKey: string,
+  eventId: string,
+  fields: Record<string, unknown>,
+): Promise<void> {
+  const res = await fetch(`${BASE}/athlete/${athleteId}/events/${eventId}`, {
+    method: "PUT",
+    headers: {
+      Authorization: authHeader(apiKey),
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify(fields),
+  });
+  if (!res.ok) {
+    throw new Error(`intervals PUT event → HTTP ${res.status}: ${await res.text()}`);
+  }
+}
+
 export async function createEvent(
   athleteId: string,
   apiKey: string,

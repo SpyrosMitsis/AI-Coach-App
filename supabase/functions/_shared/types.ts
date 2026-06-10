@@ -26,7 +26,7 @@ export interface WorkoutSection {
 }
 
 export interface Workout {
-  type: "run" | "strength" | "rest";
+  type: "run" | "ride" | "strength" | "rest";
   title: string;
   duration_minutes: number;
   tss_estimate: number;

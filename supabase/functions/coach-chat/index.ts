@@ -13,7 +13,8 @@
 // finalize → returns { template } (structured JSON) and optionally saves it.
 
 import { handleOptions, json } from "../_shared/cors.ts";
-import { adminClient, decryptSecret, getUserId } from "../_shared/supabase.ts";
+import { adminClient, getUserId } from "../_shared/supabase.ts";
+import { llmAccess } from "../_shared/llm_keys.ts";
 import {
   type ChatMessage,
   estimateCostUsd,
@@ -24,11 +25,27 @@ import {
 import { corsHeaders } from "../_shared/cors.ts";
 import { COACH_SYSTEM_PROMPT, finalizeInstruction, trainingPhase } from "../_shared/prompt.ts";
 import type { LlmProvider } from "../_shared/types.ts";
-import { executeTool, toolCatalogPrompt } from "../_shared/coach_tools.ts";
+import { executeTool, nativeToolDefs, toolCatalogPrompt } from "../_shared/coach_tools.ts";
+import { runNativeToolLoop, supportsNativeTools } from "../_shared/llm_native_tools.ts";
 
 // Tool-use protocol appended to the coach system prompt for chat mode. The
 // coach reads real data and takes real actions through a JSON tool channel —
 // provider-agnostic so it works on every LLM the user might configure.
+// Behavioral rules shared by both tool channels (native + JSON protocol).
+const TOOL_RULES = `
+RULES:
+- Before giving training advice or a plan, READ the relevant data first (get_fitness, get_planned_week, get_recent_activities, get_strength_summary, get_profile). Ground every claim in what you read.
+- Take ACTIONS (plan_week, generate_workout, set_goal_race) ONLY after the athlete clearly agrees, then confirm what you did and why in your final message.
+- Call remember when the athlete shares a durable preference, constraint, or injury.
+- Be efficient: a few targeted reads, then answer. You have at most 6 tool calls per turn.
+- Final messages are warm but concise — reference the actual numbers, and give one clear next step.`;
+
+// System prompt suffix when the provider has native tool calling.
+const NATIVE_TOOL_PREAMBLE = `
+
+YOU ARE AN AGENTIC COACH WITH TOOLS. You can read the athlete's real training data and act on their plan. Don't invent numbers — read them.
+${TOOL_RULES}`;
+
 const TOOL_PROTOCOL = `
 
 YOU ARE AN AGENTIC COACH WITH TOOLS. You can read the athlete's real training data and act on their plan. Don't invent numbers — read them.
@@ -39,15 +56,34 @@ ${toolCatalogPrompt()}
 RESPONSE FORMAT — output ONLY one JSON object, nothing else:
 • Use a tool:  {"action":"tool","tool":"<name>","args":{ ... }}
 • Reply to athlete:  {"action":"final","message":"<concise, specific reply>"}
-
-RULES:
-- Before giving training advice or a plan, READ the relevant data first (get_fitness, get_planned_week, get_recent_activities, get_strength_summary, get_profile). Ground every claim in what you read.
-- Take ACTIONS (plan_week, generate_workout, set_goal_race) ONLY after the athlete clearly agrees, then confirm what you did and why in your final message.
-- Call remember when the athlete shares a durable preference, constraint, or injury.
-- Be efficient: a few targeted reads, then answer. You have at most 6 tool calls per turn.
-- Final messages are warm but concise — reference the actual numbers, and give one clear next step.`;
+${TOOL_RULES}`;
 
 const DAY = 86_400_000;
+
+// Supabase Edge runtime keeps the worker alive for promises passed to
+// EdgeRuntime.waitUntil even if the client disconnects mid-stream — without it
+// the post-stream thread save can be killed on disconnect.
+declare const EdgeRuntime: { waitUntil?: (p: Promise<unknown>) => void };
+function waitUntil(p: Promise<unknown>) {
+  try {
+    if (typeof EdgeRuntime !== "undefined" && EdgeRuntime?.waitUntil) EdgeRuntime.waitUntil(p);
+  } catch { /* local dev runtime without EdgeRuntime */ }
+}
+
+// Cap what we send to the model on long threads: keep the opening message
+// (it anchors the thread's purpose) plus the most recent turns, within a rough
+// character budget. The FULL thread is still persisted — only the model input
+// is trimmed, so token cost stops growing linearly with conversation length.
+function trimThread(msgs: ChatMessage[], maxTurns = 24, maxChars = 24_000): ChatMessage[] {
+  const kept = msgs.length <= maxTurns
+    ? [...msgs]
+    : [msgs[0], ...msgs.slice(-(maxTurns - 1))];
+  let total = kept.reduce((s, m) => s + m.content.length, 0);
+  while (kept.length > 2 && total > maxChars) {
+    total -= kept.splice(1, 1)[0].content.length; // drop oldest after the anchor
+  }
+  return kept;
+}
 
 // Durable facts worth remembering tend to mention these. We only spend a token
 // budget on knowledge-extraction when the latest user turn plausibly carries one.
@@ -141,23 +177,10 @@ Deno.serve(async (req) => {
     const systemPrompt = `${COACH_SYSTEM_PROMPT}\n\n${context}`;
 
     // --- resolve provider keys (fallback chain) ----------------------------
-    const chain: LlmProvider[] = [
-      profile?.active_llm_provider,
-      ...((profile?.llm_fallback_chain as LlmProvider[]) ?? []),
-    ].filter(Boolean) as LlmProvider[];
-
-    const keyCache = new Map<string, string | null>();
-    const resolveKey = async (provider: LlmProvider): Promise<string | null> => {
-      if (keyCache.has(provider)) return keyCache.get(provider)!;
-      const { data } = await admin.from("llm_api_keys")
-        .select("api_key_encrypted").eq("user_id", userId).eq("provider", provider).maybeSingle();
-      const key = data?.api_key_encrypted ? await decryptSecret(admin, data.api_key_encrypted) : null;
-      keyCache.set(provider, key);
-      return key;
-    };
+    const { chain, resolveKey } = llmAccess(admin, userId, profile);
 
     // --- build the turn list -----------------------------------------------
-    const turns: ChatMessage[] = [...messages];
+    const turns: ChatMessage[] = trimThread(messages);
     if (mode === "finalize") {
       const kind = body.finalizeKind === "plan" ? "plan" : "workout";
       turns.push({ role: "user", content: finalizeInstruction(kind) });
@@ -187,26 +210,34 @@ Deno.serve(async (req) => {
           } catch (e) {
             send({ error: String(e instanceof Error ? e.message : e) });
           }
-          // Persist the thread after the stream completes.
+          // Persist the thread after the stream completes. waitUntil keeps the
+          // worker alive for this even if the client disconnected mid-stream.
           const fullThread = [...messages, { role: "assistant", content: fullText }];
           let convId: string | null = body.conversationId ?? null;
-          try {
-            if (convId) {
-              await admin.from("coach_conversations").update({ messages: fullThread }).eq("id", convId).eq("user_id", userId);
-            } else {
-              const { data: conv } = await admin.from("coach_conversations").insert({
-                user_id: userId, title: messages[0]?.content?.slice(0, 60) ?? "Coaching chat",
-                messages: fullThread, purpose: body.purpose ?? "setup",
-              }).select("id").single();
-              convId = conv?.id ?? null;
-            }
-          } catch { /* best effort */ }
+          const saveThread = (async () => {
+            try {
+              if (convId) {
+                await admin.from("coach_conversations").update({ messages: fullThread }).eq("id", convId).eq("user_id", userId);
+              } else {
+                const { data: conv } = await admin.from("coach_conversations").insert({
+                  user_id: userId, title: messages[0]?.content?.slice(0, 60) ?? "Coaching chat",
+                  messages: fullThread, purpose: body.purpose ?? "setup",
+                }).select("id").single();
+                convId = conv?.id ?? null;
+              }
+            } catch { /* best effort */ }
+          })();
+          waitUntil(saveThread);
+          await saveThread; // need convId for the done event
           const lastUser = [...messages].reverse().find((m) => m.role === "user")?.content ?? "";
           if (KNOWLEDGE_HINTS.test(lastUser)) {
-            await updateKnowledge(admin, userId, existingKnowledge, fullThread as ChatMessage[], chain, resolveKey);
+            // Slow secondary LLM call — never block the response on it.
+            waitUntil(updateKnowledge(admin, userId, existingKnowledge, fullThread as ChatMessage[], chain, resolveKey));
           }
-          send({ done: true, conversation_id: convId, provider });
-          controller.close();
+          try {
+            send({ done: true, conversation_id: convId, provider });
+            controller.close();
+          } catch { /* client already disconnected */ }
         },
       });
       return new Response(stream, {
@@ -217,13 +248,40 @@ Deno.serve(async (req) => {
     // --- agentic chat: tool-use loop over the athlete's real data ----------
     if (mode === "chat") {
       const auth = req.headers.get("Authorization") ?? "";
-      const chatSystem = `${COACH_SYSTEM_PROMPT}\n\n${context}${TOOL_PROTOCOL}`;
-      const work: ChatMessage[] = [...messages];
       const toolsUsed: string[] = [];
       let provider: LlmProvider | string = chain[0] ?? "";
       let replyText = "";
 
-      for (let step = 0; step < 6; step++) {
+      // Prefer the provider's NATIVE tool-calling API when available — far more
+      // reliable than the JSON action protocol. Gemini (no adapter yet) and any
+      // native-loop error fall through to the JSON protocol below.
+      let keyedProvider: LlmProvider | null = null;
+      let keyedKey: string | null = null;
+      for (const p of chain) {
+        const k = await resolveKey(p);
+        if (k) { keyedProvider = p; keyedKey = k; break; }
+      }
+      if (keyedProvider && keyedKey && supportsNativeTools(keyedProvider)) {
+        try {
+          const out = await runNativeToolLoop({
+            provider: keyedProvider,
+            apiKey: keyedKey,
+            systemPrompt: `${COACH_SYSTEM_PROMPT}\n\n${context}${NATIVE_TOOL_PREAMBLE}`,
+            messages: trimThread(messages),
+            tools: nativeToolDefs(),
+            exec: (name, targs) => executeTool(admin, userId, auth, name, targs),
+            maxSteps: 6,
+          });
+          provider = keyedProvider;
+          replyText = out.text;
+          toolsUsed.push(...out.toolsUsed);
+        } catch { /* fall back to the JSON protocol */ }
+      }
+
+      const chatSystem = `${COACH_SYSTEM_PROMPT}\n\n${context}${TOOL_PROTOCOL}`;
+      const work: ChatMessage[] = trimThread(messages);
+
+      for (let step = 0; !replyText.trim() && step < 6; step++) {
         const step_out = await llmGenerateWithFallback(
           chain, { messages: work, systemPrompt: chatSystem, jsonMode: true }, resolveKey,
         );
@@ -298,7 +356,8 @@ Deno.serve(async (req) => {
       // Maintain durable knowledge when the latest turn plausibly carries a fact.
       const lastUser = [...messages].reverse().find((m) => m.role === "user")?.content ?? "";
       if (KNOWLEDGE_HINTS.test(lastUser)) {
-        await updateKnowledge(admin, userId, existingKnowledge, fullThread as ChatMessage[], chain, resolveKey);
+        // Slow secondary LLM call — don't block the reply on it.
+        waitUntil(updateKnowledge(admin, userId, existingKnowledge, fullThread as ChatMessage[], chain, resolveKey));
       }
       return json({ reply: outcome.text, conversation_id: conversationId, provider: outcome.provider, estimated_cost_usd: cost });
     }

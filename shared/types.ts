@@ -57,7 +57,7 @@ export interface WorkoutSection {
 }
 
 export interface Workout {
-  type: "run" | "strength" | "rest";
+  type: "run" | "ride" | "strength" | "rest";
   title: string;
   duration_minutes: number;
   tss_estimate: number;
@@ -139,7 +139,7 @@ export interface WellnessCheckin {
 export interface PlannedWorkout {
   id: string;
   date: string;
-  type: "run" | "strength" | "rest";
+  type: "run" | "ride" | "strength" | "rest";
   workout_json: Workout;
   llm_provider: string | null;
   llm_model: string | null;
