@@ -1,0 +1,66 @@
+project_id = "workout-maker"
+
+[api]
+enabled = true
+port = 54321
+schemas = ["public", "graphql_public"]
+extra_search_path = ["public", "extensions"]
+max_rows = 1000
+
+[db]
+port = 54322
+shadow_port = 54320
+major_version = 15
+
+[db.seed]
+enabled = true
+sql_paths = ["./seed.sql"]
+
+[studio]
+enabled = true
+port = 54323
+
+[auth]
+enabled = true
+site_url = "http://localhost:3000"
+additional_redirect_urls = ["http://localhost:3000/auth/callback"]
+jwt_expiry = 3600
+enable_signup = true
+
+[auth.email]
+enable_signup = true
+enable_confirmations = false   # local dev: skip email confirmation
+
+[realtime]
+enabled = true
+
+# Edge Functions. JWT verification is on by default; sync-intervals is also
+# invoked by pg_cron with the service_role key, which satisfies verification.
+[functions.sync-intervals]
+verify_jwt = true
+[functions.generate-workout]
+verify_jwt = true
+[functions.push-workout]
+verify_jwt = true
+[functions.test-llm-key]
+verify_jwt = true
+[functions.daily-summary]
+verify_jwt = true
+[functions.connect-intervals]
+verify_jwt = true
+[functions.coach-chat]
+verify_jwt = true
+[functions.schedule-template]
+verify_jwt = true
+[functions.intervals-stats]
+verify_jwt = true
+[functions.refresh-memory]
+verify_jwt = true
+[functions.push-strength]
+verify_jwt = true
+[functions.plan-week]
+verify_jwt = true
+[functions.plan-block]
+verify_jwt = true
+[functions.delete-workout]
+verify_jwt = true

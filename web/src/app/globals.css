@@ -1,0 +1,94 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* ============================================================
+   "Serene Vanguard" — grounded, restorative wellness palette.
+   Sage Green accents on a deep charcoal base; depth is tonal,
+   not shadowed (lighter surface = higher). Mirrors the Android
+   theme (Theme.kt) one-to-one, converted to HSL.
+   ============================================================ */
+@layer base {
+  :root {
+    --background: 180 5% 7%;        /* #121414 base */
+    --foreground: 0 0% 89%;         /* #E2E2E2 */
+
+    --card: 180 3% 12%;             /* #1E2020 surface card */
+    --card-foreground: 0 0% 89%;
+
+    --popover: 180 3% 12%;
+    --popover-foreground: 0 0% 89%;
+
+    --primary: 120 18% 76%;         /* Sage #B6CCB6 */
+    --primary-foreground: 129 22% 17%; /* dark text on sage */
+
+    --secondary: 180 3% 20%;        /* surfaceVariant #333535 */
+    --secondary-foreground: 80 6% 88%;
+
+    --muted: 180 3% 16%;            /* surfaceHigh #282A2A */
+    --muted-foreground: 100 4% 62%; /* dimmed onSurfaceVariant */
+
+    --accent: 124 7% 40%;           /* Moss #5E6D5F — chips */
+    --accent-foreground: 120 18% 76%; /* Sage text on moss */
+
+    --sand: 32 27% 76%;             /* Sand #D3C4B3 secondary accent */
+
+    --destructive: 6 100% 83%;      /* BandRed #FFB4AB (calm) */
+    --destructive-foreground: 357 100% 21%;
+
+    --border: 110 4% 27%;           /* outlineVariant #434842 */
+    --input: 110 4% 27%;
+    --ring: 120 18% 76%;            /* sage focus ring */
+
+    --radius: 1rem;                 /* 16px cards */
+  }
+
+  .light {
+    --background: 60 12% 96%;
+    --foreground: 180 6% 12%;
+    --card: 0 0% 100%;
+    --card-foreground: 180 6% 12%;
+    --popover: 0 0% 100%;
+    --popover-foreground: 180 6% 12%;
+    --primary: 124 14% 56%;         /* SageDim */
+    --primary-foreground: 0 0% 100%;
+    --secondary: 40 18% 90%;
+    --secondary-foreground: 180 6% 18%;
+    --muted: 40 14% 90%;
+    --muted-foreground: 120 5% 38%;
+    --accent: 124 16% 70%;
+    --accent-foreground: 129 22% 17%;
+    --sand: 32 30% 60%;
+    --destructive: 0 72% 51%;
+    --destructive-foreground: 0 0% 100%;
+    --border: 40 10% 82%;
+    --input: 40 10% 82%;
+    --ring: 124 14% 56%;
+  }
+}
+
+@layer base {
+  * {
+    @apply border-border;
+  }
+  body {
+    @apply bg-background text-foreground;
+    font-feature-settings: "calt" 1;
+  }
+}
+
+@layer components {
+  /* Eyebrow / section label — caps with wide tracking, sage by default. */
+  .label-caps {
+    @apply text-[11px] font-bold uppercase tracking-[0.12em] text-primary;
+  }
+  /* Low-contrast metadata chip: Moss bg, Sage text (run · 60min · RPE 4). */
+  .meta-chip {
+    @apply inline-flex items-center rounded-full bg-accent/40 px-2.5 py-1
+           text-xs font-medium text-primary whitespace-nowrap;
+  }
+  /* Inset stat block — recessed surface for a number + label. */
+  .inset-stat {
+    @apply rounded-xl bg-background/60 px-3 py-2.5;
+  }
+}

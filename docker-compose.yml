@@ -1,0 +1,39 @@
+# ============================================================================
+# Local development.
+#
+# The recommended path is the Supabase CLI (`supabase start`), which spins up
+# the full local stack (Postgres + Auth + Storage + Realtime + Edge runtime +
+# Studio) from supabase/config.toml and applies migrations + seed.sql.
+#
+#     supabase start          # boots everything, prints local URLs + keys
+#     supabase functions serve --env-file ./supabase/functions/.env
+#
+# This compose file is a convenience wrapper that runs the same CLI inside a
+# container for environments without a local CLI install. It needs Docker.
+# ============================================================================
+
+services:
+  supabase:
+    image: supabase/cli:latest
+    working_dir: /workspace
+    volumes:
+      - ./:/workspace
+      - /var/run/docker.sock:/var/run/docker.sock
+    command: ["start"]
+    # The CLI launches sibling containers via the mounted docker socket.
+    # After it's up: Studio → http://localhost:54323, API → http://localhost:54321
+
+  web:
+    image: node:22-alpine
+    working_dir: /app
+    volumes:
+      - ./web:/app
+      - ./shared:/shared
+    command: sh -c "npm install && npm run dev"
+    ports:
+      - "3000:3000"
+    environment:
+      NEXT_PUBLIC_SUPABASE_URL: http://localhost:54321
+      NEXT_PUBLIC_SUPABASE_ANON_KEY: ${SUPABASE_ANON_KEY}
+    depends_on:
+      - supabase

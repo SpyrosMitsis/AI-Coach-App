@@ -1,0 +1,142 @@
+package com.workoutmaker.app
+
+import android.os.Bundle
+import androidx.activity.ComponentActivity
+import androidx.activity.compose.setContent
+import androidx.compose.foundation.layout.padding
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.Chat
+import androidx.compose.material.icons.filled.CalendarMonth
+import androidx.compose.material.icons.filled.FitnessCenter
+import androidx.compose.material.icons.filled.Home
+import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material3.Icon
+import androidx.compose.material3.NavigationBar
+import androidx.compose.material3.NavigationBarItem
+import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Surface
+import androidx.compose.material3.Text
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.getValue
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.navigation.NavDestination.Companion.hierarchy
+import androidx.navigation.NavGraph.Companion.findStartDestination
+import androidx.navigation.compose.NavHost
+import androidx.navigation.compose.composable
+import androidx.navigation.compose.currentBackStackEntryAsState
+import androidx.navigation.compose.rememberNavController
+import com.workoutmaker.app.ui.AuthGate
+import com.workoutmaker.app.ui.screens.CalendarScreen
+import com.workoutmaker.app.ui.screens.CoachScreen
+import com.workoutmaker.app.ui.screens.HomeScreen
+import com.workoutmaker.app.ui.screens.SettingsScreen
+import com.workoutmaker.app.ui.screens.StrengthScreen
+import com.workoutmaker.app.ui.screens.WorkoutHistoryScreen
+import com.workoutmaker.app.ui.theme.WorkoutMakerTheme
+import androidx.compose.foundation.isSystemInDarkTheme
+import androidx.hilt.navigation.compose.hiltViewModel
+import androidx.lifecycle.ViewModel
+import androidx.lifecycle.viewModelScope
+import com.workoutmaker.app.data.AppPreferences
+import com.workoutmaker.app.data.ThemeMode
+import dagger.hilt.android.AndroidEntryPoint
+import dagger.hilt.android.lifecycle.HiltViewModel
+import kotlinx.coroutines.flow.SharingStarted
+import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.stateIn
+import javax.inject.Inject
+
+private data class Tab(val route: String, val label: String, val icon: ImageVector)
+
+private val TABS = listOf(
+    Tab("home", "Home", Icons.Filled.Home),
+    Tab("coach", "Coach", Icons.AutoMirrored.Filled.Chat),
+    Tab("calendar", "Calendar", Icons.Filled.CalendarMonth),
+    Tab("strength", "Strength", Icons.Filled.FitnessCenter),
+    Tab("settings", "Settings", Icons.Filled.Settings),
+)
+
+// Exposes the user's theme choice so the whole UI can react to it live.
+@HiltViewModel
+class ThemeViewModel @Inject constructor(prefs: AppPreferences) : ViewModel() {
+    val themeMode = prefs.settings
+        .map { it.themeMode }
+        .stateIn(viewModelScope, SharingStarted.Eagerly, ThemeMode.SYSTEM)
+}
+
+@AndroidEntryPoint
+class MainActivity : ComponentActivity() {
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+        setContent {
+            val themeVm: ThemeViewModel = hiltViewModel()
+            val mode by themeVm.themeMode.collectAsState()
+            val dark = when (mode) {
+                ThemeMode.DARK -> true
+                ThemeMode.LIGHT -> false
+                ThemeMode.SYSTEM -> isSystemInDarkTheme()
+            }
+            WorkoutMakerTheme(darkTheme = dark) {
+                Surface {
+                    AuthGate { MainScaffold() }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun MainScaffold() {
+    val nav = rememberNavController()
+
+    // If a workout was in progress when the app was last closed/killed, START on
+    // the Strength tab (not Home) so there's no Home→workout flash on launch.
+    val context = androidx.compose.ui.platform.LocalContext.current
+    val startDestination = androidx.compose.runtime.remember {
+        if (java.io.File(context.filesDir, "active_session.json").exists()) "strength" else "home"
+    }
+
+    Scaffold(
+        bottomBar = {
+            NavigationBar {
+                val current by nav.currentBackStackEntryAsState()
+                val dest = current?.destination
+                TABS.forEach { tab ->
+                    NavigationBarItem(
+                        selected = dest?.hierarchy?.any { it.route == tab.route } == true,
+                        onClick = {
+                            nav.navigate(tab.route) {
+                                popUpTo(nav.graph.findStartDestination().id) { saveState = true }
+                                launchSingleTop = true
+                                restoreState = true
+                            }
+                        },
+                        icon = { Icon(tab.icon, contentDescription = tab.label) },
+                        label = { Text(tab.label) },
+                    )
+                }
+            }
+        },
+    ) { padding ->
+        NavHost(nav, startDestination = startDestination, modifier = Modifier.padding(padding)) {
+            composable("home") { HomeScreen() }
+            composable("coach") { CoachScreen() }
+            composable("calendar") {
+                CalendarScreen(onOpenStrength = {
+                    nav.navigate("strength") {
+                        popUpTo(nav.graph.findStartDestination().id) { saveState = true }
+                        launchSingleTop = true
+                        restoreState = true
+                    }
+                })
+            }
+            composable("strength") {
+                StrengthScreen(onOpenHistory = { nav.navigate("history") })
+            }
+            composable("history") { WorkoutHistoryScreen(onBack = { nav.popBackStack() }) }
+            composable("settings") { SettingsScreen() }
+        }
+    }
+}

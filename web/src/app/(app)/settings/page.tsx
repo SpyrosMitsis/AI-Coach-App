@@ -1,0 +1,218 @@
+"use client";
+
+import { useEffect, useState } from "react";
+import Link from "next/link";
+import { useTheme } from "next-themes";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { createClient } from "@/lib/supabase-browser";
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { cn } from "@/lib/utils";
+import type { OnboardingData } from "@shared/types";
+import { ChevronRight, Cpu, Activity, Moon, Sun } from "lucide-react";
+
+const GOALS = ["5K pace", "10K pace", "Half Marathon", "Marathon pace", "General fitness", "Muscle gain", "Body recomposition", "Hybrid athlete"];
+const EQUIPMENT = ["Bodyweight", "Dumbbells", "Full gym", "Barbell + rack"];
+const DAYS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
+const DURATIONS = [30, 45, 60, 90];
+const LEVELS = ["Beginner", "Intermediate", "Advanced"] as const;
+
+export default function SettingsPage() {
+  const qc = useQueryClient();
+  const supabase = createClient();
+  const { theme, setTheme } = useTheme();
+
+  const profile = useQuery({
+    queryKey: ["profile-onboarding"],
+    queryFn: async () => {
+      const { data, error } = await supabase
+        .from("user_profiles")
+        .select("onboarding, intervals_athlete_id")
+        .single();
+      if (error) throw error;
+      return data as { onboarding: OnboardingData; intervals_athlete_id: string | null };
+    },
+  });
+
+  // Local editable copy, seeded once the profile loads.
+  const [draft, setDraft] = useState<OnboardingData | null>(null);
+  useEffect(() => {
+    if (profile.data && draft === null) setDraft(profile.data.onboarding ?? {});
+  }, [profile.data, draft]);
+
+  const save = useMutation({
+    mutationFn: async (next: OnboardingData) => {
+      const { error } = await supabase
+        .from("user_profiles")
+        .update({ onboarding: next })
+        .neq("id", "");
+      if (error) throw error;
+    },
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["profile-onboarding"] }),
+  });
+
+  const o = draft;
+  const patch = (p: Partial<OnboardingData>) => setDraft((d) => ({ ...(d ?? {}), ...p }));
+  const toggleDay = (d: string) =>
+    patch({ days: (o?.days ?? []).includes(d) ? (o!.days ?? []).filter((x) => x !== d) : [...(o?.days ?? []), d] });
+
+  return (
+    <div className="space-y-5 pb-4">
+      <header className="space-y-1">
+        <h1 className="text-3xl font-bold tracking-tight">Settings</h1>
+        <p className="text-sm text-muted-foreground">Training profile, appearance &amp; AI</p>
+      </header>
+
+      {/* Training profile -------------------------------------------------- */}
+      <Card>
+        <CardHeader className="pb-2">
+          <CardTitle className="text-base">Training profile</CardTitle>
+          <CardDescription>Tunes every AI workout to you.</CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          {!o ? (
+            <p className="text-sm text-muted-foreground">Loading…</p>
+          ) : (
+            <>
+              <Field label="Goal">
+                <select
+                  className="h-9 w-full rounded-md border border-input bg-transparent px-3 text-sm"
+                  value={o.goal ?? ""}
+                  onChange={(e) => patch({ goal: e.target.value })}
+                >
+                  <option value="">Select…</option>
+                  {GOALS.map((g) => <option key={g} value={g}>{g}</option>)}
+                </select>
+              </Field>
+
+              <Field label="Experience">
+                <ChipRow>
+                  {LEVELS.map((x) => (
+                    <Chip key={x} active={o.experience === x} onClick={() => patch({ experience: x })}>{x}</Chip>
+                  ))}
+                </ChipRow>
+              </Field>
+
+              <Field label="Available days">
+                <ChipRow>
+                  {DAYS.map((d) => (
+                    <Chip key={d} active={(o.days ?? []).includes(d)} onClick={() => toggleDay(d)}>{d}</Chip>
+                  ))}
+                </ChipRow>
+              </Field>
+
+              <Field label="Session length">
+                <ChipRow>
+                  {DURATIONS.map((d) => (
+                    <Chip key={d} active={o.session_duration === d} onClick={() => patch({ session_duration: d })}>{d}m</Chip>
+                  ))}
+                </ChipRow>
+              </Field>
+
+              <Field label="Equipment">
+                <select
+                  className="h-9 w-full rounded-md border border-input bg-transparent px-3 text-sm"
+                  value={o.equipment ?? ""}
+                  onChange={(e) => patch({ equipment: e.target.value })}
+                >
+                  <option value="">Select…</option>
+                  {EQUIPMENT.map((e) => <option key={e} value={e}>{e}</option>)}
+                </select>
+              </Field>
+
+              <Input
+                placeholder="Target pace (e.g. 4:45/km)"
+                value={o.target_pace ?? ""}
+                onChange={(e) => patch({ target_pace: e.target.value })}
+              />
+              <Input
+                placeholder="Injury history (optional)"
+                value={o.injury_history ?? ""}
+                onChange={(e) => patch({ injury_history: e.target.value })}
+              />
+
+              <Button className="w-full" disabled={save.isPending} onClick={() => save.mutate(o)}>
+                {save.isPending ? "Saving…" : "Save profile"}
+              </Button>
+              {save.isSuccess && <p className="text-center text-sm text-primary">✓ Saved</p>}
+              {save.isError && <p className="text-center text-sm text-red-400">{(save.error as Error).message}</p>}
+            </>
+          )}
+        </CardContent>
+      </Card>
+
+      {/* Appearance -------------------------------------------------------- */}
+      <Card>
+        <CardHeader className="pb-2"><CardTitle className="text-base">Appearance</CardTitle></CardHeader>
+        <CardContent>
+          <ChipRow>
+            <Chip active={theme === "dark"} onClick={() => setTheme("dark")}>
+              <Moon className="mr-1.5 inline h-3.5 w-3.5" />Dark
+            </Chip>
+            <Chip active={theme === "light"} onClick={() => setTheme("light")}>
+              <Sun className="mr-1.5 inline h-3.5 w-3.5" />Light
+            </Chip>
+          </ChipRow>
+        </CardContent>
+      </Card>
+
+      {/* Links ------------------------------------------------------------- */}
+      <Card>
+        <CardContent className="p-0">
+          <LinkRow href="/settings/llm" icon={<Cpu className="h-5 w-5" />} title="AI provider" subtitle="Choose & test your LLM keys" />
+          <div className="mx-4 border-t border-border/60" />
+          <LinkRow
+            href="/onboarding"
+            icon={<Activity className="h-5 w-5" />}
+            title="Intervals.icu connection"
+            subtitle={profile.data?.intervals_athlete_id ? `Connected · ${profile.data.intervals_athlete_id}` : "Not connected"}
+          />
+        </CardContent>
+      </Card>
+    </div>
+  );
+}
+
+function Field({ label, children }: { label: string; children: React.ReactNode }) {
+  return (
+    <div className="space-y-1.5">
+      <p className="label-caps">{label}</p>
+      {children}
+    </div>
+  );
+}
+
+function ChipRow({ children }: { children: React.ReactNode }) {
+  return <div className="flex flex-wrap gap-1.5">{children}</div>;
+}
+
+function Chip({ active, onClick, children }: { active: boolean; onClick: () => void; children: React.ReactNode }) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className={cn(
+        "rounded-full border px-3.5 py-1.5 text-sm transition-colors",
+        active
+          ? "border-transparent bg-accent/60 font-medium text-primary"
+          : "border-sand/50 text-muted-foreground hover:text-foreground",
+      )}
+    >
+      {children}
+    </button>
+  );
+}
+
+function LinkRow({ href, icon, title, subtitle }: { href: string; icon: React.ReactNode; title: string; subtitle: string }) {
+  return (
+    <Link href={href} className="flex items-center gap-3.5 px-4 py-3.5 transition-colors hover:bg-accent/20">
+      <span className="text-muted-foreground">{icon}</span>
+      <span className="flex-1">
+        <span className="block text-sm font-medium">{title}</span>
+        <span className="block text-xs text-muted-foreground">{subtitle}</span>
+      </span>
+      <ChevronRight className="h-4 w-4 text-muted-foreground" />
+    </Link>
+  );
+}

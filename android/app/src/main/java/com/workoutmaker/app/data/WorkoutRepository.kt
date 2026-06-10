@@ -1,0 +1,512 @@
+package com.workoutmaker.app.data
+
+import com.workoutmaker.app.BuildConfig
+import io.github.jan.supabase.SupabaseClient
+import io.github.jan.supabase.gotrue.auth
+import io.github.jan.supabase.gotrue.providers.builtin.Email
+import io.github.jan.supabase.functions.functions
+import io.github.jan.supabase.postgrest.postgrest
+import io.github.jan.supabase.postgrest.query.Order
+import io.ktor.client.HttpClient
+import io.ktor.client.engine.okhttp.OkHttp
+import io.ktor.client.call.body
+import io.ktor.client.request.header
+import io.ktor.client.request.preparePost
+import io.ktor.client.request.setBody
+import io.ktor.client.statement.bodyAsChannel
+import io.ktor.http.ContentType
+import io.ktor.http.contentType
+import io.ktor.utils.io.ByteReadChannel
+import io.ktor.utils.io.readUTF8Line
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonElement
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.contentOrNull
+import kotlinx.serialization.json.decodeFromJsonElement
+import kotlinx.serialization.json.encodeToJsonElement
+import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
+import kotlinx.serialization.json.put
+import javax.inject.Inject
+import javax.inject.Singleton
+
+@Singleton
+class WorkoutRepository @Inject constructor(
+    private val supabase: SupabaseClient,
+) {
+    private val json = Json { ignoreUnknownKeys = true; encodeDefaults = true }
+
+    // Separate raw ktor client for SSE streaming (functions SDK buffers the body).
+    private val streamingHttp = HttpClient(OkHttp)
+
+    val auth get() = supabase.auth
+
+    suspend fun signIn(email: String, password: String) =
+        supabase.auth.signInWith(Email) { this.email = email; this.password = password }
+
+    suspend fun signUp(email: String, password: String) =
+        supabase.auth.signUpWith(Email) { this.email = email; this.password = password }
+
+    suspend fun signOut() = supabase.auth.signOut()
+
+    // --- Edge functions ------------------------------------------------------
+    suspend fun dailySummary(): DailySummary =
+        json.decodeFromString(supabase.functions.invoke("daily-summary").body())
+
+    suspend fun generateWorkout(req: GenerateRequest): String =
+        supabase.functions.invoke("generate-workout") { setBody(json.encodeToString(GenerateRequest.serializer(), req)) }.body()
+
+    suspend fun syncIntervals(): String =
+        supabase.functions.invoke("sync-intervals").body()
+
+    suspend fun intervalsStats(): IntervalsStats =
+        json.decodeFromString(supabase.functions.invoke("intervals-stats").body())
+
+    suspend fun connectIntervals(athleteId: String, apiKey: String): String =
+        supabase.functions.invoke("connect-intervals") {
+            setBody("""{"athleteId":"$athleteId","apiKey":"$apiKey"}""")
+        }.body()
+
+    suspend fun testLlmKey(req: TestKeyRequest): TestKeyResponse =
+        json.decodeFromString(
+            supabase.functions.invoke("test-llm-key") {
+                setBody(json.encodeToString(TestKeyRequest.serializer(), req))
+            }.body(),
+        )
+
+    suspend fun pushWorkout(workoutId: String): String =
+        supabase.functions.invoke("push-workout") { setBody("""{"workout_id":"$workoutId"}""") }.body()
+
+    // Delete a planned workout (and its Intervals.icu/watch event) server-side.
+    suspend fun deletePlannedWorkout(workoutId: String): String =
+        supabase.functions.invoke("delete-workout") { setBody("""{"workout_id":"$workoutId"}""") }.body()
+
+    // Delete a logged/manual completed activity (and its Intervals event if it was one).
+    suspend fun deleteCompletedActivity(intervalsId: String) {
+        supabase.postgrest.from("completed_activities").delete { filter { eq("intervals_id", intervalsId) } }
+    }
+
+    suspend fun pushStrengthWorkout(req: PushStrengthRequest): PushResult =
+        json.decodeFromString(
+            supabase.functions.invoke("push-strength") {
+                setBody(json.encodeToString(PushStrengthRequest.serializer(), req))
+            }.body(),
+        )
+
+    // --- Direct table access (RLS-scoped to the signed-in user) --------------
+    suspend fun plannedWorkouts(fromDate: String): List<PlannedWorkout> =
+        supabase.postgrest.from("planned_workouts").select {
+            filter { gte("date", fromDate) }
+            order("date", Order.DESCENDING)
+        }.decodeList()
+
+    suspend fun upsertWellness(checkin: WellnessCheckin) {
+        supabase.postgrest.from("wellness_checkins").upsert(checkin, onConflict = "user_id,date")
+    }
+
+    // Persist a Health Connect snapshot onto today's wellness row.
+    suspend fun submitHealthSnapshot(snap: com.workoutmaker.app.health.HealthSnapshot) {
+        submitHealthSnapshots(listOf(snap))
+    }
+
+    // Upsert a multi-day Health Connect series (7-day trend) in one call.
+    suspend fun submitHealthSnapshots(snaps: List<com.workoutmaker.app.health.HealthSnapshot>) {
+        val rows = snaps.filter { it.hasAny }.map { snap ->
+            WellnessHealthUpdate(
+                date = snap.date,
+                hrv_rmssd = snap.hrvRmssd,
+                resting_hr = snap.restingHr,
+                zepp_sleep_minutes = snap.sleepMinutes,
+                steps = snap.steps,
+                sleep_deep_min = snap.sleepDeepMin,
+                sleep_rem_min = snap.sleepRemMin,
+                vo2max = snap.vo2max,
+            )
+        }
+        if (rows.isNotEmpty()) {
+            supabase.postgrest.from("wellness_checkins").upsert(rows, onConflict = "user_id,date")
+        }
+    }
+
+    // --- Strength logs -------------------------------------------------------
+    suspend fun logStrengthSet(log: StrengthLogInsert) {
+        supabase.postgrest.from("strength_logs").insert(log)
+    }
+
+    suspend fun recentStrengthLogs(limit: Long = 20): List<StrengthLogRow> =
+        supabase.postgrest.from("strength_logs").select {
+            order("date", Order.DESCENDING)
+            limit(limit)
+        }.decodeList()
+
+    // Fire-and-forget refresh of the rolling athlete "training memory".
+    suspend fun refreshMemory() {
+        runCatching { supabase.functions.invoke("refresh-memory") }
+    }
+
+    suspend fun generationLogs(limit: Long = 20): List<GenerationLogRow> =
+        supabase.postgrest.from("generation_logs").select {
+            order("created_at", Order.DESCENDING)
+            limit(limit)
+        }.decodeList()
+
+    suspend fun setActiveProvider(provider: LlmProvider) {
+        supabase.postgrest.from("user_profiles").update(mapOf("active_llm_provider" to provider.key)) {
+            filter { eq("id", uid()) }
+        }
+    }
+
+    // --- Coach chat ----------------------------------------------------------
+    suspend fun coachChat(req: CoachChatRequest): CoachReply =
+        json.decodeFromString(
+            supabase.functions.invoke("coach-chat") {
+                setBody(json.encodeToString(CoachChatRequest.serializer(), req))
+            }.body(),
+        )
+
+    // Past coach conversations for the history list. Ordered by recency here;
+    // the UI sorts pinned-first client-side so this query keeps working even
+    // before the `pinned` column migration is pushed.
+    suspend fun coachConversations(): List<CoachConversation> =
+        supabase.postgrest.from("coach_conversations").select {
+            order("updated_at", Order.DESCENDING)
+            limit(100)
+        }.decodeList()
+
+    suspend fun deleteCoachConversation(id: String) {
+        supabase.postgrest.from("coach_conversations").delete { filter { eq("id", id) } }
+    }
+
+    suspend fun setCoachConversationPinned(id: String, pinned: Boolean) {
+        supabase.postgrest.from("coach_conversations")
+            .update(mapOf("pinned" to JsonPrimitive(pinned))) { filter { eq("id", id) } }
+    }
+
+    // Raw JSON string back (used when finalizing a template).
+    suspend fun coachFinalizeRaw(req: CoachChatRequest): String =
+        supabase.functions.invoke("coach-chat") {
+            setBody(json.encodeToString(CoachChatRequest.serializer(), req))
+        }.body()
+
+    // --- Training profile + Intervals ---------------------------------------
+    suspend fun loadProfile(): TrainingProfile? =
+        runCatching {
+            val rows: List<Map<String, JsonElement>> =
+                supabase.postgrest.from("user_profiles").select {
+                    filter { eq("id", uid()) }
+                }.decodeList()
+            val onboarding = rows.firstOrNull()?.get("onboarding") as? JsonObject ?: return@runCatching null
+            json.decodeFromJsonElement(TrainingProfile.serializer(), onboarding)
+        }.getOrNull()
+
+    suspend fun isOnboardingComplete(): Boolean = runCatching {
+        val rows: List<Map<String, JsonElement>> =
+            supabase.postgrest.from("user_profiles").select { filter { eq("id", uid()) } }.decodeList()
+        (rows.firstOrNull()?.get("onboarding_complete") as? JsonPrimitive)?.content?.toBoolean() ?: false
+    }.getOrDefault(false)
+
+    suspend fun saveProfile(profile: TrainingProfile) {
+        val onboarding = json.encodeToJsonElement(TrainingProfile.serializer(), profile)
+        supabase.postgrest.from("user_profiles").update(
+            mapOf(
+                "onboarding" to onboarding,
+                "onboarding_complete" to kotlinx.serialization.json.JsonPrimitive(true),
+            ),
+        ) { filter { eq("id", uid()) } }
+    }
+
+    // --- Coach knowledge (durable injuries/equipment/preferences) -----------
+    suspend fun loadKnowledge(): String =
+        runCatching {
+            val rows: List<Map<String, JsonElement>> =
+                supabase.postgrest.from("user_profiles").select {
+                    filter { eq("id", uid()) }
+                }.decodeList()
+            (rows.firstOrNull()?.get("coach_knowledge") as? JsonPrimitive)?.content ?: ""
+        }.getOrDefault("")
+
+    suspend fun saveKnowledge(text: String) {
+        supabase.postgrest.from("user_profiles").update(
+            mapOf("coach_knowledge" to kotlinx.serialization.json.JsonPrimitive(text)),
+        ) { filter { eq("id", uid()) } }
+    }
+
+    suspend fun connectIntervalsVerified(athleteId: String, apiKey: String): ConnectIntervalsResult =
+        json.decodeFromString(connectIntervals(athleteId, apiKey))
+
+    suspend fun templates(): List<WorkoutTemplate> =
+        supabase.postgrest.from("workout_templates").select {
+            order("created_at", Order.DESCENDING)
+        }.decodeList()
+
+    suspend fun planWeek(req: PlanWeekRequest): PlanWeekResult =
+        json.decodeFromString(
+            supabase.functions.invoke("plan-week") {
+                setBody(json.encodeToString(PlanWeekRequest.serializer(), req))
+            }.body(),
+        )
+
+    // P2: generate a full periodized block (multi-week) toward the goal race.
+    suspend fun planBlock(req: PlanBlockRequest): PlanBlockResult =
+        json.decodeFromString(
+            supabase.functions.invoke("plan-block") {
+                setBody(json.encodeToString(PlanBlockRequest.serializer(), req))
+            }.body(),
+        )
+
+    // P7: move a planned workout to another date (RLS-scoped, client-side).
+    // Note: this updates the in-app plan; the Intervals.icu event isn't moved.
+    suspend fun reschedulePlanned(plannedId: String, newDate: String) {
+        supabase.postgrest.from("planned_workouts")
+            .update(mapOf("date" to JsonPrimitive(newDate))) { filter { eq("id", plannedId) } }
+    }
+
+    // Lock/unlock a planned session so the weekly re-planner leaves it fixed.
+    suspend fun setLocked(plannedId: String, locked: Boolean) {
+        supabase.postgrest.from("planned_workouts")
+            .update(mapOf("locked" to JsonPrimitive(locked))) { filter { eq("id", plannedId) } }
+    }
+
+    // Ask the AI for a session on a specific date from a free-text request
+    // (e.g. "social 10k run with friends, keep it easy"), locked by default so
+    // the weekly re-planner plans around it instead of replacing it.
+    suspend fun requestSession(date: String, request: String, type: String, lock: Boolean = true): GenerateResult =
+        json.decodeFromString(
+            supabase.functions.invoke("generate-workout") {
+                setBody(json.encodeToString(GenerateRequest.serializer(),
+                    GenerateRequest(date = date, type = type, request = request, lock = lock, push = true)))
+            }.body(),
+        )
+
+    // E5: persist a manually-built structured workout into the plan (client-side),
+    // returning its id so it can optionally be pushed to Intervals.icu.
+    suspend fun savePlannedWorkout(date: String, workout: Workout): String {
+        val id = java.util.UUID.randomUUID().toString()
+        val row = kotlinx.serialization.json.buildJsonObject {
+            put("id", JsonPrimitive(id))
+            put("user_id", JsonPrimitive(uid()))
+            put("date", JsonPrimitive(date))
+            put("type", JsonPrimitive(workout.type))
+            put("workout_json", json.encodeToJsonElement(Workout.serializer(), workout))
+        }
+        supabase.postgrest.from("planned_workouts").insert(row)
+        return id
+    }
+
+    // --- P1: goal races -----------------------------------------------------
+    suspend fun races(): List<Race> =
+        supabase.postgrest.from("races").select { order("date", Order.ASCENDING) }.decodeList()
+
+    suspend fun addRace(race: Race) {
+        val row = kotlinx.serialization.json.buildJsonObject {
+            put("name", JsonPrimitive(race.name))
+            put("date", JsonPrimitive(race.date))
+            put("priority", JsonPrimitive(race.priority))
+            race.distance?.let { put("distance", JsonPrimitive(it)) }
+            race.notes?.let { put("notes", JsonPrimitive(it)) }
+        }
+        supabase.postgrest.from("races").insert(row)
+    }
+
+    suspend fun deleteRace(id: String) {
+        supabase.postgrest.from("races").delete { filter { eq("id", id) } }
+    }
+
+    // Make a race the periodization anchor: drives weeks-to-goal / phase / taper.
+    suspend fun setGoalRace(name: String, date: String) {
+        val p = loadProfile() ?: TrainingProfile()
+        saveProfile(p.copy(goal = name, goal_date = date))
+    }
+
+    // --- E1 + E4: thresholds & tests ----------------------------------------
+    suspend fun thresholdTests(): List<ThresholdTest> =
+        supabase.postgrest.from("threshold_tests").select { order("date", Order.DESCENDING) }.decodeList()
+
+    suspend fun addThresholdTest(t: ThresholdTest) {
+        val row = kotlinx.serialization.json.buildJsonObject {
+            put("date", JsonPrimitive(t.date))
+            put("kind", JsonPrimitive(t.kind))
+            put("value", JsonPrimitive(t.value))
+            t.notes?.let { put("notes", JsonPrimitive(it)) }
+        }
+        supabase.postgrest.from("threshold_tests").insert(row)
+        applyThreshold(t.kind, t.value)
+    }
+
+    // Update the athlete's current threshold (feeds zone calculation).
+    suspend fun applyThreshold(kind: String, value: Double) {
+        val p = loadProfile() ?: TrainingProfile()
+        val updated = when (kind) {
+            "lthr" -> p.copy(lthr = value.toInt())
+            "ftp" -> p.copy(ftp = value.toInt())
+            "threshold_pace" -> p.copy(threshold_pace_per_km = Zones.formatPace(value.toInt()))
+            else -> p
+        }
+        saveProfile(updated)
+    }
+
+    // E1: directly edit thresholds from the zones screen.
+    suspend fun saveThresholds(lthr: Int?, ftp: Int?, pace: String?) {
+        val p = loadProfile() ?: TrainingProfile()
+        saveProfile(p.copy(lthr = lthr, ftp = ftp, threshold_pace_per_km = pace))
+    }
+
+    suspend fun weekPlan(start: String): WeekPlanRow? =
+        runCatching {
+            supabase.postgrest.from("week_plans").select {
+                filter { eq("start_date", start) }
+            }.decodeList<WeekPlanRow>().firstOrNull()
+        }.getOrNull()
+
+    suspend fun setAutoPlan(enabled: Boolean) {
+        supabase.postgrest.from("user_profiles").update(mapOf("auto_plan" to enabled)) {
+            filter { eq("id", uid()) }
+        }
+    }
+
+    suspend fun autoPlanEnabled(): Boolean = runCatching {
+        val rows: List<Map<String, JsonElement>> =
+            supabase.postgrest.from("user_profiles").select { filter { eq("id", uid()) } }.decodeList()
+        (rows.firstOrNull()?.get("auto_plan") as? JsonPrimitive)?.content?.toBoolean() ?: false
+    }.getOrDefault(false)
+
+    suspend fun scheduleTemplate(req: ScheduleRequest): ScheduleResult =
+        json.decodeFromString(
+            supabase.functions.invoke("schedule-template") {
+                setBody(json.encodeToString(ScheduleRequest.serializer(), req))
+            }.body(),
+        )
+
+    suspend fun submitFeedback(fb: WorkoutFeedback) {
+        supabase.postgrest.from("workout_feedback").insert(fb)
+    }
+
+    // Mark a planned workout done/skipped + log the feedback in one go.
+    suspend fun markPlannedComplete(plannedId: String, date: String, completed: Boolean, difficulty: String?, rpe: Int?) {
+        supabase.postgrest.from("planned_workouts")
+            .update(mapOf("completed" to JsonPrimitive(completed))) { filter { eq("id", plannedId) } }
+        supabase.postgrest.from("workout_feedback").insert(
+            WorkoutFeedback(planned_workout_id = plannedId, date = date, completed = completed, actual_rpe = rpe, difficulty = difficulty),
+        )
+    }
+
+    // Past activities pulled from Intervals.icu (or logged manually).
+    suspend fun completedActivities(fromDate: String): List<CompletedActivity> =
+        supabase.postgrest.from("completed_activities").select {
+            filter { gte("date", fromDate) }
+            order("date", Order.DESCENDING)
+        }.decodeList()
+
+    // Does a completed activity's type satisfy a planned session's type?
+    private fun typeMatches(plannedType: String, actualType: String?): Boolean {
+        val a = (actualType ?: "").lowercase()
+        return when (plannedType.lowercase()) {
+            "run" -> a.contains("run") || a.contains("walk")
+            "strength" -> a.contains("weight") || a.contains("strength") || a.contains("workout") || a.contains("gym")
+            "ride", "bike" -> a.contains("ride") || a.contains("bike") || a.contains("cycl")
+            "rest" -> false
+            else -> a.isNotEmpty()
+        }
+    }
+
+    // Adaptive re-planning: reconcile this week's plan against what was actually
+    // done (per Intervals.icu), then re-plan from today factoring real load.
+    // plan-week already feeds actual load + adherence into the LLM prompt, so
+    // re-planning here intelligently accounts for over/under-training and swaps.
+    suspend fun adaptWeek(weekStart: String, today: String): AdaptResult {
+        val planned = runCatching { plannedWorkouts(weekStart) }.getOrDefault(emptyList())
+            .filter { it.date in weekStart..today }
+        val actsByDate = runCatching { completedActivities(weekStart) }.getOrDefault(emptyList())
+            .groupBy { it.date }
+        var reconciled = 0
+        var missed = 0
+        for (p in planned) {
+            if (p.completed || p.locked || p.type == "rest") continue
+            if (p.date >= today) continue   // only reconcile the past
+            val matched = actsByDate[p.date].orEmpty().any { typeMatches(p.type, it.type) }
+            if (matched) {
+                runCatching { markPlannedComplete(p.id, p.date, true, "from_actual", null) }
+                reconciled++
+            } else {
+                missed++
+            }
+        }
+        // Re-plan today → +6: deletes non-completed/non-locked in range and
+        // regenerates around what actually happened and your current fitness.
+        val r = runCatching { planWeek(PlanWeekRequest(start_date = today)) }.getOrNull()
+        if (r == null || r.error != null) {
+            return AdaptResult(reconciled, missed, false,
+                "Reconciled $reconciled · $missed missed", r?.error ?: "re-plan failed")
+        }
+        val parts = buildList {
+            if (reconciled > 0) add("✓ matched $reconciled to your actual sessions")
+            if (missed > 0) add("$missed planned session(s) you skipped")
+            add("re-planned the rest of your week around what you did")
+        }
+        return AdaptResult(reconciled, missed, true, parts.joinToString(" · "))
+    }
+
+    // Log a session done off-watch so it feeds load/ACWR/adherence.
+    suspend fun logManualActivity(date: String, type: String, durationMin: Int, distanceKm: Double?, rpe: Int?) {
+        val tss = durationMin * (rpe ?: 5) / 6.0
+        supabase.postgrest.from("completed_activities").insert(
+            ManualActivityInsert(
+                intervals_id = "manual:" + java.util.UUID.randomUUID(),
+                type = type,
+                date = date,
+                duration_seconds = durationMin * 60,
+                distance_m = distanceKm?.let { it * 1000 },
+                tss = tss,
+            ),
+        )
+    }
+
+    // "Adjust this workout" — revise an existing workout via the generator.
+    suspend fun adjustWorkout(base: Workout, instruction: String, date: String?): GenerateResult =
+        json.decodeFromString(
+            supabase.functions.invoke("generate-workout") {
+                setBody(
+                    json.encodeToString(
+                        GenerateRequest.serializer(),
+                        GenerateRequest(date = date, adjustment = instruction, base_workout = base, push = true),
+                    ),
+                )
+            }.body(),
+        )
+
+    // Streaming coach chat (SSE). Emits each token; returns conversation id at end.
+    suspend fun coachStream(
+        messages: List<ChatMessage>,
+        conversationId: String?,
+        onToken: (String) -> Unit,
+        onDone: (String?) -> Unit,
+    ) {
+        val token = supabase.auth.currentSessionOrNull()?.accessToken
+        val url = BuildConfig.SUPABASE_URL.trimEnd('/') + "/functions/v1/coach-chat"
+        val payload = json.encodeToString(
+            CoachChatRequest.serializer(),
+            CoachChatRequest(messages = messages, mode = "chat", conversationId = conversationId, purpose = "setup", stream = true),
+        )
+
+        streamingHttp.preparePost(url) {
+            header("Authorization", "Bearer $token")
+            header("apikey", BuildConfig.SUPABASE_ANON_KEY)
+            contentType(ContentType.Application.Json)
+            setBody(payload)
+        }.execute { resp ->
+            val channel: ByteReadChannel = resp.bodyAsChannel()
+            while (!channel.isClosedForRead) {
+                val line = channel.readUTF8Line() ?: break
+                if (!line.startsWith("data:")) continue
+                val data = line.removePrefix("data:").trim()
+                if (data.isEmpty()) continue
+                val obj = runCatching { json.parseToJsonElement(data).jsonObject }.getOrNull() ?: continue
+                obj["token"]?.let { onToken(it.jsonPrimitive.content) }
+                if (obj["done"] != null) onDone(obj["conversation_id"]?.jsonPrimitive?.contentOrNull)
+            }
+        }
+    }
+
+    private fun uid(): String = supabase.auth.currentUserOrNull()?.id ?: ""
+}
