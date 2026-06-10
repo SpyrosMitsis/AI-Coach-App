@@ -103,6 +103,8 @@ internal val DAYS = listOf("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun")
 
 internal val DURATIONS = listOf(30, 45, 60, 90)
 
+internal val DURATIONS_MAX = listOf(45, 60, 75, 90, 120)
+
 internal val LEVELS = listOf("Beginner", "Intermediate", "Advanced")
 
 internal val BAR_WEIGHTS = listOf(20.0, 15.0, 10.0, 7.0)
@@ -142,6 +144,29 @@ class SettingsViewModel @Inject constructor(
     }
     val results = androidx.compose.runtime.mutableStateMapOf<String, TestKeyResponse>()
     var active by androidx.compose.runtime.mutableStateOf(LlmProvider.GROQ)
+
+    // Dynamic model selector: per-provider override + live model lists.
+    val modelOverrides = MutableStateFlow<Map<String, String>>(emptyMap())
+    val modelLists = androidx.compose.runtime.mutableStateMapOf<String, com.workoutmaker.app.data.ModelListResponse>()
+    val modelBusy = MutableStateFlow<String?>(null)
+
+    fun loadModels(p: LlmProvider) = viewModelScope.launch {
+        modelBusy.value = p.key
+        runCatching { repo.listModels(p) }
+            .onSuccess { modelLists[p.key] = it }
+            .onFailure {
+                modelLists[p.key] = com.workoutmaker.app.data.ModelListResponse(
+                    provider = p.key, error = it.message ?: "couldn't fetch models")
+            }
+        modelBusy.value = null
+    }
+
+    fun setModel(p: LlmProvider, model: String?) = viewModelScope.launch {
+        runCatching {
+            repo.setModelOverride(p, model)
+            modelOverrides.value = repo.modelOverrides()
+        }.onFailure { saveStatus.value = "Couldn't set model: ${it.message}" }
+    }
 
     val profile = MutableStateFlow(TrainingProfile())
     val intervalsStatus = MutableStateFlow<String?>(null)
@@ -203,6 +228,7 @@ class SettingsViewModel @Inject constructor(
     fun load() = viewModelScope.launch {
         repo.loadProfile()?.let { profile.value = it }
         autoPlan.value = repo.autoPlanEnabled()
+        runCatching { repo.modelOverrides() }.onSuccess { modelOverrides.value = it }
         runCatching { repo.loadKnowledge() }.onSuccess { knowledge.value = it }
         runCatching { repo.generationLogs() }.onSuccess { logs.value = it }
         runCatching { repo.races() }.onSuccess { races.value = it }

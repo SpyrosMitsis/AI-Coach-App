@@ -177,7 +177,7 @@ Deno.serve(async (req) => {
     const systemPrompt = `${COACH_SYSTEM_PROMPT}\n\n${context}`;
 
     // --- resolve provider keys (fallback chain) ----------------------------
-    const { chain, resolveKey } = llmAccess(admin, userId, profile);
+    const { chain, resolveKey, resolveModel } = llmAccess(admin, userId, profile);
 
     // --- build the turn list -----------------------------------------------
     const turns: ChatMessage[] = trimThread(messages);
@@ -204,7 +204,7 @@ Deno.serve(async (req) => {
           const send = (obj: unknown) => controller.enqueue(encoder.encode(`data: ${JSON.stringify(obj)}\n\n`));
           let fullText = "";
           try {
-            fullText = await llmStream(provider, { messages: turns, systemPrompt, jsonMode: false, apiKey }, (tok) => {
+            fullText = await llmStream(provider, { messages: turns, systemPrompt, jsonMode: false, apiKey, model: resolveModel(provider) }, (tok) => {
               send({ token: tok });
             });
           } catch (e) {
@@ -266,6 +266,7 @@ Deno.serve(async (req) => {
           const out = await runNativeToolLoop({
             provider: keyedProvider,
             apiKey: keyedKey,
+            model: resolveModel(keyedProvider),
             systemPrompt: `${COACH_SYSTEM_PROMPT}\n\n${context}${NATIVE_TOOL_PREAMBLE}`,
             messages: trimThread(messages),
             tools: nativeToolDefs(),
@@ -283,7 +284,7 @@ Deno.serve(async (req) => {
 
       for (let step = 0; !replyText.trim() && step < 6; step++) {
         const step_out = await llmGenerateWithFallback(
-          chain, { messages: work, systemPrompt: chatSystem, jsonMode: true }, resolveKey,
+          chain, { messages: work, systemPrompt: chatSystem, jsonMode: true }, resolveKey, resolveModel,
         );
         provider = step_out.provider;
         let parsed: Record<string, unknown> | null = null;
@@ -330,6 +331,7 @@ Deno.serve(async (req) => {
       chain,
       { messages: turns, systemPrompt, jsonMode: mode === "finalize" },
       resolveKey,
+      resolveModel,
     );
     const cost = estimateCostUsd(outcome.provider, outcome.promptTokens, outcome.completionTokens);
 

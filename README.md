@@ -109,6 +109,8 @@ supabase functions deploy            # deploys all functions
 | `intervals-stats`   | Live Intervals.icu physiology (zones, thresholds)           |
 | `test-llm-key`      | Validate a provider key with a minimal call                 |
 | `daily-summary`     | Readiness score + dashboard payload                         |
+| `analyze-activity`  | Post-workout execution analysis: score, pace-vs-target, AI feedback |
+| `list-models`       | Live model list from the provider's API (dynamic model selector) |
 
 Unit tests live next to the shared modules (`_shared/*_test.ts`):
 ```bash

@@ -172,14 +172,7 @@ internal fun StrengthHomeView(vm: StrengthViewModel, onOpenHistory: () -> Unit =
     val prs by vm.lastPrs.collectAsStateSafe()
     val pendingSync by vm.pendingSync.collectAsStateSafe()
     val editingRoutine by vm.editingRoutine.collectAsStateSafe()
-    var confirmDelete by remember { mutableStateOf<WorkoutEntity?>(null) }
-    var query by remember { mutableStateOf("") }
-    val filteredHistory = remember(history, query) {
-        if (query.isBlank()) history else history.filter { it.name.contains(query.trim(), ignoreCase = true) }
-    }
-    val filteredLogged = remember(logged, query) {
-        if (query.isBlank()) logged else logged.filter { it.contains(query.trim(), ignoreCase = true) }
-    }
+    var showStatsPicker by remember { mutableStateOf(false) }
 
     if (prs.isNotEmpty()) {
         val haptics = LocalHapticFeedback.current
@@ -193,19 +186,21 @@ internal fun StrengthHomeView(vm: StrengthViewModel, onOpenHistory: () -> Unit =
             onCancel = { vm.cancelEditRoutine() },
         )
     }
-    confirmDelete?.let { w ->
-        ConfirmDeleteDialog(
-            what = "“${w.name}”",
-            detail = "This removes the workout and its sets from your history.",
-            onConfirm = { vm.deleteWorkout(w.id); confirmDelete = null },
-            onDismiss = { confirmDelete = null },
+    if (showStatsPicker) {
+        ExerciseStatsPickerDialog(
+            exercises = logged,
+            onPick = { showStatsPicker = false; vm.openStats(it) },
+            onDismiss = { showStatsPicker = false },
         )
     }
 
     ScreenScaffold(
         title = "Strength",
         subtitle = "${history.size} workouts logged",
-        navigationIcon = {
+        actions = {
+            IconButton(onClick = { showStatsPicker = true }, enabled = logged.isNotEmpty()) {
+                Icon(Icons.Filled.BarChart, contentDescription = "Exercise stats")
+            }
             IconButton(onClick = onOpenHistory) {
                 Icon(Icons.Filled.History, contentDescription = "Workout history")
             }
@@ -287,47 +282,57 @@ internal fun StrengthHomeView(vm: StrengthViewModel, onOpenHistory: () -> Unit =
 
         // Program builder (B4)
         ProgramsCard(mod, vm.programs) { vm.createProgram(it) }
+    }
+}
 
-        // Q5: search across history & exercises.
-        if (history.isNotEmpty() || logged.isNotEmpty()) {
-            OutlinedTextField(
-                value = query, onValueChange = { query = it },
-                modifier = mod, singleLine = true,
-                label = { Text("Search workouts & exercises") },
-                leadingIcon = { Icon(Icons.Filled.Search, null) },
-                trailingIcon = {
-                    if (query.isNotBlank()) IconButton(onClick = { query = "" }) { Icon(Icons.Filled.Close, "Clear") }
-                },
-            )
-        }
-
-        if (filteredLogged.isNotEmpty()) {
-            SectionCard(mod, title = "Exercise stats") {
-                Box(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState())) {
-                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                        filteredLogged.forEach { ex ->
-                            AssistChip(onClick = { vm.openStats(ex) }, label = { Text(ex) },
-                                leadingIcon = { Icon(Icons.Filled.BarChart, null, Modifier.size(16.dp)) })
+// Searchable picker behind the top-bar 📊 button — replaces the old
+// "Exercise stats" chip card. Tap an exercise to open its stats page.
+@Composable
+internal fun ExerciseStatsPickerDialog(
+    exercises: List<String>,
+    onPick: (String) -> Unit,
+    onDismiss: () -> Unit,
+) {
+    var query by remember { mutableStateOf("") }
+    val filtered = remember(exercises, query) {
+        if (query.isBlank()) exercises else exercises.filter { it.contains(query.trim(), ignoreCase = true) }
+    }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        confirmButton = { TextButton(onClick = onDismiss) { Text("Close") } },
+        title = { Text("Exercise stats") },
+        text = {
+            Column {
+                OutlinedTextField(
+                    value = query, onValueChange = { query = it },
+                    modifier = Modifier.fillMaxWidth(), singleLine = true,
+                    label = { Text("Search exercises") },
+                    leadingIcon = { Icon(Icons.Filled.Search, null) },
+                    trailingIcon = {
+                        if (query.isNotBlank()) IconButton(onClick = { query = "" }) { Icon(Icons.Filled.Close, "Clear") }
+                    },
+                )
+                LazyColumn(Modifier.heightIn(max = 380.dp).padding(top = 8.dp)) {
+                    if (filtered.isEmpty()) {
+                        item {
+                            Text("No logged exercises match.", style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        }
+                    }
+                    items(filtered) { ex ->
+                        Row(
+                            Modifier.fillMaxWidth().clickable { onPick(ex) }.padding(vertical = 10.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Icon(Icons.Filled.BarChart, null, Modifier.size(18.dp),
+                                tint = MaterialTheme.colorScheme.primary)
+                            Text("  $ex", style = MaterialTheme.typography.bodyLarge)
                         }
                     }
                 }
             }
-        }
-
-        SectionCard(mod, title = "History") {
-            if (history.isEmpty()) {
-                EmptyState(
-                    title = "No workouts yet",
-                    subtitle = "Your finished sessions land here. Import from Strong/Hevy in Settings → Import data, or start a workout above.",
-                    icon = Icons.Filled.BarChart,
-                )
-            } else if (filteredHistory.isEmpty()) {
-                Text("No workouts match “$query”.", style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant)
-            }
-            filteredHistory.forEach { w -> HistoryRow(w, onOpen = { vm.openWorkout(w.id) }, onDelete = { confirmDelete = w }) }
-        }
-    }
+        },
+    )
 }
 
 @Composable

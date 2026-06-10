@@ -42,6 +42,9 @@ data class CachedWorkout(
 data class CachedSummary(
     @PrimaryKey val date: String,
     val json: String,
+    // Epoch millis of the successful fetch — lets the Home header say how old
+    // the offline data is.
+    val fetchedAt: Long = 0,
 )
 
 @Dao
@@ -65,7 +68,7 @@ interface CacheDao {
         WorkoutEntity::class, SetEntity::class, RoutineEntity::class, RoutineItemEntity::class,
         CustomExerciseEntity::class, FavoriteEntity::class, TombstoneEntity::class,
     ],
-    version = 5,
+    version = 6,
     exportSchema = false,
 )
 abstract class AppDatabase : RoomDatabase() {
@@ -92,13 +95,21 @@ private val MIGRATION_4_5 = object : Migration(4, 5) {
     }
 }
 
+// v5 → v6: offline cold-start support — remember when the dashboard summary
+// was fetched so it can be served (with its age) when the app starts offline.
+private val MIGRATION_5_6 = object : Migration(5, 6) {
+    override fun migrate(db: SupportSQLiteDatabase) {
+        db.execSQL("ALTER TABLE cached_summary ADD COLUMN fetchedAt INTEGER NOT NULL DEFAULT 0")
+    }
+}
+
 @Module
 @InstallIn(SingletonComponent::class)
 object CacheModule {
     @Provides @Singleton
     fun provideDb(@ApplicationContext ctx: Context): AppDatabase =
         Room.databaseBuilder(ctx, AppDatabase::class.java, "workoutmaker.db")
-            .addMigrations(MIGRATION_3_4, MIGRATION_4_5)
+            .addMigrations(MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6)
             .fallbackToDestructiveMigration()
             .build()
 

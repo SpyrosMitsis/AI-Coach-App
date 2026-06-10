@@ -34,6 +34,8 @@ import javax.inject.Singleton
 @Singleton
 class WorkoutRepository @Inject constructor(
     private val supabase: SupabaseClient,
+    private val cache: CacheDao,
+    private val prefs: AppPreferences,
 ) {
     private val json = Json { ignoreUnknownKeys = true; encodeDefaults = true }
 
@@ -57,6 +59,7 @@ class WorkoutRepository @Inject constructor(
     suspend fun signOut() {
         supabase.auth.signOut()
         invalidateProfileCache()
+        runCatching { prefs.setOnboardingComplete(false) }
     }
 
     // --- Profile row cache ----------------------------------------------------
@@ -78,8 +81,28 @@ class WorkoutRepository @Inject constructor(
     }
 
     // --- Edge functions ------------------------------------------------------
-    suspend fun dailySummary(): DailySummary =
-        json.decodeFromString(supabase.functions.invoke("daily-summary").body())
+    // Write-through cached: a successful fetch is persisted so an offline cold
+    // start can still show the last dashboard instead of a bare error.
+    suspend fun dailySummary(): DailySummary {
+        val s: DailySummary = json.decodeFromString(supabase.functions.invoke("daily-summary").body())
+        runCatching {
+            cache.upsertSummary(
+                CachedSummary(
+                    date = s.date,
+                    json = json.encodeToString(DailySummary.serializer(), s),
+                    fetchedAt = System.currentTimeMillis(),
+                ),
+            )
+        }.logFailure("dailySummary/cache")
+        return s
+    }
+
+    // Last successfully-fetched summary + when it was fetched (offline fallback).
+    suspend fun cachedDailySummary(): Pair<DailySummary, Long>? = runCatching {
+        cache.latestSummary()?.let { row ->
+            json.decodeFromString(DailySummary.serializer(), row.json) to row.fetchedAt
+        }
+    }.logFailure("cachedDailySummary").getOrNull()
 
     suspend fun generateWorkout(req: GenerateRequest): String =
         supabase.functions.invoke("generate-workout") { setBody(json.encodeToString(GenerateRequest.serializer(), req)) }.body()
@@ -116,6 +139,20 @@ class WorkoutRepository @Inject constructor(
     // Delete a planned workout (and its Intervals.icu/watch event) server-side.
     suspend fun deletePlannedWorkout(workoutId: String): String =
         supabase.functions.invoke("delete-workout") { setBody(workoutIdBody(workoutId)) }.body()
+
+    // Garmin-style execution analysis (score, pace-vs-target series, AI
+    // feedback). Cached server-side; force = true recomputes.
+    suspend fun analyzeActivity(activityId: String, force: Boolean = false): ActivityAnalysis =
+        json.decodeFromString(
+            supabase.functions.invoke("analyze-activity") {
+                setBody(
+                    kotlinx.serialization.json.buildJsonObject {
+                        put("activity_id", JsonPrimitive(activityId))
+                        put("force", JsonPrimitive(force))
+                    }.toString(),
+                )
+            }.body(),
+        )
 
     // Delete a logged/manual completed activity (and its Intervals event if it was one).
     suspend fun deleteCompletedActivity(intervalsId: String) {
@@ -193,6 +230,37 @@ class WorkoutRepository @Inject constructor(
         invalidateProfileCache()
     }
 
+    // --- Dynamic model selection ---------------------------------------------
+    suspend fun listModels(provider: LlmProvider): ModelListResponse =
+        json.decodeFromString(
+            supabase.functions.invoke("list-models") {
+                setBody(
+                    kotlinx.serialization.json.buildJsonObject {
+                        put("provider", JsonPrimitive(provider.key))
+                    }.toString(),
+                )
+            }.body(),
+        )
+
+    // Per-provider model override (user_profiles.llm_models). Empty map → defaults.
+    suspend fun modelOverrides(): Map<String, String> = runCatching {
+        (profileRow()?.get("llm_models") as? JsonObject)
+            ?.mapNotNull { (k, v) -> (v as? JsonPrimitive)?.contentOrNull?.let { k to it } }
+            ?.toMap() ?: emptyMap()
+    }.logFailure("modelOverrides").getOrDefault(emptyMap())
+
+    suspend fun setModelOverride(provider: LlmProvider, model: String?) {
+        val current = modelOverrides().toMutableMap()
+        if (model.isNullOrBlank()) current.remove(provider.key) else current[provider.key] = model
+        val obj = kotlinx.serialization.json.buildJsonObject {
+            current.forEach { (k, v) -> put(k, JsonPrimitive(v)) }
+        }
+        supabase.postgrest.from("user_profiles").update(mapOf("llm_models" to obj)) {
+            filter { eq("id", uid()) }
+        }
+        invalidateProfileCache()
+    }
+
     // --- Coach chat ----------------------------------------------------------
     suspend fun coachChat(req: CoachChatRequest): CoachReply =
         json.decodeFromString(
@@ -234,7 +302,12 @@ class WorkoutRepository @Inject constructor(
 
     suspend fun isOnboardingComplete(): Boolean = runCatching {
         (profileRow()?.get("onboarding_complete") as? JsonPrimitive)?.content?.toBoolean() ?: false
-    }.logFailure("isOnboardingComplete").getOrDefault(false)
+    }.logFailure("isOnboardingComplete").fold(
+        onSuccess = { v -> runCatching { prefs.setOnboardingComplete(v) }; v },
+        // Network failure ≠ new user: fall back to the last known state so an
+        // offline cold start doesn't show the onboarding welcome again.
+        onFailure = { runCatching { prefs.onboardingCompleteCached() }.getOrDefault(false) },
+    )
 
     suspend fun saveProfile(profile: TrainingProfile) {
         val onboarding = json.encodeToJsonElement(TrainingProfile.serializer(), profile)

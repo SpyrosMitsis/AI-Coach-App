@@ -116,30 +116,6 @@ import com.workoutmaker.app.ui.theme.BandAmber
 import com.workoutmaker.app.ui.theme.BandRed
 import com.workoutmaker.app.ui.theme.Sage
 
-@Composable
-internal fun HistoryRow(w: WorkoutEntity, onOpen: () -> Unit, onDelete: () -> Unit) {
-    val date = java.time.Instant.ofEpochMilli(w.startedAt)
-        .atZone(java.time.ZoneId.systemDefault()).toLocalDate().toString()
-    Row(
-        Modifier.fillMaxWidth().clickable(onClick = onOpen).padding(vertical = 6.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        Column(Modifier.weight(1f)) {
-            Text(w.name, style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
-            Spacer(Modifier.height(4.dp))
-            ChipRow(
-                listOfNotNull(
-                    date,
-                    fmtClock(w.durationSec.toLong()).takeIf { w.durationSec > 0 },
-                    "${w.totalVolumeKg.toInt()} kg",
-                ),
-            )
-        }
-        Icon(Icons.Filled.KeyboardArrowRight, null, tint = MaterialTheme.colorScheme.onSurfaceVariant)
-        IconButton(onClick = onDelete) { Icon(Icons.Filled.Delete, "Delete workout", tint = MaterialTheme.colorScheme.onSurfaceVariant) }
-    }
-}
-
 // ---------------------------------------------------------------------------
 // Workout detail — drill into one logged session: every exercise and set.
 // ---------------------------------------------------------------------------

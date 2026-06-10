@@ -44,9 +44,9 @@ Deno.serve(async (req) => {
       `RECENT FEEDBACK:\n${fbLines}\n\nRECENT SESSIONS:\n${wkLines}\n\n` +
       `Return the updated notes only.`;
 
-    const { chain, resolveKey } = llmAccess(admin, userId, profile);
+    const { chain, resolveKey, resolveModel } = llmAccess(admin, userId, profile);
 
-    const outcome = await llmGenerateWithFallback(chain, { prompt, systemPrompt: SYSTEM }, resolveKey);
+    const outcome = await llmGenerateWithFallback(chain, { prompt, systemPrompt: SYSTEM }, resolveKey, resolveModel);
     const memory = outcome.text.trim().slice(0, 1200);
     await admin.from("user_profiles").update({ training_memory: memory }).eq("id", userId);
 

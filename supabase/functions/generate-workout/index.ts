@@ -19,6 +19,7 @@ import {
 import {
   buildRunPrompt,
   buildStrengthPrompt,
+  durationGuidance,
   SYSTEM_PROMPT,
   trainingPhase,
   validateWorkout,
@@ -51,7 +52,6 @@ Deno.serve(async (req) => {
     const admin = adminClient();
     const body = await req.json().catch(() => ({}));
     const date: string = body.date ?? new Date().toISOString().slice(0, 10);
-    const requestedDuration: number = body.duration ?? 45;
     const requestedType: string = body.type ?? "auto";
     const shouldPush: boolean = body.push ?? true;
 
@@ -63,6 +63,18 @@ Deno.serve(async (req) => {
       .single();
     if (!profile) return json({ error: "profile not found" }, 404);
     const onboarding = profile.onboarding ?? {};
+
+    // Session length is guidance, not a fixed number: an explicit request wins,
+    // otherwise the profile preference (+ optional max) becomes a flexible
+    // budget so sessions vary with their purpose.
+    const prefDuration: number | null = typeof body.duration === "number"
+      ? body.duration
+      : (typeof onboarding.session_duration === "number" ? onboarding.session_duration : null);
+    const maxDuration: number | null =
+      typeof onboarding.session_duration_max === "number" ? onboarding.session_duration_max : null;
+    const durationNote = typeof body.duration === "number"
+      ? `${body.duration} min requested for this session (honor within ±10 min)`
+      : durationGuidance(prefDuration, maxDuration);
 
     // 2. activities (last 28d — enough for acute:chronic workload ratio) ----
     const since28 = new Date(Date.now() - 28 * DAY).toISOString().slice(0, 10);
@@ -215,7 +227,7 @@ Deno.serve(async (req) => {
         phase,
         soreness: Math.round(wellness3d.soreness),
         mainLifts,
-        requestedDuration,
+        durationNote,
       });
     } else if (type === "rest") {
       userPrompt = `Generate a REST day. Goal: ${goal}. Recent 3-day wellness energy ${wellness3d.energy.toFixed(1)}/5, soreness ${wellness3d.soreness.toFixed(1)}/5. Return JSON only.`;
@@ -243,7 +255,7 @@ Deno.serve(async (req) => {
         targetPace: onboarding.target_pace,
         daysSinceLastRun,
         daysSinceLastHard,
-        requestedDuration,
+        durationNote,
         experience: onboarding.experience ?? "Intermediate",
         sport: type === "ride" ? "ride" : "run",
         ftp: typeof onboarding.ftp === "number" ? onboarding.ftp : undefined,
@@ -308,7 +320,7 @@ Return the revised workout as JSON only, same schema.`;
     }
 
     // 7. resolve fallback chain + keys, then generate ----------------------
-    const { chain, resolveKey } = llmAccess(admin, userId, profile);
+    const { chain, resolveKey, resolveModel } = llmAccess(admin, userId, profile);
     if (chain.length === 0) {
       return json({ error: "No AI provider configured. Add an API key in Settings." }, 400);
     }
@@ -319,6 +331,7 @@ Return the revised workout as JSON only, same schema.`;
         chain,
         { prompt: userPrompt, systemPrompt: SYSTEM_PROMPT },
         resolveKey,
+        resolveModel,
       );
     } catch (e) {
       await admin.from("generation_logs").insert({
@@ -352,7 +365,7 @@ Return the revised workout as JSON only, same schema.`;
         const repairPrompt =
           `${userPrompt}\n\nYOUR PREVIOUS RESPONSE could not be parsed/validated (${parseError}). ` +
           `Return ONLY a corrected JSON object that exactly matches the schema — no prose, no code fences.`;
-        const retry = await llmGenerateWithFallback(chain, { prompt: repairPrompt, systemPrompt: SYSTEM_PROMPT }, resolveKey);
+        const retry = await llmGenerateWithFallback(chain, { prompt: repairPrompt, systemPrompt: SYSTEM_PROMPT }, resolveKey, resolveModel);
         const v2 = validateWorkout(extractJson(retry.text));
         if (v2.ok && v2.workout) {
           validated = v2.workout;

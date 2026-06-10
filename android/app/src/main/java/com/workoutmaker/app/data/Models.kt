@@ -118,7 +118,9 @@ data class DailySummary(
 data class GenerateRequest(
     val date: String? = null,
     val type: String = "auto",
-    val duration: Int = 60,
+    // null → the server derives length from the profile preference/max and
+    // treats it as flexible guidance instead of a fixed number.
+    val duration: Int? = null,
     val push: Boolean = true,
     // "Adjust this workout": revise base_workout per a natural-language request.
     val adjustment: String? = null,
@@ -331,6 +333,55 @@ data class GenerationLogRow(
     val estimated_cost_usd: Double = 0.0,
 )
 
+// --- Post-workout execution analysis (analyze-activity) ---------------------
+@Serializable
+data class AnalysisComponent(val name: String, val score: Int = 0, val detail: String = "")
+
+@Serializable
+data class AnalysisSeries(
+    val t: List<Double> = emptyList(),
+    val pace: List<Double?> = emptyList(),  // sec/km, null while stopped
+    val hr: List<Double?> = emptyList(),
+)
+
+@Serializable
+data class AnalysisTarget(
+    val pace_lo: Double? = null,
+    val pace_hi: Double? = null,
+    val hr_lo: Int? = null,
+    val hr_hi: Int? = null,
+    val zones: String = "",
+)
+
+@Serializable
+data class AnalysisSplit(val km: Double, val sec: Int = 0, val avg_hr: Int? = null)
+
+@Serializable
+data class ActivityAnalysis(
+    val ok: Boolean = false,
+    val score: Int? = null,
+    val label: String? = null,
+    val components: List<AnalysisComponent> = emptyList(),
+    val feedback: String? = null,
+    val feedback_provider: String? = null,
+    val series: AnalysisSeries? = null,
+    val target: AnalysisTarget? = null,
+    val splits: List<AnalysisSplit> = emptyList(),
+    val planned_title: String? = null,
+    val streams_error: String? = null,
+    val error: String? = null,
+)
+
+// Dynamic model selector — model ids fetched live from the provider's API.
+@Serializable
+data class ModelListResponse(
+    val provider: String = "",
+    val default_model: String? = null,
+    val current: String? = null,
+    val models: List<String> = emptyList(),
+    val error: String? = null,
+)
+
 @Serializable
 data class TestKeyRequest(val provider: String, val apiKey: String, val sampleGeneration: Boolean = false)
 
@@ -406,6 +457,9 @@ data class TrainingProfile(
     val experience: String? = null,
     val days: List<String> = emptyList(),
     val session_duration: Int? = null,
+    // Optional hard upper limit; session_duration is then a typical length and
+    // the AI varies the actual duration with each session's purpose.
+    val session_duration_max: Int? = null,
     val equipment: String? = null,
     val target_pace: String? = null,
     val goal_date: String? = null,

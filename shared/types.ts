@@ -81,6 +81,9 @@ export interface OnboardingData {
   experience?: "Beginner" | "Intermediate" | "Advanced";
   days?: string[];
   session_duration?: number;
+  // Optional hard cap; session_duration is then a typical length and the AI
+  // varies the actual duration with each session's purpose.
+  session_duration_max?: number;
   equipment?: string;
   target_pace?: string;
   weekly_tss_target?: number;

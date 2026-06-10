@@ -197,6 +197,29 @@ export function latestFitness(wellness: WellnessRow[]): {
   return { ctl, atl, tsb: ctl - atl };
 }
 
+// Raw per-second data streams for one activity (note: activity-scoped path,
+// not athlete-scoped). Available types include time, distance, heartrate,
+// velocity_smooth, watts, cadence, altitude.
+export interface ActivityStream {
+  type: string;
+  data: (number | null)[];
+}
+
+export async function getActivityStreams(
+  apiKey: string,
+  activityId: string,
+  types: string[],
+): Promise<ActivityStream[]> {
+  const res = await fetch(
+    `${BASE}/activity/${activityId}/streams?types=${types.join(",")}`,
+    { headers: { Authorization: authHeader(apiKey) } },
+  );
+  if (!res.ok) {
+    throw new Error(`intervals GET streams → HTTP ${res.status}: ${await res.text()}`);
+  }
+  return (await res.json()) as ActivityStream[];
+}
+
 // Push a planned workout to the athlete's Intervals.icu calendar.
 export interface IntervalsEventInput {
   date: string; // YYYY-MM-DD

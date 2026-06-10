@@ -15,7 +15,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
-import androidx.compose.material.icons.filled.DirectionsRun
+import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.FitnessCenter
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Watch
@@ -51,7 +51,6 @@ import com.workoutmaker.app.ui.components.InsetStat
 import com.workoutmaker.app.ui.components.ScreenScaffold
 import com.workoutmaker.app.ui.components.SectionCard
 import com.workoutmaker.app.ui.components.SectionLabel
-import com.workoutmaker.app.ui.theme.Moss
 import com.workoutmaker.app.ui.theme.Sage
 import com.workoutmaker.app.ui.theme.Sand
 import dagger.hilt.android.lifecycle.HiltViewModel
@@ -63,30 +62,22 @@ import java.time.ZoneId
 import javax.inject.Inject
 
 // ===========================================================================
-// Dedicated, full-screen workout history. A single chronological feed across
-// every source: logged strength sessions (app) and completed cardio activities
-// (watch / Intervals.icu). When the same workout was tracked on both — e.g. a
-// strength session logged in-app while the watch recorded HR + calories — the
-// two are paired into ONE unified record (display-time merge, non-destructive).
+// Dedicated, full-screen STRENGTH history: every logged lifting session, one
+// chronological feed. Cardio activities live in the Calendar — not here. When
+// the same session was also tracked on the watch (HR + calories), that watch
+// data is merged INTO the strength record (display-time merge,
+// non-destructive) instead of showing as a second entry.
 // ===========================================================================
 
-// One row in the feed. A strength session may carry a paired watch activity.
-sealed interface HistoryRow {
-    val epoch: Long
-    data class Strength(val workout: WorkoutEntity, val watch: CompletedActivity?) : HistoryRow {
-        override val epoch get() = workout.startedAt
-    }
-    data class Cardio(val activity: CompletedActivity, override val epoch: Long) : HistoryRow
+// One row in the feed: a strength session, optionally paired with watch data.
+data class StrengthHistoryRow(val workout: WorkoutEntity, val watch: CompletedActivity?) {
+    val epoch get() = workout.startedAt
 }
 
 private fun isStrengthType(type: String?): Boolean {
     val t = (type ?: "").lowercase()
     return t.contains("weight") || t.contains("strength") || t.contains("gym") || t == "workout"
 }
-
-private fun activityEpoch(a: CompletedActivity): Long =
-    runCatching { LocalDate.parse(a.date).atTime(12, 0).atZone(ZoneId.systemDefault()).toInstant().toEpochMilli() }
-        .getOrDefault(0L)
 
 private fun dateOf(epoch: Long): LocalDate =
     Instant.ofEpochMilli(epoch).atZone(ZoneId.systemDefault()).toLocalDate()
@@ -96,7 +87,7 @@ class HistoryViewModel @Inject constructor(
     private val strength: StrengthRepository,
     private val repo: WorkoutRepository,
 ) : ViewModel() {
-    val rows = MutableStateFlow<List<HistoryRow>>(emptyList())
+    val rows = MutableStateFlow<List<StrengthHistoryRow>>(emptyList())
     val loading = MutableStateFlow(true)
 
     // Lazily-loaded sets for an opened strength session, keyed by workout id.
@@ -106,33 +97,21 @@ class HistoryViewModel @Inject constructor(
         loading.value = true
         val workouts = runCatching { strength.recentWorkouts(500) }.getOrDefault(emptyList())
         val from = LocalDate.now().minusYears(2).toString()
+        // Watch activities are only fetched to enrich strength rows (HR/kcal/TSS).
         val activities = runCatching { repo.completedActivities(from) }.getOrDefault(emptyList())
+            .filter { isStrengthType(it.type) }
 
-        // Pairing: a strength session "absorbs" a same-day weight-training watch
-        // activity. Those activities are removed from the top-level feed and shown
-        // inside the strength record instead.
-        val strengthDates = workouts.map { dateOf(it.startedAt) }.toSet()
         val pairedIds = HashSet<String>()
         fun watchFor(w: WorkoutEntity): CompletedActivity? {
             val day = dateOf(w.startedAt)
             return activities.firstOrNull {
-                it.id !in pairedIds && isStrengthType(it.type) &&
+                it.id !in pairedIds &&
                     runCatching { LocalDate.parse(it.date) == day }.getOrDefault(false)
             }?.also { pairedIds.add(it.id) }
         }
 
-        val strengthRows = workouts.map { HistoryRow.Strength(it, watchFor(it)) }
-        val cardioRows = activities
-            .filterNot { it.id in pairedIds }
-            // also drop a stray strength-typed activity on a day we already logged
-            // strength for, even if not directly paired, to avoid obvious dupes
-            .filterNot { a ->
-                isStrengthType(a.type) &&
-                    runCatching { LocalDate.parse(a.date) in strengthDates }.getOrDefault(false)
-            }
-            .map { HistoryRow.Cardio(it, activityEpoch(it)) }
-
-        rows.value = (strengthRows + cardioRows).sortedByDescending { it.epoch }
+        rows.value = workouts.map { StrengthHistoryRow(it, watchFor(it)) }
+            .sortedByDescending { it.epoch }
         loading.value = false
     }
 
@@ -140,6 +119,11 @@ class HistoryViewModel @Inject constructor(
         if (detailSets.value.containsKey(workoutId)) return@launch
         val sets = runCatching { strength.setsForWorkout(workoutId) }.getOrDefault(emptyList())
         detailSets.value = detailSets.value + (workoutId to sets)
+    }
+
+    fun deleteWorkout(workoutId: String) = viewModelScope.launch {
+        runCatching { strength.deleteWorkout(workoutId) }
+        load()
     }
 }
 
@@ -149,37 +133,32 @@ fun WorkoutHistoryScreen(onBack: () -> Unit, vm: HistoryViewModel = hiltViewMode
     val loading by vm.loading.collectAsStateSafe()
     val detailSets by vm.detailSets.collectAsStateSafe()
     var query by remember { mutableStateOf("") }
-    var selected by remember { mutableStateOf<HistoryRow?>(null) }
+    var selected by remember { mutableStateOf<StrengthHistoryRow?>(null) }
 
     LaunchedEffect(Unit) { vm.load() }
 
     // Detail is a full sub-screen.
     selected?.let { row ->
         androidx.activity.compose.BackHandler { selected = null }
-        when (row) {
-            is HistoryRow.Strength -> {
-                LaunchedEffect(row.workout.id) { vm.loadSets(row.workout.id) }
-                StrengthHistoryDetail(row, detailSets[row.workout.id].orEmpty()) { selected = null }
-            }
-            is HistoryRow.Cardio -> ActivityDetailScreen(row.activity, null) { selected = null }
-        }
+        LaunchedEffect(row.workout.id) { vm.loadSets(row.workout.id) }
+        StrengthSessionDetailScreen(
+            w = row.workout,
+            sets = detailSets[row.workout.id].orEmpty(),
+            watch = row.watch,
+            onBack = { selected = null },
+            onDelete = { vm.deleteWorkout(row.workout.id); selected = null },
+        )
         return
     }
 
     val filtered = remember(rows, query) {
         if (query.isBlank()) rows
-        else rows.filter { r ->
-            val name = when (r) {
-                is HistoryRow.Strength -> r.workout.name
-                is HistoryRow.Cardio -> r.activity.displayName + " " + (r.activity.type ?: "")
-            }
-            name.contains(query.trim(), ignoreCase = true)
-        }
+        else rows.filter { it.workout.name.contains(query.trim(), ignoreCase = true) }
     }
 
     ScreenScaffold(
-        title = "History",
-        subtitle = "${rows.size} workouts",
+        title = "Strength history",
+        subtitle = "${rows.size} sessions",
         navigationIcon = {
             IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "Back") }
         },
@@ -192,14 +171,14 @@ fun WorkoutHistoryScreen(onBack: () -> Unit, vm: HistoryViewModel = hiltViewMode
             modifier = mod,
             singleLine = true,
             leadingIcon = { Icon(Icons.Filled.Search, null) },
-            placeholder = { Text("Search workouts") },
+            placeholder = { Text("Search sessions") },
             keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
         )
 
         if (!loading && rows.isEmpty()) {
             EmptyState(
-                title = "No workouts yet",
-                subtitle = "Logged strength sessions and synced activities will show up here.",
+                title = "No strength sessions yet",
+                subtitle = "Finished sessions land here. Import from Strong/Hevy in Settings → Import data, or start a workout from the Strength tab.",
                 icon = Icons.Filled.FitnessCenter,
             )
             return@ScreenScaffold
@@ -222,55 +201,35 @@ fun WorkoutHistoryScreen(onBack: () -> Unit, vm: HistoryViewModel = hiltViewMode
 }
 
 @Composable
-private fun HistoryCard(row: HistoryRow, onClick: () -> Unit) {
+private fun HistoryCard(row: StrengthHistoryRow, onClick: () -> Unit) {
     SectionCard(Modifier.clickable { onClick() }) {
-        when (row) {
-            is HistoryRow.Strength -> {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    SourceIcon(Icons.Filled.FitnessCenter, Sand)
-                    Column(Modifier.padding(start = 12.dp).weight(1f)) {
-                        Text(row.workout.name, style = MaterialTheme.typography.titleMedium)
-                        val chips = buildList {
-                            add("${row.workout.totalVolumeKg.toInt()} kg")
-                            if (row.workout.durationSec > 0) add("${row.workout.durationSec / 60} min")
-                        }
-                        ChipRow(chips)
-                    }
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            SourceIcon(Icons.Filled.FitnessCenter, Sand)
+            Column(Modifier.padding(start = 12.dp).weight(1f)) {
+                Text(row.workout.name, style = MaterialTheme.typography.titleMedium)
+                val chips = buildList {
+                    add("${row.workout.totalVolumeKg.toInt()} kg")
+                    if (row.workout.durationSec > 0) add("${row.workout.durationSec / 60} min")
                 }
-                row.watch?.let { w ->
-                    // Unified record: this strength session also has watch data.
-                    Row(
-                        Modifier.fillMaxWidth().padding(top = 6.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        Icon(Icons.Filled.Watch, null, Modifier.size(16.dp), tint = Sage)
-                        val parts = buildList {
-                            w.avg_hr?.let { add("♥ $it bpm") }
-                            w.calories?.let { add("$it kcal") }
-                            w.tss?.let { if (it > 0) add("TSS ${it.toInt()}") }
-                        }
-                        Text(
-                            "  Merged with watch" + if (parts.isNotEmpty()) " · ${parts.joinToString(" · ")}" else "",
-                            style = MaterialTheme.typography.labelSmall, color = Sage,
-                        )
-                    }
-                }
+                ChipRow(chips)
             }
-            is HistoryRow.Cardio -> {
-                val a = row.activity
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    SourceIcon(Icons.Filled.DirectionsRun, Sage)
-                    Column(Modifier.padding(start = 12.dp).weight(1f)) {
-                        Text(a.displayName, style = MaterialTheme.typography.titleMedium)
-                        val chips = buildList {
-                            a.type?.let { add(it) }
-                            a.distanceKm?.let { if (it > 0) add("%.1f km".format(it)) }
-                            a.durationMin?.let { if (it > 0) add("$it min") }
-                            a.avg_hr?.let { add("♥ $it bpm") }
-                        }
-                        ChipRow(chips)
-                    }
+        }
+        row.watch?.let { w ->
+            // Unified record: this strength session also has watch data.
+            Row(
+                Modifier.fillMaxWidth().padding(top = 6.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Icon(Icons.Filled.Watch, null, Modifier.size(16.dp), tint = Sage)
+                val parts = buildList {
+                    w.avg_hr?.let { add("♥ $it bpm") }
+                    w.calories?.let { add("$it kcal") }
+                    w.tss?.let { if (it > 0) add("TSS ${it.toInt()}") }
                 }
+                Text(
+                    "  Merged with watch" + if (parts.isNotEmpty()) " · ${parts.joinToString(" · ")}" else "",
+                    style = MaterialTheme.typography.labelSmall, color = Sage,
+                )
             }
         }
     }
@@ -286,10 +245,6 @@ private fun SourceIcon(icon: androidx.compose.ui.graphics.vector.ImageVector, ti
     ) { Icon(icon, null, tint = tint, modifier = Modifier.size(22.dp)) }
 }
 
-@Composable
-private fun StrengthHistoryDetail(row: HistoryRow.Strength, sets: List<SetEntity>, onBack: () -> Unit) =
-    StrengthSessionDetailScreen(row.workout, sets, row.watch, onBack)
-
 // Full-screen strength session detail with its sets — plus the paired watch data
 // when present, forming one unified record. Public so the Calendar can reuse it.
 @Composable
@@ -298,11 +253,28 @@ fun StrengthSessionDetailScreen(
     sets: List<SetEntity>,
     watch: CompletedActivity?,
     onBack: () -> Unit,
+    onDelete: (() -> Unit)? = null,
 ) {
+    var confirmDelete by remember { mutableStateOf(false) }
+    if (confirmDelete && onDelete != null) {
+        ConfirmDeleteDialog(
+            what = "“${w.name}”",
+            detail = "This removes the workout and its sets from your history.",
+            onConfirm = { confirmDelete = false; onDelete() },
+            onDismiss = { confirmDelete = false },
+        )
+    }
     ScreenScaffold(
         title = w.name,
         subtitle = dateOf(w.startedAt).toString(),
         navigationIcon = { IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "Back") } },
+        actions = {
+            if (onDelete != null) {
+                IconButton(onClick = { confirmDelete = true }) {
+                    Icon(Icons.Filled.Delete, "Delete workout", tint = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+            }
+        },
     ) { mod ->
         SectionCard(mod) {
             SectionLabel("Logged in app", color = Sand)

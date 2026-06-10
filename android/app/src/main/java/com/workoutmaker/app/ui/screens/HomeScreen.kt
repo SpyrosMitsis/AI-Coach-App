@@ -79,8 +79,16 @@ class HomeViewModel @Inject constructor(
                 lastSyncAt.value = System.currentTimeMillis()
                 offline.value = false
             }
-            .onFailure {
-                error.value = it.message
+            .onFailure { e ->
+                error.value = e.message
+                // Offline (incl. cold start): serve the last cached dashboard
+                // with the time it was fetched, instead of a bare error.
+                if (summary.value == null) {
+                    repo.cachedDailySummary()?.let { (cached, fetchedAt) ->
+                        summary.value = cached
+                        lastSyncAt.value = fetchedAt.takeIf { it > 0 }
+                    }
+                }
                 offline.value = summary.value != null
             }
         runCatching { repo.intervalsStats() }.onSuccess { fitness.value = it }
@@ -96,7 +104,7 @@ class HomeViewModel @Inject constructor(
         generating.value = true
         val loc = location.lastKnown()
         runCatching {
-            repo.generateWorkout(GenerateRequest(type = "auto", duration = 60, lat = loc?.first, lon = loc?.second))
+            repo.generateWorkout(GenerateRequest(type = "auto", lat = loc?.first, lon = loc?.second))
         }.onFailure { error.value = it.message }
         generating.value = false
         load()
@@ -123,7 +131,7 @@ class HomeViewModel @Inject constructor(
                 repo.adjustWorkout(base, tweak, java.time.LocalDate.now().toString())
             } else {
                 val loc = location.lastKnown()
-                repo.generateWorkout(GenerateRequest(type = "auto", duration = 60, lat = loc?.first, lon = loc?.second))
+                repo.generateWorkout(GenerateRequest(type = "auto", lat = loc?.first, lon = loc?.second))
             }
         }.onFailure { error.value = it.message }
         generating.value = false
@@ -183,13 +191,13 @@ fun HomeScreen(vm: HomeViewModel = hiltViewModel()) {
     val today = java.time.LocalDate.now().toString()
     val lastSyncAt by vm.lastSyncAt.collectAsStateSafe()
     val offline by vm.offline.collectAsStateSafe()
+    fun hhmm(epoch: Long) = java.time.Instant.ofEpochMilli(epoch)
+        .atZone(java.time.ZoneId.systemDefault()).toLocalDateTime()
+        .format(java.time.format.DateTimeFormatter.ofPattern("HH:mm"))
     val syncNote = when {
-        offline -> "$today · offline — showing last data"
-        lastSyncAt != null -> {
-            val t = java.time.Instant.ofEpochMilli(lastSyncAt!!)
-                .atZone(java.time.ZoneId.systemDefault()).toLocalTime()
-            "$today · synced ${t.format(java.time.format.DateTimeFormatter.ofPattern("HH:mm"))}"
-        }
+        offline -> "$today · offline" +
+            (lastSyncAt?.let { " — data from ${hhmm(it)}" } ?: " — showing last data")
+        lastSyncAt != null -> "$today · synced ${hhmm(lastSyncAt!!)}"
         else -> today
     }
     ScreenScaffold(

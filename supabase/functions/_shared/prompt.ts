@@ -121,7 +121,9 @@ Rules:
   notes (pace_zone/hr_zone null).
 - For a rest day return type "rest" with recovery guidance in coach_note.
 - tss_estimate and rpe_target (1-10) must be realistic for the prescription.
-- Honor the requested duration within ±10 minutes.
+- Respect the athlete's session-length guidance, but let duration VARY with the
+  session's purpose (a recovery jog is short, a long run uses the full window).
+  Never pad a session just to hit the same number every day.
 - coach_note MUST justify the session using the science above (e.g. which phase,
   why this intensity given TSB/wellness, how it fits the 80/20 or overload rule).`;
 
@@ -196,6 +198,19 @@ export function trainingPhase(weeksToGoal: number | null): string {
   return "Base (aerobic volume, strides, general strength)";
 }
 
+// Session-length guidance: the preference is a flexible budget / upper limit,
+// never a fixed length — sessions should vary with their purpose.
+export function durationGuidance(preferred: number | null, max: number | null): string {
+  if (preferred && max) {
+    return `usually ~${preferred} min with a hard cap of ${max} min — vary with the session's purpose (recovery can be much shorter; the long run may use the full window). Do NOT make every session the same length.`;
+  }
+  if (max) return `up to ${max} min — pick what the session's purpose needs; shorter is fine.`;
+  if (preferred) {
+    return `~${preferred} min preferred — treat as a flexible budget (roughly ±20%), not an exact target; vary with the session's purpose.`;
+  }
+  return "no stated preference — pick what the session's purpose needs (typically 40-75 min).";
+}
+
 interface RunContext {
   hrZones: { zone: string; min: number; max: number }[];
   tsb: number;
@@ -209,7 +224,7 @@ interface RunContext {
   targetPace?: string;
   daysSinceLastRun: number;
   daysSinceLastHard: number;
-  requestedDuration: number;
+  durationNote: string;
   experience: string;
   // Endurance sport. Defaults to running; "ride" reframes the session as
   // cycling (FTP/power-aware, no impact constraints, set "type":"ride").
@@ -244,7 +259,7 @@ ATHLETE CONTEXT
 - 3-day wellness (1-5): energy ${c.wellness3d.energy.toFixed(1)}, soreness ${c.wellness3d.soreness.toFixed(1)}, sleep ${c.wellness3d.sleep.toFixed(1)}
 - Volume last 7 days: ${c.weeklyKm.toFixed(1)} km — single added distance should not push weekly volume up by more than ~${proposedMax} km (10% rule)
 - Days since last ${sport}: ${c.daysSinceLastRun}; since last hard effort: ${c.daysSinceLastHard}
-- Requested duration: ${c.requestedDuration} min${rideNote}
+- Session length: ${c.durationNote}${rideNote}
 
 Pick the session type and intensity from phase + TSB + wellness + the 80/20 rule.
 Avoid hard quality if a hard effort was within the last 2 days, ACWR is high, or
@@ -260,7 +275,7 @@ interface StrengthContext {
   soreness: number;
   phase: string;
   mainLifts: { exercise: string; estimated1rm: number; lastWeight: number }[];
-  requestedDuration: number;
+  durationNote: string;
 }
 
 export function buildStrengthPrompt(c: StrengthContext): string {
@@ -285,7 +300,7 @@ ATHLETE CONTEXT
 - Weekly hard sets per muscle so far: ${vol} (target ~10-20/muscle/week; back off if a muscle is already high or soreness is high)
 - Current soreness (1-5): ${c.soreness}
 - Working weights / main lifts: ${lifts}
-- Requested duration: ${c.requestedDuration} min
+- Session length: ${c.durationNote}
 
 Program loads as %1RM where known, compounds first, with explicit target RIR in
 each exercise's notes. Respect 48h muscle recovery and weekly volume landmarks.

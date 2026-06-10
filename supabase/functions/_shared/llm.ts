@@ -344,12 +344,19 @@ export interface FallbackOutcome extends LlmResult {
   attempts: { provider: LlmProvider; error?: string }[];
 }
 
+// Per-provider model override (the user's choice from the dynamic model
+// selector); undefined → the provider's default model.
+export interface ModelResolver {
+  (provider: LlmProvider): string | undefined;
+}
+
 // Walk [active, ...fallback] in order, skipping providers with no key, until
 // one succeeds. Throws with the full attempt log if all fail.
 export async function llmGenerateWithFallback(
   chain: LlmProvider[],
   args: Omit<GenArgs, "apiKey">,
   resolveKey: FallbackKeyResolver,
+  resolveModel?: ModelResolver,
 ): Promise<FallbackOutcome> {
   const attempts: { provider: LlmProvider; error?: string }[] = [];
   const seen = new Set<LlmProvider>();
@@ -364,7 +371,8 @@ export async function llmGenerateWithFallback(
       continue;
     }
     try {
-      const result = await llmGenerate(provider, { ...args, apiKey });
+      const model = args.model ?? resolveModel?.(provider);
+      const result = await llmGenerate(provider, { ...args, apiKey, model });
       return { ...result, attempts };
     } catch (e) {
       attempts.push({ provider, error: String(e instanceof Error ? e.message : e) });

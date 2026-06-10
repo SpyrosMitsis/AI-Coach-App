@@ -11,11 +11,15 @@ import type { LlmProvider } from "./types.ts";
 export interface LlmAccess {
   chain: LlmProvider[];
   resolveKey: (provider: LlmProvider) => Promise<string | null>;
+  // User-chosen model per provider (user_profiles.llm_models); undefined →
+  // provider default.
+  resolveModel: (provider: LlmProvider) => string | undefined;
 }
 
 interface ProfileLlmFields {
   active_llm_provider?: LlmProvider | null;
   llm_fallback_chain?: LlmProvider[] | null;
+  llm_models?: Record<string, string> | null;
 }
 
 export function llmAccess(
@@ -44,5 +48,11 @@ export function llmAccess(
     return key;
   };
 
-  return { chain, resolveKey };
+  const models = profile?.llm_models ?? {};
+  const resolveModel = (provider: LlmProvider): string | undefined => {
+    const m = models[provider];
+    return typeof m === "string" && m.trim() ? m : undefined;
+  };
+
+  return { chain, resolveKey, resolveModel };
 }

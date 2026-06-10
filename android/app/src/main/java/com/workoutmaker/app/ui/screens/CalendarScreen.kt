@@ -243,13 +243,24 @@ fun CalendarScreen(vm: CalendarViewModel = hiltViewModel(), onOpenStrength: () -
                 style = MaterialTheme.typography.titleSmall,
                 fontWeight = FontWeight.SemiBold,
             )
-            // Completed Intervals.icu activities on this day — tap for detail.
-            dayActivities.forEach { act ->
+            // A watch-recorded weight-training activity on a day with an app-logged
+            // strength session is the SAME workout — fold the watch data into the
+            // strength card instead of showing two entries.
+            val pairedWatch = remember(dayActivities, dayStrength) {
+                val pool = dayActivities.filter { looksLike("strength", it.type) }.toMutableList()
+                dayStrength.associate { sw -> sw.id to (if (pool.isNotEmpty()) pool.removeAt(0) else null) }
+            }
+            val mergedIds = pairedWatch.values.filterNotNull().map { it.id }.toSet()
+
+            // Remaining completed Intervals.icu activities on this day — tap for detail.
+            dayActivities.filter { it.id !in mergedIds }.forEach { act ->
                 ActivityCard(act, planned = daySessions.firstOrNull()) { activityDetail = act }
             }
 
-            // Q14: strength sessions logged on this day — tap to open detail.
+            // Q14: strength sessions logged on this day (now unified with their
+            // watch recording, when one exists) — tap to open detail.
             dayStrength.forEach { sw ->
+                val watch = pairedWatch[sw.id]
                 SectionCard(Modifier.clickable { strengthDetail = sw }) {
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         SectionLabel("Strength", color = Sand)
@@ -260,7 +271,12 @@ fun CalendarScreen(vm: CalendarViewModel = hiltViewModel(), onOpenStrength: () -
                     ChipRow(buildList {
                         add("${sw.totalVolumeKg.toInt()} kg")
                         if (sw.durationSec > 0) add("${sw.durationSec / 60} min")
+                        watch?.avg_hr?.let { add("❤️ $it bpm") }
+                        watch?.tss?.let { if (it > 0) add("TSS ${it.toInt()}") }
                     })
+                    if (watch != null) {
+                        Text("⌚ Merged with your watch recording", style = MaterialTheme.typography.labelSmall, color = Sage)
+                    }
                 }
             }
 

@@ -128,10 +128,10 @@ async function planForUser(admin: SupabaseClient, userId: string, start: string,
     wellness3d, weeklyKm, weeklyTssTarget, hrZones, contextBlocks,
   });
 
-  const { chain, resolveKey } = llmAccess(admin, userId, profile);
+  const { chain, resolveKey, resolveModel } = llmAccess(admin, userId, profile);
   if (chain.length === 0) throw new Error("No AI provider configured");
 
-  let outcome = await llmGenerateWithFallback(chain, { prompt: userPrompt, systemPrompt: WEEK_SYSTEM_PROMPT }, resolveKey);
+  let outcome = await llmGenerateWithFallback(chain, { prompt: userPrompt, systemPrompt: WEEK_SYSTEM_PROMPT }, resolveKey, resolveModel);
   let v = validateWeekPlan(safeJson(outcome.text));
   if (!v.ok) {
     const retry = await llmGenerateWithFallback(

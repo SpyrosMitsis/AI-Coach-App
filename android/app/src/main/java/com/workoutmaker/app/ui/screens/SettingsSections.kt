@@ -111,12 +111,27 @@ internal fun ProfileSection(vm: SettingsViewModel) {
                 )
             }
         }
-        Text("Session length", style = MaterialTheme.typography.labelLarge)
+        Text("Typical session length", style = MaterialTheme.typography.labelLarge)
         FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
             DURATIONS.forEach { d ->
                 FilterChip(selected = profile.session_duration == d, onClick = { vm.updateProfile { it.copy(session_duration = d) } }, label = { Text("${d}m") })
             }
         }
+        Text("Max session length (optional)", style = MaterialTheme.typography.labelLarge)
+        FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+            DURATIONS_MAX.forEach { d ->
+                FilterChip(
+                    selected = profile.session_duration_max == d,
+                    // Tap the selected chip again to clear the cap.
+                    onClick = { vm.updateProfile { it.copy(session_duration_max = if (it.session_duration_max == d) null else d) } },
+                    label = { Text("${d}m") },
+                )
+            }
+        }
+        Text(
+            "Sessions vary with their purpose — the typical length is a flexible budget, the max is a hard cap. The AI won't pad every workout to the same number.",
+            style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
         ChipGroup("Equipment", EQUIPMENT, profile.equipment) { e -> vm.updateProfile { it.copy(equipment = e) } }
         OutlinedTextField(profile.target_pace ?: "", { v -> vm.updateProfile { it.copy(target_pace = v) } },
             label = { Text("Target pace (e.g. 4:45/km)") }, modifier = Modifier.fillMaxWidth())
@@ -488,8 +503,25 @@ internal fun StatusChip(label: String, ok: Boolean) {
 internal fun ProviderCard(mod: Modifier, provider: LlmProvider, vm: SettingsViewModel) {
     var key by remember { mutableStateOf("") }
     val result = vm.results[provider.key]
+    val overrides by vm.modelOverrides.collectAsStateSafe()
+    val activeModel = overrides[provider.key] ?: provider.model
+    var showModelPicker by remember { mutableStateOf(false) }
+
+    if (showModelPicker) {
+        ModelPickerDialog(provider, vm) { showModelPicker = false }
+    }
+
     SectionCard(mod, title = "${provider.label}${if (provider.freeTier) "  · free tier" else ""}") {
-        Text(provider.model, style = MaterialTheme.typography.bodySmall)
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Column(Modifier.weight(1f)) {
+                Text(activeModel, style = MaterialTheme.typography.bodySmall)
+                if (overrides[provider.key] != null) {
+                    Text("custom — default is ${provider.model}", style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+            }
+            TextButton(onClick = { showModelPicker = true }) { Text("Change model") }
+        }
         OutlinedTextField(key, { key = it }, label = { Text("API key") }, visualTransformation = PasswordVisualTransformation(), modifier = Modifier.fillMaxWidth())
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             Button(onClick = { vm.testKey(provider, key, false) }, enabled = key.isNotBlank()) { Text("Save & Test") }
@@ -502,5 +534,65 @@ internal fun ProviderCard(mod: Modifier, provider: LlmProvider, vm: SettingsView
                 color = if (it.is_valid) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.error,
             )
         }
+    }
+}
+
+// Dynamic model picker: pulls the live model list from the provider's API
+// (with the user's saved key) and stores the chosen id on the profile.
+@Composable
+internal fun ModelPickerDialog(provider: LlmProvider, vm: SettingsViewModel, onClose: () -> Unit) {
+    val overrides by vm.modelOverrides.collectAsStateSafe()
+    val busy by vm.modelBusy.collectAsStateSafe()
+    val list = vm.modelLists[provider.key]
+    val current = overrides[provider.key]
+
+    LaunchedEffect(provider.key) { if (list == null) vm.loadModels(provider) }
+
+    androidx.compose.material3.AlertDialog(
+        onDismissRequest = onClose,
+        confirmButton = { TextButton(onClick = onClose) { Text("Close") } },
+        title = { Text("${provider.label} model") },
+        text = {
+            Column(Modifier.verticalScroll(rememberScrollState())) {
+                // Default always available, even before/without a fetched list.
+                ModelRow(
+                    label = "Default — ${provider.model}",
+                    selected = current == null,
+                    onClick = { vm.setModel(provider, null); onClose() },
+                )
+                when {
+                    busy == provider.key -> Row(
+                        Modifier.fillMaxWidth().padding(vertical = 16.dp),
+                        horizontalArrangement = Arrangement.Center,
+                    ) {
+                        androidx.compose.material3.CircularProgressIndicator(
+                            Modifier.padding(end = 10.dp).then(Modifier.size(18.dp)), strokeWidth = 2.dp)
+                        Text("Fetching available models…", style = MaterialTheme.typography.bodySmall)
+                    }
+                    list?.error != null -> {
+                        Text(list.error!!, style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.error, modifier = Modifier.padding(vertical = 8.dp))
+                        OutlinedButton(onClick = { vm.loadModels(provider) }, modifier = Modifier.fillMaxWidth()) {
+                            Text("Retry")
+                        }
+                    }
+                    else -> list?.models.orEmpty().forEach { m ->
+                        ModelRow(label = m, selected = current == m,
+                            onClick = { vm.setModel(provider, m); onClose() })
+                    }
+                }
+            }
+        },
+    )
+}
+
+@Composable
+private fun ModelRow(label: String, selected: Boolean, onClick: () -> Unit) {
+    Row(
+        Modifier.fillMaxWidth().clickable(onClick = onClick).padding(vertical = 6.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        RadioButton(selected = selected, onClick = onClick)
+        Text(label, Modifier.padding(start = 6.dp), style = MaterialTheme.typography.bodyMedium)
     }
 }

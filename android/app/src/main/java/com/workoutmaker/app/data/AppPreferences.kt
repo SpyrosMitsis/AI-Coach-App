@@ -9,6 +9,7 @@ import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.firstOrNull
 import kotlinx.coroutines.flow.map
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -62,7 +63,16 @@ class AppPreferences @Inject constructor(
         val restNotify = booleanPreferencesKey("rest_notify")
         val keepScreenOn = booleanPreferencesKey("keep_screen_on")
         val themeMode = stringPreferencesKey("theme_mode")
+        val onboardingComplete = booleanPreferencesKey("onboarding_complete")
     }
+
+    // Last KNOWN onboarding state — consulted only when the network check fails,
+    // so an offline cold start doesn't dump an onboarded user back into the
+    // welcome flow. Reset on sign-out.
+    suspend fun onboardingCompleteCached(): Boolean =
+        context.dataStore.data.firstOrNull()?.get(Keys.onboardingComplete) ?: false
+
+    suspend fun setOnboardingComplete(v: Boolean) = edit { it[Keys.onboardingComplete] = v }
 
     val settings: Flow<AppSettings> = context.dataStore.data.map { p ->
         AppSettings(
