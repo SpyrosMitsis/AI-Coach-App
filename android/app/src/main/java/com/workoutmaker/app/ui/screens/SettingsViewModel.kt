@@ -238,10 +238,10 @@ class SettingsViewModel @Inject constructor(
     fun addRace(r: com.workoutmaker.app.data.Race, setAsGoal: Boolean) = viewModelScope.launch {
         runCatching {
             repo.addRace(r)
-            if (setAsGoal) repo.setGoalRace(r.name, r.date)
+            if (setAsGoal) repo.setGoalRace(r)
             races.value = repo.races()
             repo.loadProfile()?.let { profile.value = it }
-        }.onSuccess { saveStatus.value = "✓ Race added" }.onFailure { saveStatus.value = "Couldn't add: ${it.message}" }
+        }.onSuccess { saveStatus.value = "✓ Goal added" }.onFailure { saveStatus.value = "Couldn't add: ${it.message}" }
     }
 
     fun deleteRace(id: String) = viewModelScope.launch {
@@ -250,8 +250,8 @@ class SettingsViewModel @Inject constructor(
     }
 
     fun makeGoalRace(r: com.workoutmaker.app.data.Race) = viewModelScope.launch {
-        runCatching { repo.setGoalRace(r.name, r.date); repo.loadProfile()?.let { profile.value = it } }
-            .onSuccess { saveStatus.value = "✓ “${r.name}” is now your goal race" }
+        runCatching { repo.setGoalRace(r); repo.loadProfile()?.let { profile.value = it } }
+            .onSuccess { saveStatus.value = "✓ “${r.name}” is now your goal" }
             .onFailure { saveStatus.value = it.message }
     }
 

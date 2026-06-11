@@ -98,13 +98,15 @@ internal fun priorityColor(p: String) = when (p.uppercase()) {
     else -> com.workoutmaker.app.ui.theme.Sage
 }
 
-@OptIn(ExperimentalMaterial3Api::class)
+@OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
 @Composable
 internal fun AddRaceDialog(onClose: () -> Unit, onAdd: (com.workoutmaker.app.data.Race, Boolean) -> Unit) {
     var name by remember { mutableStateOf("") }
     var date by remember { mutableStateOf(java.time.LocalDate.now().plusWeeks(8)) }
     var distance by remember { mutableStateOf("") }
     var priority by remember { mutableStateOf("A") }
+    var sport by remember { mutableStateOf("run") }
+    var target by remember { mutableStateOf("") }
     var setGoal by remember { mutableStateOf(true) }
     var showPicker by remember { mutableStateOf(false) }
 
@@ -131,31 +133,56 @@ internal fun AddRaceDialog(onClose: () -> Unit, onAdd: (com.workoutmaker.app.dat
             TextButton(
                 enabled = name.isNotBlank(),
                 onClick = { onAdd(com.workoutmaker.app.data.Race(name = name.trim(), date = date.toString(),
-                    priority = priority, distance = distance.ifBlank { null }), setGoal && priority == "A") },
+                    priority = priority, sport = sport, distance = distance.ifBlank { null },
+                    target = target.ifBlank { null }), setGoal && priority == "A") },
             ) { Text("Add") }
         },
         dismissButton = { TextButton(onClick = onClose) { Text("Cancel") } },
-        title = { Text("Add race") },
+        title = { Text("Add goal") },
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 OutlinedTextField(name, { name = it }, label = { Text("Name") }, singleLine = true, modifier = Modifier.fillMaxWidth())
+                FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    GOAL_SPORTS.forEach { (key, label) ->
+                        androidx.compose.material3.FilterChip(selected = sport == key, onClick = { sport = key }, label = { Text(label) })
+                    }
+                }
                 OutlinedButton(onClick = { showPicker = true }, modifier = Modifier.fillMaxWidth()) {
                     Icon(Icons.Filled.EditCalendar, null)
                     Text("  $date")
                 }
-                OutlinedTextField(distance, { distance = it }, label = { Text("Distance (e.g. Marathon)") }, singleLine = true, modifier = Modifier.fillMaxWidth())
+                OutlinedTextField(distance, { distance = it },
+                    label = { Text(if (sport == "strength") "Lift / event (e.g. Back squat)" else "Distance (e.g. Marathon)") },
+                    singleLine = true, modifier = Modifier.fillMaxWidth())
+                OutlinedTextField(target, { target = it },
+                    label = { Text(goalTargetHint(sport)) }, singleLine = true, modifier = Modifier.fillMaxWidth())
                 Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                     listOf("A", "B", "C").forEach { p ->
-                        androidx.compose.material3.FilterChip(selected = priority == p, onClick = { priority = p }, label = { Text("$p race") })
+                        androidx.compose.material3.FilterChip(selected = priority == p, onClick = { priority = p }, label = { Text("$p goal") })
                     }
                 }
                 if (priority == "A") Row(verticalAlignment = Alignment.CenterVertically) {
                     androidx.compose.material3.Checkbox(checked = setGoal, onCheckedChange = { setGoal = it })
-                    Text("Make this my goal race (drives the plan)", style = MaterialTheme.typography.bodySmall)
+                    Text("Make this my goal (drives the plan)", style = MaterialTheme.typography.bodySmall)
                 }
             }
         },
     )
+}
+
+internal val GOAL_SPORTS = listOf(
+    "run" to "Run", "ride" to "Ride", "swim" to "Swim", "strength" to "Strength", "other" to "Other",
+)
+
+internal fun goalSportLabel(sport: String): String =
+    GOAL_SPORTS.firstOrNull { it.first == sport }?.second ?: "Other"
+
+internal fun goalTargetHint(sport: String): String = when (sport) {
+    "run" -> "Target pace or time (e.g. 4:45/km)"
+    "ride" -> "Target (e.g. FTP 260W or finish time)"
+    "swim" -> "Target (e.g. 1:50/100m or 0:32:00)"
+    "strength" -> "Target (e.g. Squat 120kg ×1)"
+    else -> "Target (optional)"
 }
 
 // ---------------------------------------------------------------------------

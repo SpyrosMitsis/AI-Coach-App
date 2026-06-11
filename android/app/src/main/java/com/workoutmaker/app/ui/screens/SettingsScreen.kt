@@ -95,7 +95,7 @@ import javax.inject.Inject
 internal val SETTINGS_GROUPS = listOf(
     SettingsGroup("Training", listOf(
         SettingsItem("profile", Icons.Outlined.Person, "Profile & goal", "Goal, experience, days, equipment, pace"),
-        SettingsItem("races", Icons.Outlined.Flag, "Goal races", "A/B/C races & countdown"),
+        SettingsItem("races", Icons.Outlined.Flag, "Goals & races", "Multi-sport goals, targets & countdown"),
         SettingsItem("zones", Icons.Outlined.Favorite, "Training zones", "Thresholds, HR/pace/power zones & tests"),
         SettingsItem("defaults", Icons.Outlined.FitnessCenter, "Workout defaults", "Units, rest timer, barbell, screen"),
         SettingsItem("planning", Icons.Outlined.CalendarMonth, "Planning", "Auto-plan & weekly load target"),

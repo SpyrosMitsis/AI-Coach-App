@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { Activity, CalendarDays, Dumbbell, History, LineChart, MessageCircle, Settings } from "lucide-react";
+import { Activity, CalendarDays, Dumbbell, MessageCircle, Settings } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 const items = [
@@ -10,15 +10,13 @@ const items = [
   { href: "/calendar", label: "Calendar", icon: CalendarDays },
   { href: "/coach", label: "Coach", icon: MessageCircle },
   { href: "/strength", label: "Strength", icon: Dumbbell },
-  { href: "/running", label: "Running", icon: LineChart },
-  { href: "/history", label: "History", icon: History },
   { href: "/settings", label: "Settings", icon: Settings },
 ];
 
 export function NavBar() {
   const pathname = usePathname();
   return (
-    <nav className="fixed inset-x-0 bottom-0 z-40 border-t border-border bg-card/80 backdrop-blur">
+    <nav className="fixed inset-x-0 bottom-0 z-40 border-t border-border bg-card/80 pb-[env(safe-area-inset-bottom)] backdrop-blur">
       <div className="mx-auto flex max-w-5xl items-stretch justify-between px-2">
         {items.map(({ href, label, icon: Icon }) => {
           const active = pathname === href || pathname.startsWith(href + "/");

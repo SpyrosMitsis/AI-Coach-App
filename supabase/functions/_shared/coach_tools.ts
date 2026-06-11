@@ -47,7 +47,7 @@ export const TOOL_CATALOG: ToolDef[] = [
   },
   {
     name: "get_profile", kind: "read", args: "{}", schema: NO_ARGS,
-    description: "Athlete profile: goal, experience, available days, session length, equipment, injuries, thresholds (LTHR/FTP/pace) and upcoming races.",
+    description: "Athlete profile: goal, experience, available days, session length, equipment, injuries, thresholds (LTHR/FTP/pace) and upcoming goals/races across sports (run/ride/swim/strength), each with date, priority and target.",
   },
   {
     name: "get_readiness", kind: "read", args: "{}", schema: NO_ARGS,
@@ -92,13 +92,17 @@ export const TOOL_CATALOG: ToolDef[] = [
     description: "Move a planned workout to another date (the watch event moves with it). Identify it by workout_id from get_planned_week, or just by its current date.",
   },
   {
-    name: "set_goal_race", kind: "act", args: "{ name: string, date: 'YYYY-MM-DD' }",
+    name: "set_goal_race", kind: "act", args: "{ name: string, date: 'YYYY-MM-DD', target_pace?: string }",
     schema: {
       type: "object",
-      properties: { name: { type: "string" }, date: { type: "string", description: "YYYY-MM-DD" } },
+      properties: {
+        name: { type: "string" },
+        date: { type: "string", description: "YYYY-MM-DD" },
+        target_pace: { type: "string", description: "optional run target pace like 4:45/km" },
+      },
       required: ["name", "date"],
     },
-    description: "Set the athlete's goal race; this anchors periodization and taper.",
+    description: "Set the athlete's goal event; this anchors periodization and taper. For run goals you may also set the target pace.",
   },
   {
     name: "remember", kind: "act", args: "{ fact: string }",
@@ -204,12 +208,12 @@ export async function executeTool(
           .select("display_name, onboarding, coach_knowledge").eq("id", userId).single();
         const o = (p?.onboarding ?? {}) as Record<string, unknown>;
         const { data: races } = await admin.from("races")
-          .select("name, date, priority, distance").eq("user_id", userId).order("date");
+          .select("name, date, priority, sport, distance, target").eq("user_id", userId).order("date");
         return JSON.stringify({
           goal: o.goal, goal_date: o.goal_date, experience: o.experience,
           days: o.days, session_min: o.session_duration, equipment: o.equipment,
           injuries: o.injury_history, lthr: o.lthr, ftp: o.ftp, threshold_pace: o.threshold_pace_per_km,
-          races: races ?? [], known: p?.coach_knowledge ?? "",
+          target_pace: o.target_pace, goals: races ?? [], known: p?.coach_knowledge ?? "",
         });
       }
       case "get_readiness": {
@@ -287,8 +291,11 @@ export async function executeTool(
         if (!args.name || !args.date) return "error: name and date are required";
         const { data: p } = await admin.from("user_profiles").select("onboarding").eq("id", userId).single();
         const o = (p?.onboarding ?? {}) as Record<string, unknown>;
-        await admin.from("user_profiles").update({ onboarding: { ...o, goal: args.name, goal_date: args.date } }).eq("id", userId);
-        return JSON.stringify({ ok: true, goal: args.name, goal_date: args.date });
+        const pace = typeof args.target_pace === "string" && args.target_pace.trim() ? args.target_pace.trim() : undefined;
+        await admin.from("user_profiles").update({
+          onboarding: { ...o, goal: args.name, goal_date: args.date, ...(pace ? { target_pace: pace } : {}) },
+        }).eq("id", userId);
+        return JSON.stringify({ ok: true, goal: args.name, goal_date: args.date, target_pace: pace ?? null });
       }
       case "remember": {
         const fact = String(args.fact ?? "").trim();

@@ -11,6 +11,7 @@ import { Input } from "@/components/ui/input";
 import { cn } from "@/lib/utils";
 import type { OnboardingData } from "@shared/types";
 import { DataExport } from "@/components/data-export";
+import { ZonesRaces } from "@/components/zones-races";
 import { useRouter } from "next/navigation";
 import { ChevronRight, Cpu, Activity, Moon, Sun } from "lucide-react";
 
@@ -155,11 +156,13 @@ export default function SettingsPage() {
                 </select>
               </Field>
 
-              <Input
-                placeholder="Target pace (e.g. 4:45/km)"
-                value={o.target_pace ?? ""}
-                onChange={(e) => patch({ target_pace: e.target.value })}
-              />
+              {(o.goal_date || o.target_pace) && (
+                <p className="text-xs text-muted-foreground">
+                  Goal: {o.goal ?? "—"}
+                  {o.goal_date ? ` · ${o.goal_date}` : ""}
+                  {o.target_pace ? ` · ${o.target_pace}` : ""} (set in Goals &amp; races below)
+                </p>
+              )}
               <Input
                 placeholder="Injury history (optional)"
                 value={o.injury_history ?? ""}
@@ -183,6 +186,9 @@ export default function SettingsPage() {
           )}
         </CardContent>
       </Card>
+
+      {/* Goals & races + training zones -------------------------------------- */}
+      <ZonesRaces />
 
       {/* Planning ------------------------------------------------------------ */}
       <Card>

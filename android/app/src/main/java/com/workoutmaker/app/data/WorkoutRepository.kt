@@ -459,7 +459,9 @@ class WorkoutRepository @Inject constructor(
             put("name", JsonPrimitive(race.name))
             put("date", JsonPrimitive(race.date))
             put("priority", JsonPrimitive(race.priority))
+            put("sport", JsonPrimitive(race.sport))
             race.distance?.let { put("distance", JsonPrimitive(it)) }
+            race.target?.let { put("target", JsonPrimitive(it)) }
             race.notes?.let { put("notes", JsonPrimitive(it)) }
         }
         supabase.postgrest.from("races").insert(row)
@@ -469,10 +471,12 @@ class WorkoutRepository @Inject constructor(
         supabase.postgrest.from("races").delete { filter { eq("id", id) } }
     }
 
-    // Make a race the periodization anchor: drives weeks-to-goal / phase / taper.
-    suspend fun setGoalRace(name: String, date: String) {
+    // Make a goal the periodization anchor: drives weeks-to-goal / phase / taper.
+    // Run goals with a pace-shaped target also become the profile's target pace.
+    suspend fun setGoalRace(race: Race) {
         val p = loadProfile() ?: TrainingProfile()
-        saveProfile(p.copy(goal = name, goal_date = date))
+        val pace = race.target?.takeIf { race.sport == "run" && it.isNotBlank() }
+        saveProfile(p.copy(goal = race.name, goal_date = race.date, target_pace = pace ?: p.target_pace))
     }
 
     // --- E1 + E4: thresholds & tests ----------------------------------------

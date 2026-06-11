@@ -97,12 +97,16 @@ export interface OnboardingData {
   goal_date?: string;               // YYYY-MM-DD
 }
 
+export type GoalSport = "run" | "ride" | "swim" | "strength" | "other";
+
 export interface Race {
   id: string;
   name: string;
   date: string;
   priority: "A" | "B" | "C";
+  sport: GoalSport;
   distance: string | null;
+  target: string | null; // free text: "4:45/km", "FTP 260W", "Squat 120kg"
   notes: string | null;
 }
 

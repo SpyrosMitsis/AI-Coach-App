@@ -155,6 +155,13 @@ export default function LlmSettingsPage() {
         </CardContent>
       </Card>
 
+      <Link
+        href="/history"
+        className="inline-flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground"
+      >
+        View AI generation log (providers, tokens, cost) <ExternalLink className="h-3 w-3" />
+      </Link>
+
       <div className="space-y-3">
         {ALL.map((p) => (
           <ProviderRow

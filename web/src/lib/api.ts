@@ -60,8 +60,19 @@ async function invoke<T>(name: string, body?: unknown): Promise<T> {
   return data as T;
 }
 
+// Live Intervals.icu fitness dashboard (same source as the Android Home chart).
+export interface IntervalsStats {
+  connected: boolean;
+  athlete_name?: string | null;
+  summary?: { ctl: number; atl: number; tsb: number; ramp: number } | null;
+  fitness: { date: string; ctl: number; atl: number; tsb: number }[];
+  activities?: unknown[];
+}
+
 export const api = {
   dailySummary: () => invoke<DailySummary>("daily-summary"),
+
+  intervalsStats: () => invoke<IntervalsStats>("intervals-stats"),
 
   syncIntervals: () => invoke<{ activities_synced: number; ctl: number; atl: number; tsb: number }>("sync-intervals"),
 

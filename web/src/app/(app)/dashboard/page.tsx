@@ -9,7 +9,7 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
 import { ReadinessRing } from "@/components/charts/readiness-ring";
-import { TsbSparkline } from "@/components/charts/tsb-sparkline";
+import { FitnessChart } from "@/components/charts/fitness-chart";
 import { WorkoutDetail } from "@/components/workout-detail";
 import { WellnessCheckin } from "@/components/wellness-checkin";
 import { ActivityDetailCard } from "@/components/activity-detail";
@@ -38,6 +38,9 @@ export default function DashboardPage() {
   const qc = useQueryClient();
   const supabase = createClient();
   const summary = useQuery({ queryKey: ["daily-summary"], queryFn: api.dailySummary });
+  // 90-day CTL/ATL curve from Intervals.icu — the same source the Android Home
+  // chart uses. Falls back to the 14d sparkline points when not connected.
+  const stats = useQuery({ queryKey: ["intervals-stats"], queryFn: api.intervalsStats });
   const [showDetails, setShowDetails] = useState(false);
   const [instruction, setInstruction] = useState("");
   const [didIt, setDidIt] = useState(false);
@@ -97,17 +100,18 @@ export default function DashboardPage() {
 
   // Load guardrail (E3 parity) from the CTL/ATL sparkline.
   const loadGuard = useMemo(() => {
+    const live = stats.data?.summary;
     const pts = summary.data?.tsb_sparkline ?? [];
-    const last = pts[pts.length - 1];
+    const last = live ?? pts[pts.length - 1];
     if (!last || last.ctl < 1) return null;
     const ratio = last.atl / last.ctl;
     const weekAgo = pts[Math.max(0, pts.length - 8)];
-    const ramp = last.ctl - (weekAgo?.ctl ?? last.ctl);
+    const ramp = live?.ramp ?? (last.ctl - (weekAgo?.ctl ?? last.ctl));
     if (ratio >= 1.5) return { color: "#f87171", headline: "High overload risk", detail: `Fatigue is well above your fitness (ratio ${ratio.toFixed(2)}). Take easy days — an injury/illness spike zone.` };
     if (ratio >= 1.3 || ramp >= 8) return { color: "#fbbf24", headline: "Ramping fast", detail: `Building quickly (ratio ${ratio.toFixed(2)}, ramp ${ramp >= 0 ? "+" : ""}${ramp.toFixed(1)}). Fine short-term; don't hold it for many weeks.` };
     if (ratio < 0.8 && ramp < 0) return { color: "#fbbf24", headline: "Detraining / very fresh", detail: `Load is low relative to fitness (ratio ${ratio.toFixed(2)}). Good for a taper; otherwise add volume.` };
     return { color: "#4ade80", headline: "Load well managed", detail: `Fatigue:fitness ratio ${ratio.toFixed(2)} sits in the productive 0.8–1.3 range.` };
-  }, [summary.data]);
+  }, [summary.data, stats.data]);
 
   if (summary.isLoading) return <Skeleton />;
   if (summary.isError) {
@@ -118,6 +122,9 @@ export default function DashboardPage() {
   const band = rec?.band ?? d.readiness.band;
   const score = rec?.score ?? d.readiness.score;
   const last = d.tsb_sparkline[d.tsb_sparkline.length - 1];
+  const weekAgoPt = d.tsb_sparkline[Math.max(0, d.tsb_sparkline.length - 8)];
+  const fit = stats.data?.summary ??
+    (last ? { ...last, ramp: last.ctl - (weekAgoPt?.ctl ?? last.ctl) } : null);
 
   if (openActivity) {
     return (
@@ -276,16 +283,22 @@ export default function DashboardPage() {
       {/* Fitness · Fatigue · Form */}
       <Card>
         <CardHeader className="pb-2">
-          <CardTitle className="text-base">Fitness · Fatigue · Form (14d)</CardTitle>
+          <CardTitle className="text-base">
+            Fitness{stats.data?.athlete_name ? ` · ${stats.data.athlete_name}` : ""}
+          </CardTitle>
         </CardHeader>
         <CardContent className="space-y-3">
-          {last && (
+          {fit && (
             <div className="flex justify-between text-center">
-              <FitnessStat label="Fitness" value={last.ctl.toFixed(0)} sub="CTL" color="hsl(var(--primary))" />
-              <FitnessStat label="Fatigue" value={last.atl.toFixed(0)} sub="ATL" color="hsl(var(--sand))" />
+              <FitnessStat label="Fitness" value={fit.ctl.toFixed(0)} sub="CTL" color="hsl(var(--primary))" />
+              <FitnessStat label="Fatigue" value={fit.atl.toFixed(0)} sub="ATL" color="hsl(var(--sand))" />
               <FitnessStat
-                label="Form" value={`${last.tsb >= 0 ? "+" : ""}${last.tsb.toFixed(0)}`} sub={tsbLabel(last.tsb)}
-                color={last.tsb > 5 ? "#4ade80" : last.tsb < -20 ? "#f87171" : last.tsb < -10 ? "#fbbf24" : "hsl(var(--primary))"}
+                label="Form" value={`${fit.tsb >= 0 ? "+" : ""}${fit.tsb.toFixed(0)}`} sub={tsbLabel(fit.tsb)}
+                color={fit.tsb > 5 ? "#4ade80" : fit.tsb < -20 ? "#f87171" : fit.tsb < -10 ? "#fbbf24" : "hsl(var(--primary))"}
+              />
+              <FitnessStat
+                label="Ramp" value={`${fit.ramp >= 0 ? "+" : ""}${fit.ramp.toFixed(1)}`} sub="7d CTL"
+                color="hsl(var(--muted-foreground))"
               />
             </div>
           )}
@@ -298,7 +311,7 @@ export default function DashboardPage() {
               </div>
             </div>
           )}
-          <TsbSparkline data={d.tsb_sparkline} />
+          <FitnessChart points={(stats.data?.fitness?.length ?? 0) >= 2 ? stats.data!.fitness : d.tsb_sparkline} />
         </CardContent>
       </Card>
 

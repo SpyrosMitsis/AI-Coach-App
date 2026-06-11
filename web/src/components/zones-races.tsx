@@ -11,7 +11,7 @@ import { cn } from "@/lib/utils";
 import {
   hrZonesFromLthr, paceZonesFromThreshold, powerZonesFromFtp, parsePace, formatPace,
 } from "@/lib/zones";
-import type { OnboardingData, Race } from "@shared/types";
+import type { GoalSport, OnboardingData, Race } from "@shared/types";
 import { Flag, Plus, Target, Trash2 } from "lucide-react";
 
 type Profile = { onboarding: OnboardingData };
@@ -73,7 +73,12 @@ export function ZonesRaces() {
         goalDate={o?.goal_date}
         onAdd={(r) => addRace.mutate(r)}
         onDelete={(id) => deleteRace.mutate(id)}
-        onSetGoal={(name, date) => patchProfile.mutate({ goal: name, goal_date: date })}
+        onSetGoal={(r) =>
+          patchProfile.mutate({
+            goal: r.name,
+            goal_date: r.date,
+            ...(r.sport === "run" && r.target ? { target_pace: r.target } : {}),
+          })}
         adding={addRace.isPending}
       />
     </>
@@ -193,6 +198,22 @@ function daysUntil(date: string): number {
   return Math.ceil((d - Date.now()) / 86400000);
 }
 
+const GOAL_SPORTS: [GoalSport, string][] = [
+  ["run", "Run"], ["ride", "Ride"], ["swim", "Swim"], ["strength", "Strength"], ["other", "Other"],
+];
+
+const TARGET_HINT: Record<GoalSport, string> = {
+  run: "Target pace or time (e.g. 4:45/km)",
+  ride: "Target (e.g. FTP 260W or finish time)",
+  swim: "Target (e.g. 1:50/100m or 0:32:00)",
+  strength: "Target (e.g. Squat 120kg ×1)",
+  other: "Target (optional)",
+};
+
+function sportLabel(sport: GoalSport | null | undefined): string {
+  return GOAL_SPORTS.find(([k]) => k === sport)?.[1] ?? "Other";
+}
+
 const PRIORITY_STYLE: Record<string, string> = {
   A: "bg-primary/20 text-primary",
   B: "bg-sand/20 text-sand",
@@ -206,39 +227,60 @@ function RacesCard({
   goalDate: string | undefined;
   onAdd: (r: Omit<Race, "id">) => void;
   onDelete: (id: string) => void;
-  onSetGoal: (name: string, date: string) => void;
+  onSetGoal: (r: Race) => void;
   adding: boolean;
 }) {
   const [open, setOpen] = useState(false);
   const [name, setName] = useState("");
   const [date, setDate] = useState("");
   const [distance, setDistance] = useState("");
+  const [target, setTarget] = useState("");
+  const [sport, setSport] = useState<GoalSport>("run");
   const [priority, setPriority] = useState<"A" | "B" | "C">("A");
 
   const submit = () => {
     if (!name.trim() || !date) return;
-    onAdd({ name: name.trim(), date, priority, distance: distance.trim() || null, notes: null });
-    setName(""); setDate(""); setDistance(""); setPriority("A"); setOpen(false);
+    onAdd({
+      name: name.trim(), date, priority, sport,
+      distance: distance.trim() || null, target: target.trim() || null, notes: null,
+    });
+    setName(""); setDate(""); setDistance(""); setTarget(""); setSport("run"); setPriority("A"); setOpen(false);
   };
 
   return (
     <Card>
       <CardHeader className="pb-2">
         <div className="flex items-center justify-between">
-          <CardTitle className="text-base">Races</CardTitle>
+          <CardTitle className="text-base">Goals &amp; races</CardTitle>
           <button className="flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground" onClick={() => setOpen((v) => !v)}>
-            <Plus className="h-3.5 w-3.5" /> Add race
+            <Plus className="h-3.5 w-3.5" /> Add goal
           </button>
         </div>
       </CardHeader>
       <CardContent className="space-y-3">
         {open && (
           <div className="space-y-2 rounded-xl bg-background/60 p-3">
-            <Input placeholder="Race name" value={name} onChange={(e) => setName(e.target.value)} />
+            <Input placeholder="Goal name (race, event, lift…)" value={name} onChange={(e) => setName(e.target.value)} />
+            <div className="flex flex-wrap gap-1.5">
+              {GOAL_SPORTS.map(([key, label]) => (
+                <button
+                  key={key}
+                  onClick={() => setSport(key)}
+                  className={cn("rounded-full border px-3 py-1 text-xs", sport === key ? "border-transparent bg-accent/60 text-primary" : "border-sand/50 text-muted-foreground")}
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
             <div className="flex gap-2">
               <Input type="date" value={date} onChange={(e) => setDate(e.target.value)} />
-              <Input placeholder="Distance (10K…)" value={distance} onChange={(e) => setDistance(e.target.value)} />
+              <Input
+                placeholder={sport === "strength" ? "Lift (Back squat…)" : "Distance (10K…)"}
+                value={distance}
+                onChange={(e) => setDistance(e.target.value)}
+              />
             </div>
+            <Input placeholder={TARGET_HINT[sport]} value={target} onChange={(e) => setTarget(e.target.value)} />
             <div className="flex gap-1.5">
               {(["A", "B", "C"] as const).map((p) => (
                 <button
@@ -246,7 +288,7 @@ function RacesCard({
                   onClick={() => setPriority(p)}
                   className={cn("rounded-full border px-3 py-1 text-xs", priority === p ? "border-transparent bg-accent/60 text-primary" : "border-sand/50 text-muted-foreground")}
                 >
-                  {p} race
+                  {p} goal
                 </button>
               ))}
             </div>
@@ -254,7 +296,11 @@ function RacesCard({
           </div>
         )}
 
-        {races.length === 0 && !open && <p className="text-sm text-muted-foreground">No races yet. Add one to drive periodization &amp; taper.</p>}
+        {races.length === 0 && !open && (
+          <p className="text-sm text-muted-foreground">
+            No goals yet. Add a race, FTP target, swim time or lift — your A-goal drives periodization &amp; taper.
+          </p>
+        )}
 
         {races.map((r) => {
           const left = daysUntil(r.date);
@@ -268,11 +314,12 @@ function RacesCard({
                   {isGoal && <Target className="ml-1.5 inline h-3.5 w-3.5 text-primary" />}
                 </p>
                 <p className="text-xs text-muted-foreground">
-                  {r.date}{r.distance ? ` · ${r.distance}` : ""} · {left >= 0 ? `${left} days` : `${-left} days ago`}
+                  {sportLabel(r.sport)} · {r.date}{r.distance ? ` · ${r.distance}` : ""}
+                  {r.target ? ` · ${r.target}` : ""} · {left >= 0 ? `${left} days` : `${-left} days ago`}
                 </p>
               </div>
               {!isGoal && (
-                <button title="Set as goal" className="text-muted-foreground hover:text-primary" onClick={() => onSetGoal(r.name, r.date)}>
+                <button title="Set as goal" className="text-muted-foreground hover:text-primary" onClick={() => onSetGoal(r)}>
                   <Flag className="h-4 w-4" />
                 </button>
               )}

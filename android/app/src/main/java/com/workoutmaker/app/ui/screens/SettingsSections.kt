@@ -133,10 +133,18 @@ internal fun ProfileSection(vm: SettingsViewModel) {
             style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
         ChipGroup("Equipment", EQUIPMENT, profile.equipment) { e -> vm.updateProfile { it.copy(equipment = e) } }
-        OutlinedTextField(profile.target_pace ?: "", { v -> vm.updateProfile { it.copy(target_pace = v) } },
-            label = { Text("Target pace (e.g. 4:45/km)") }, modifier = Modifier.fillMaxWidth())
-        OutlinedTextField(profile.goal_date ?: "", { v -> vm.updateProfile { it.copy(goal_date = v) } },
-            label = { Text("Goal race date (YYYY-MM-DD, optional)") }, modifier = Modifier.fillMaxWidth())
+        if (profile.goal_date != null || profile.target_pace != null) {
+            Text(
+                buildString {
+                    append("Goal: ")
+                    append(profile.goal ?: "—")
+                    profile.goal_date?.let { append(" · $it") }
+                    profile.target_pace?.let { append(" · $it") }
+                    append("  (set in Goals & races below)")
+                },
+                style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
         OutlinedTextField(profile.injury_history ?: "", { v -> vm.updateProfile { it.copy(injury_history = v) } },
             label = { Text("Injury history (optional)") }, modifier = Modifier.fillMaxWidth())
         Button(onClick = { vm.saveProfile() }, enabled = !busy, modifier = Modifier.fillMaxWidth()) { Text("Save profile") }
@@ -421,11 +429,11 @@ internal fun RacesSection(vm: SettingsViewModel) {
         vm.addRace(race, setGoal); showAdd = false
     }
 
-    SectionCard(title = "Goal races") {
-        Text("Your A-race drives periodization and the taper. B/C races are tune-ups shown on the countdown.",
+    SectionCard(title = "Goals & races") {
+        Text("Set goals for any sport — races, FTP targets, swim times, lifts. Your A-goal drives periodization and the taper; B/C goals are tune-ups shown on the countdown.",
             style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
         if (races.isEmpty()) {
-            Text("No races yet.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Text("No goals yet.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
         races.forEach { r ->
             val days = runCatching { java.time.temporal.ChronoUnit.DAYS.between(today, java.time.LocalDate.parse(r.date)) }.getOrNull()
@@ -438,18 +446,20 @@ internal fun RacesSection(vm: SettingsViewModel) {
                 Column(Modifier.weight(1f).padding(start = 10.dp)) {
                     Text(r.name + if (isGoal) "  ⭐" else "", style = MaterialTheme.typography.titleSmall)
                     Text(buildString {
-                        append(r.date)
+                        append(goalSportLabel(r.sport))
+                        append(" · ${r.date}")
                         r.distance?.let { append(" · $it") }
+                        r.target?.let { append(" · $it") }
                         days?.let { append(" · ${if (it >= 0) "$it days" else "past"}") }
                     }, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
                 if (!isGoal) TextButton(onClick = { vm.makeGoalRace(r) }) { Text("Set goal") }
                 r.id?.let { id -> IconButton(onClick = { vm.deleteRace(id) }) {
-                    Icon(Icons.Filled.Delete, "Delete race", tint = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Icon(Icons.Filled.Delete, "Delete goal", tint = MaterialTheme.colorScheme.onSurfaceVariant)
                 } }
             }
         }
-        OutlinedButton(onClick = { showAdd = true }, modifier = Modifier.fillMaxWidth()) { Text("Add race") }
+        OutlinedButton(onClick = { showAdd = true }, modifier = Modifier.fillMaxWidth()) { Text("Add goal") }
     }
 }
 

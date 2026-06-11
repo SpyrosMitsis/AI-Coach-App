@@ -512,7 +512,9 @@ data class Race(
     val name: String,
     val date: String,
     val priority: String = "A",     // A | B | C
+    val sport: String = "run",      // run | ride | swim | strength | other
     val distance: String? = null,
+    val target: String? = null,     // free text: "4:45/km", "FTP 260W", "Squat 120kg"
     val notes: String? = null,
 )
 
