@@ -409,8 +409,11 @@ fun CoachScreen(vm: CoachViewModel = hiltViewModel(), onOpenCalendar: () -> Unit
 
         // Primary action: put what was discussed onto the REAL calendar (the
         // coach uses its plan_week / generate_workout tools). Saving a reusable
-        // template is the secondary path, tucked into a small menu.
-        if (messages.size > 2) {
+        // template is the secondary path, tucked into a small menu. Only shown
+        // while the coach is actually proposing sessions — not under plain Q&A,
+        // and not when the action already landed (the calendar card shows then).
+        val lastAssistant = messages.lastOrNull { it.role == "assistant" }?.content ?: ""
+        if (messages.size > 2 && actionWeek == null && looksLikeWorkoutProposal(lastAssistant)) {
             Row(
                 Modifier.fillMaxWidth().padding(horizontal = 12.dp),
                 verticalAlignment = Alignment.CenterVertically,
@@ -907,6 +910,23 @@ private fun DataCard(raw: String) {
 }
 
 private val coachJson = Json { ignoreUnknownKeys = true; isLenient = true }
+
+// Heuristic: is this assistant reply proposing a concrete workout or week plan
+// (structure markers / day-by-day breakdown) rather than analysis or Q&A?
+internal fun looksLikeWorkoutProposal(text: String): Boolean {
+    if (looksLikeJson(text)) {
+        val obj = runCatching { coachJson.parseToJsonElement(text) }.getOrNull() as? JsonObject
+        return obj != null && isWorkoutShape(obj)
+    }
+    if (text.length < 80) return false
+    val t = text.lowercase()
+    val structure = listOf(
+        "warm-up", "warmup", "main set", "cool-down", "cooldown", "×", " sets",
+        " reps", "interval", "tempo", "easy run", "long run", "rest day",
+    )
+    val days = listOf("monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday")
+    return structure.count { t.contains(it) } >= 2 || days.count { t.contains(it) } >= 3
+}
 
 private fun looksLikeJson(s: String): Boolean {
     val t = s.trim()

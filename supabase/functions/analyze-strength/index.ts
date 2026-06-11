@@ -2,9 +2,11 @@
 // session: planned_workouts (prescription) vs strength_logs (what was lifted)
 // plus the optional watch recording.
 //
-// POST { date: "YYYY-MM-DD", force?: boolean }
+// POST { date: "YYYY-MM-DD", force?: boolean, peek?: boolean }
 //
 // Cached in strength_analyses (user_id, date); force = true recomputes.
+// peek = true returns only a cached result (never runs the LLM) so the app
+// can auto-display background-computed analyses without triggering spend.
 
 import { handleOptions, json } from "../_shared/cors.ts";
 import { adminClient, getUserId } from "../_shared/supabase.ts";
@@ -33,6 +35,7 @@ Deno.serve(async (req) => {
         .eq("date", date)
         .maybeSingle();
       if (cached?.analysis_json) return json(cached.analysis_json);
+      if (body.peek === true) return json({ ok: false, not_analyzed: true });
     }
 
     const analysis = await runStrengthAnalysis(admin, userId, date);

@@ -255,6 +255,16 @@ class StrengthAnalysisViewModel @javax.inject.Inject constructor(
             .onFailure { error.value = it.message }
         busy.value = null
     }
+
+    // Auto-load an analysis that already exists (computed right after the session
+    // synced) without ever triggering a fresh LLM run.
+    private val peeked = mutableSetOf<String>()
+    fun peek(date: String) = viewModelScope.launch {
+        if (date in peeked || results.value.containsKey(date)) return@launch
+        peeked += date
+        runCatching { repo.analyzeStrength(date, peek = true) }
+            .onSuccess { if (it.ok) results.value = results.value + (date to it) }
+    }
 }
 
 @Composable
@@ -266,6 +276,9 @@ internal fun StrengthAnalysisSection(
     val busy by vm.busy.collectAsStateSafe()
     val error by vm.error.collectAsStateSafe()
     val a = results[date]
+
+    // Display a background-computed analysis immediately, no button press needed.
+    LaunchedEffect(date) { vm.peek(date) }
 
     SectionCard {
         Row(verticalAlignment = Alignment.CenterVertically) {

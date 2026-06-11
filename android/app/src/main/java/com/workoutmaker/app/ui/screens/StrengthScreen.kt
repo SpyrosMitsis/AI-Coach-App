@@ -43,6 +43,7 @@ import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.KeyboardArrowRight
 import androidx.compose.material.icons.filled.KeyboardArrowUp
 import androidx.compose.material.icons.filled.MoreVert
+import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Refresh
@@ -172,6 +173,7 @@ internal fun StrengthHomeView(vm: StrengthViewModel, onOpenHistory: () -> Unit =
     val prs by vm.lastPrs.collectAsStateSafe()
     val pendingSync by vm.pendingSync.collectAsStateSafe()
     val editingRoutine by vm.editingRoutine.collectAsStateSafe()
+    val todayPlanned by vm.todayPlanned.collectAsStateSafe()
     var showStatsPicker by remember { mutableStateOf(false) }
 
     if (prs.isNotEmpty()) {
@@ -216,6 +218,12 @@ internal fun StrengthHomeView(vm: StrengthViewModel, onOpenHistory: () -> Unit =
 
         // Deload banner (B2)
         report?.deload?.takeIf { it.recommended }?.let { DeloadBanner(mod, it.reason) }
+
+        // Today's planned strength session(s) from the calendar — the plan is
+        // the headline of this tab when one exists.
+        todayPlanned.forEach { pw ->
+            TodayPlannedCard(mod, pw, onStart = { vm.startPlannedFromHome(pw) })
+        }
 
         // Start actions: empty (primary) / repeat last / AI generate (ghost)
         Row(mod, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -282,6 +290,31 @@ internal fun StrengthHomeView(vm: StrengthViewModel, onOpenHistory: () -> Unit =
 
         // Program builder (B4)
         ProgramsCard(mod, vm.programs) { vm.createProgram(it) }
+    }
+}
+
+// Today's planned strength session from the calendar, with a one-tap start
+// into the logger (same handoff the Calendar's "Log this session" uses).
+@Composable
+internal fun TodayPlannedCard(
+    mod: Modifier,
+    pw: com.workoutmaker.app.data.PlannedWorkout,
+    onStart: () -> Unit,
+) {
+    SectionCard(mod, title = "Today's plan") {
+        WorkoutDetail(pw.workout_json)
+        if (pw.completed) {
+            Text("✓ Completed", style = MaterialTheme.typography.labelMedium, color = Sage)
+        } else {
+            Button(
+                onClick = onStart,
+                modifier = Modifier.fillMaxWidth().height(48.dp),
+                shape = RoundedCornerShape(12.dp),
+            ) {
+                Icon(Icons.Filled.PlayArrow, null)
+                Text("  Start this session")
+            }
+        }
     }
 }
 

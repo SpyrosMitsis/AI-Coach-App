@@ -152,6 +152,7 @@ export interface PlannedWorkout {
   // Added by migration 17 — a locked session is honored verbatim and excluded
   // from weekly/block re-planning. May be undefined until that migration runs.
   locked?: boolean;
+  created_at?: string | null;
 }
 
 export interface StrengthLog {
@@ -164,6 +165,31 @@ export interface StrengthLog {
   notes: string | null;
 }
 
+export interface RecoveryTrend {
+  latest: number;
+  baseline: number;
+  deltaPct: number;
+}
+
+export interface Recovery {
+  score: number;
+  band: string;
+  wellness: number;
+  hrv?: RecoveryTrend | null;
+  rhr?: RecoveryTrend | null;
+  sleep?: { hours: number; avgHours?: number | null } | null;
+  summary: string;
+}
+
+export interface GoalProgress {
+  goal: string;
+  goal_date?: string | null;
+  weeks_to_goal?: number | null;
+  phase?: string;
+  ctl_trend?: number;
+  on_track?: string;
+}
+
 export interface DailySummary {
   date: string;
   readiness: {
@@ -171,10 +197,13 @@ export interface DailySummary {
     band: "green" | "amber" | "red";
     components: { wellness: number; hrvDelta: number; rhrDelta: number };
   };
+  recovery?: Recovery | null;
+  vo2max?: { value: number; change?: number | null } | null;
   today_workout: PlannedWorkout | null;
   tsb_sparkline: { date: string; tsb: number; ctl: number; atl: number }[];
   weekly_load: { tss: number; target: number };
   active_llm_provider: LlmProvider;
+  goal?: GoalProgress | null;
 }
 
 export interface LlmKeyStatus {
@@ -201,4 +230,86 @@ export interface GenerationLog {
 // Epley 1RM estimate, shared by web + Android strength trackers.
 export function epley1rm(weightKg: number, reps: number): number {
   return weightKg * (1 + reps / 30);
+}
+
+// --- execution analysis (analyze-activity / analyze-strength) ---------------
+// Mirrors supabase/functions/_shared/analyze_core.ts output and the Android
+// models in data/Models.kt.
+export interface AnalysisComponent {
+  name: string;
+  score: number;
+  detail: string;
+}
+
+export interface AnalysisSeries {
+  t: number[];
+  pace: (number | null)[]; // sec/km, null while stopped
+  hr: (number | null)[];
+}
+
+export interface AnalysisTarget {
+  pace_lo?: number | null;
+  pace_hi?: number | null;
+  hr_lo?: number | null;
+  hr_hi?: number | null;
+}
+
+export interface AnalysisSplit {
+  km: number;
+  sec: number;
+  avg_hr?: number | null;
+}
+
+export interface ActivityAnalysis {
+  ok: boolean;
+  not_analyzed?: boolean; // peek miss
+  score?: number | null;
+  label?: string | null;
+  components?: AnalysisComponent[];
+  feedback?: string | null;
+  feedback_provider?: string | null;
+  series?: AnalysisSeries | null;
+  target?: AnalysisTarget | null;
+  splits?: AnalysisSplit[];
+  planned_title?: string | null;
+  streams_error?: string | null;
+  error?: string | null;
+}
+
+export interface StrengthAnalysisExercise {
+  name: string;
+  actual_sets: number;
+  top_weight_kg?: number | null;
+  volume_kg?: number | null;
+  planned?: string | null;
+}
+
+export interface StrengthAnalysisWatch {
+  duration_min?: number | null;
+  avg_hr?: number | null;
+  tss?: number | null;
+}
+
+export interface StrengthAnalysis {
+  ok: boolean;
+  not_analyzed?: boolean; // peek miss
+  score?: number | null;
+  label?: string | null;
+  components?: AnalysisComponent[];
+  feedback?: string | null;
+  feedback_provider?: string | null;
+  exercises?: StrengthAnalysisExercise[];
+  total_volume_kg?: number | null;
+  total_sets?: number | null;
+  watch?: StrengthAnalysisWatch | null;
+  planned_title?: string | null;
+  error?: string | null;
+}
+
+export interface CoachConversation {
+  id: string;
+  title: string | null;
+  messages: { role: "user" | "assistant"; content: string }[];
+  updated_at: string | null;
+  pinned: boolean;
 }

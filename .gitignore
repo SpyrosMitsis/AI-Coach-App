@@ -17,3 +17,4 @@ local.properties
 
 # personal data exports (test fixtures live in android/app/src/*/resources)
 /strong*.csv
+/notes*.md

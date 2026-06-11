@@ -169,6 +169,16 @@ class ActivityAnalysisViewModel @Inject constructor(
             .onFailure { error.value = it.message }
         busy.value = null
     }
+
+    // Auto-load an analysis that already exists (e.g. computed in the background
+    // after a sync) without ever triggering a fresh LLM run.
+    private val peeked = mutableSetOf<String>()
+    fun peek(activityId: String) = viewModelScope.launch {
+        if (activityId in peeked || results.value.containsKey(activityId)) return@launch
+        peeked += activityId
+        runCatching { repo.analyzeActivity(activityId, peek = true) }
+            .onSuccess { if (it.ok) results.value = results.value + (activityId to it) }
+    }
 }
 
 @Composable
@@ -180,6 +190,9 @@ internal fun AnalysisSection(
     val busy by vm.busy.collectAsStateSafe()
     val error by vm.error.collectAsStateSafe()
     val a = results[activity.id]
+
+    // Display a background-computed analysis immediately, no button press needed.
+    LaunchedEffect(activity.id) { vm.peek(activity.id) }
 
     SectionCard {
         Row(verticalAlignment = Alignment.CenterVertically) {

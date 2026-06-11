@@ -447,6 +447,7 @@ class StrengthRepository @Inject constructor(
     suspend fun pendingSyncCount(): Int = dao.pendingSyncCount()
 
     suspend fun syncPending(): Int {
+        val analyzeDates = mutableSetOf<String>()
         // 1. Push workouts logged/imported offline (+ their sets + strength_logs).
         for (w in dao.unsyncedWorkouts()) {
             val sets = dao.setsForWorkout(w.id)
@@ -475,6 +476,15 @@ class StrengthRepository @Inject constructor(
                 }
             }
             dao.markWorkoutSynced(w.id)
+            analyzeDates += date
+        }
+
+        // Kick off the execution analysis for the just-synced day(s) so the
+        // score + AI feedback are ready the moment the session is opened.
+        // force = true because the logs for those dates just changed.
+        // Best-effort — an analysis failure never fails the sync.
+        for (d in analyzeDates) {
+            runCatching { cloud.analyzeStrength(d, force = true) }.logFailure("syncPending/analyze")
         }
 
         // 2. Push routines.

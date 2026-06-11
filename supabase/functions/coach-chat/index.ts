@@ -35,6 +35,7 @@ import { runNativeToolLoop, supportsNativeTools } from "../_shared/llm_native_to
 const TOOL_RULES = `
 RULES:
 - Before giving training advice or a plan, READ the relevant data first (get_fitness, get_planned_week, get_recent_activities, get_strength_summary, get_readiness, get_execution_analysis, get_profile). Ground every claim in what you read.
+- NEVER ask the athlete to describe past workouts, sessions, or numbers you can look up yourself. Questions like "how did my last workouts go?" mean: call get_recent_activities and get_execution_analysis (plus get_strength_summary for lifting), then answer from the data.
 - Take ACTIONS (plan_week, generate_workout, move_workout, set_goal_race) ONLY after the athlete clearly agrees, then confirm what you did and why in your final message.
 - Call remember when the athlete shares a durable preference, constraint, or injury.
 - Be efficient: a few targeted reads, then answer. You have at most 6 tool calls per turn.
@@ -209,6 +210,14 @@ Deno.serve(async (req) => {
     );
     const weeklyTss = Math.round(a.filter((r) => (r.date ?? "") >= since7).reduce((s2, r) => s2 + (r.tss ?? 0), 0));
 
+    // Digest of the most recent sessions so "how did my workouts go?" never
+    // gets "I can't see your workouts" — deeper detail still comes from tools.
+    const recentLines = a.slice(0, 6).map((r) => {
+      const km = r.distance_m ? ` ${(r.distance_m / 1000).toFixed(1)} km` : "";
+      const tss = r.tss != null ? ` · ${Math.round(r.tss)} TSS` : "";
+      return `${r.date} ${r.type ?? "session"}${km}${tss}`;
+    });
+
     const context =
       `ATHLETE CONTEXT (use it, don't restate it verbatim):
 - Name: ${profile?.display_name ?? "athlete"}; today is ${today}
@@ -218,6 +227,7 @@ Deno.serve(async (req) => {
 - Fitness CTL ${ctl.toFixed(0)}, fatigue ATL ${atl.toFixed(0)}, form TSB ${(ctl - atl).toFixed(0)}
 - Readiness today: ${recovery.score}/100 (${recovery.band}); weekly load so far: ${weeklyTss} TSS
 - Today's plan: ${todayLine}
+- Last completed sessions (newest first): ${recentLines.join(" | ") || "none recorded in the last 28 days"}
 - ~${weeklyKm.toFixed(0)} km/week recently; training phase: ${trainingPhase(weeksToGoal)}` +
       (existingKnowledge.trim()
         ? `\n\nKNOWN CONSTRAINTS & PREFERENCES (already on file — honor these, ask before changing them):\n${existingKnowledge.trim()}`

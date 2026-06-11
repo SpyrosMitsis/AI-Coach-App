@@ -34,6 +34,8 @@ Deno.serve(async (req) => {
     if (act.analysis_json && body.force !== true) {
       return json(act.analysis_json);
     }
+    // peek: only return cached results — never trigger a fresh (LLM) analysis.
+    if (body.peek === true) return json({ ok: false, not_analyzed: true });
 
     const { data: profile } = await admin
       .from("user_profiles")

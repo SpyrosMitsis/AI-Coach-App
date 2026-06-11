@@ -109,6 +109,7 @@ data class WorkoutDetailUi(
 @HiltViewModel
 class StrengthViewModel @Inject constructor(
     private val repo: StrengthRepository,
+    private val workoutRepo: com.workoutmaker.app.data.WorkoutRepository,
     private val prefs: AppPreferences,
     private val handoff: StrengthHandoff,
     @ApplicationContext private val context: Context,
@@ -145,6 +146,16 @@ class StrengthViewModel @Inject constructor(
 
     /** User chose to keep their current session; drop the planned request. */
     fun keepCurrentSession() { pendingPlannedStart.value = null }
+
+    // Today's planned strength sessions from the calendar, shown on the
+    // Strength home so the plan is one tap from the logger.
+    val todayPlanned = MutableStateFlow<List<com.workoutmaker.app.data.PlannedWorkout>>(emptyList())
+
+    /** Start logging a planned calendar session from the Strength home card. */
+    fun startPlannedFromHome(w: com.workoutmaker.app.data.PlannedWorkout) {
+        val s = StrengthHandoff.Start(w.workout_json, w.id, w.date)
+        if (exercises.isNotEmpty()) pendingPlannedStart.value = s else startPlanned(s)
+    }
 
     // Device-local preferences (units, rest defaults, vibration…) for the UI,
     // plus a synchronous cache for timer/vibration decisions.
@@ -220,6 +231,15 @@ class StrengthViewModel @Inject constructor(
             loggedExercises.value = repo.loggedExercises()
             weeklyReport.value = repo.weeklyReport()
             pendingSync.value = repo.pendingSyncCount()
+        }
+        // Surface today's planned strength sessions (offline cache as fallback).
+        runCatching {
+            val today = java.time.LocalDate.now().toString()
+            val rows = runCatching { workoutRepo.plannedWorkouts(today) }
+                .getOrElse { workoutRepo.cachedPlannedWorkouts() }
+            todayPlanned.value = rows
+                .filter { it.date == today && it.type == "strength" }
+                .sortedBy { it.completed }
         }
         loading.value = false
         requestSync()

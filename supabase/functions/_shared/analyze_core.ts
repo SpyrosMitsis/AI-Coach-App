@@ -419,13 +419,19 @@ Write 3-5 sentences of specific coach feedback: completion vs the plan, load sel
   return analysis;
 }
 
-// Automatic post-sync analysis: pick the last couple of days' endurance
-// activities that match a planned session and aren't analyzed yet, and analyze
-// them (LLM feedback included) so results are ready when the user opens the
-// app or gets the evening prompt. Best-effort; caps LLM spend at 2/run.
+// Automatic post-sync analysis (best-effort, LLM spend capped per run):
+// - endurance: last 2 days' run/ride activities that match a planned session
+//   and aren't analyzed yet;
+// - strength: last 2 days' logged sessions with a planned strength workout —
+//   including a re-run when the watch recording arrived AFTER the first
+//   analysis (the immediate post-finish analysis has no HR/duration yet).
+// Results are ready when the user opens the app or gets the evening prompt.
 export async function autoAnalyzeRecent(admin: SupabaseClient, userId: string): Promise<number> {
+  let analyzed = 0;
+  const since = new Date(Date.now() - 2 * 86_400_000).toISOString().slice(0, 10);
+
+  // --- endurance -------------------------------------------------------------
   try {
-    const since = new Date(Date.now() - 2 * 86_400_000).toISOString().slice(0, 10);
     const { data: acts } = await admin
       .from("completed_activities")
       .select("*")
@@ -437,36 +443,77 @@ export async function autoAnalyzeRecent(admin: SupabaseClient, userId: string): 
       const t = (a.type ?? "").toLowerCase();
       return t.includes("run") || t.includes("ride") || t.includes("bike") || t.includes("cycl");
     });
-    if (!endurance.length) return 0;
+    if (endurance.length) {
+      const { data: profile } = await admin
+        .from("user_profiles")
+        .select("*")
+        .eq("id", userId)
+        .single();
+      let done = 0;
+      for (const act of endurance) {
+        if (done >= 2) break;
+        // Only auto-analyze when a plan existed that day — without one there is
+        // no execution score, and the user can still analyze manually.
+        const { data: plans } = await admin
+          .from("planned_workouts")
+          .select("id")
+          .eq("user_id", userId)
+          .eq("date", act.date)
+          .neq("type", "rest")
+          .limit(1);
+        if (!plans?.length) continue;
+        try {
+          await runActivityAnalysis(admin, userId, act, profile);
+          done++;
+        } catch (_e) { /* best-effort per activity */ }
+      }
+      analyzed += done;
+    }
+  } catch (_e) { /* best-effort */ }
 
-    const { data: profile } = await admin
-      .from("user_profiles")
-      .select("*")
-      .eq("id", userId)
-      .single();
-
-    let analyzed = 0;
-    for (const act of endurance) {
-      if (analyzed >= 2) break;
-      // Only auto-analyze when a plan existed that day — without one there is
-      // no execution score, and the user can still analyze manually.
+  // --- strength ----------------------------------------------------------------
+  try {
+    const { data: logRows } = await admin
+      .from("strength_logs")
+      .select("date")
+      .eq("user_id", userId)
+      .gte("date", since);
+    const dates = [...new Set((logRows ?? []).map((r) => r.date as string))];
+    let done = 0;
+    for (const date of dates) {
+      if (done >= 2) break;
       const { data: plans } = await admin
         .from("planned_workouts")
         .select("id")
         .eq("user_id", userId)
-        .eq("date", act.date)
-        .neq("type", "rest")
+        .eq("date", date)
+        .eq("type", "strength")
         .limit(1);
       if (!plans?.length) continue;
-      try {
-        await runActivityAnalysis(admin, userId, act, profile);
-        analyzed++;
-      } catch (_e) {
-        // best-effort per activity
+      const { data: existing } = await admin
+        .from("strength_analyses")
+        .select("analysis_json")
+        .eq("user_id", userId)
+        .eq("date", date)
+        .maybeSingle();
+      if (existing?.analysis_json) {
+        // Re-run only when the first analysis predates the watch recording.
+        if (existing.analysis_json.watch != null) continue;
+        const { data: w } = await admin
+          .from("completed_activities")
+          .select("type")
+          .eq("user_id", userId)
+          .eq("date", date);
+        const watchNow = (w ?? []).some((a) => activityMatchesPlanned("strength", a.type));
+        if (!watchNow) continue;
       }
+      try {
+        await runStrengthAnalysis(admin, userId, date);
+        done++;
+      } catch (_e) { /* best-effort per date */ }
     }
-    return analyzed;
-  } catch (_e) {
-    return 0;
-  }
+    analyzed += done;
+  } catch (_e) { /* best-effort */ }
+
+  return analyzed;
 }

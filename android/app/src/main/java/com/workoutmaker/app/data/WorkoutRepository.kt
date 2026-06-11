@@ -150,26 +150,29 @@ class WorkoutRepository @Inject constructor(
 
     // Garmin-style execution analysis (score, pace-vs-target series, AI
     // feedback). Cached server-side; force = true recomputes.
-    suspend fun analyzeActivity(activityId: String, force: Boolean = false): ActivityAnalysis =
+    // peek = true returns only an already-cached analysis (never runs the LLM).
+    suspend fun analyzeActivity(activityId: String, force: Boolean = false, peek: Boolean = false): ActivityAnalysis =
         json.decodeFromString(
             supabase.functions.invoke("analyze-activity") {
                 setBody(
                     kotlinx.serialization.json.buildJsonObject {
                         put("activity_id", JsonPrimitive(activityId))
                         put("force", JsonPrimitive(force))
+                        put("peek", JsonPrimitive(peek))
                     }.toString(),
                 )
             }.body(),
         )
 
     // Execution analysis for a logged strength session (planned vs lifted).
-    suspend fun analyzeStrength(date: String, force: Boolean = false): StrengthAnalysis =
+    suspend fun analyzeStrength(date: String, force: Boolean = false, peek: Boolean = false): StrengthAnalysis =
         json.decodeFromString(
             supabase.functions.invoke("analyze-strength") {
                 setBody(
                     kotlinx.serialization.json.buildJsonObject {
                         put("date", JsonPrimitive(date))
                         put("force", JsonPrimitive(force))
+                        put("peek", JsonPrimitive(peek))
                     }.toString(),
                 )
             }.body(),
