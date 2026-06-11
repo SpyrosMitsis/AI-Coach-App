@@ -7,6 +7,7 @@ import {
   elevationGain, fmtPaceSec, isManual, looksLike, maxHr, paceSecPerKm,
 } from "@/lib/activity";
 import { ArrowLeft } from "lucide-react";
+import { ActivityAnalysisSection } from "@/components/analysis-section";
 
 /** Full detail panel for a past workout/run/ride — rich Intervals.icu data. */
 export function ActivityDetailCard({
@@ -71,6 +72,8 @@ export function ActivityDetailCard({
             </p>
           </Section>
         )}
+
+        {!isManual(activity) && <ActivityAnalysisSection activityId={activity.id} />}
       </CardContent>
     </Card>
   );

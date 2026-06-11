@@ -11,6 +11,7 @@ import { Input } from "@/components/ui/input";
 import { cn } from "@/lib/utils";
 import type { OnboardingData } from "@shared/types";
 import { DataExport } from "@/components/data-export";
+import { useRouter } from "next/navigation";
 import { ChevronRight, Cpu, Activity, Moon, Sun } from "lucide-react";
 
 const GOALS = ["5K pace", "10K pace", "Half Marathon", "Marathon pace", "General fitness", "Muscle gain", "Body recomposition", "Hybrid athlete"];
@@ -29,10 +30,15 @@ export default function SettingsPage() {
     queryFn: async () => {
       const { data, error } = await supabase
         .from("user_profiles")
-        .select("onboarding, intervals_athlete_id")
+        .select("onboarding, intervals_athlete_id, auto_plan, coach_knowledge")
         .single();
       if (error) throw error;
-      return data as { onboarding: OnboardingData; intervals_athlete_id: string | null };
+      return data as {
+        onboarding: OnboardingData;
+        intervals_athlete_id: string | null;
+        auto_plan: boolean | null;
+        coach_knowledge: string | null;
+      };
     },
   });
 
@@ -52,6 +58,33 @@ export default function SettingsPage() {
     },
     onSuccess: () => qc.invalidateQueries({ queryKey: ["profile-onboarding"] }),
   });
+
+  const router = useRouter();
+  const [knowledge, setKnowledge] = useState<string | null>(null);
+  useEffect(() => {
+    if (profile.data && knowledge === null) setKnowledge(profile.data.coach_knowledge ?? "");
+  }, [profile.data, knowledge]);
+
+  const saveKnowledge = useMutation({
+    mutationFn: async (text: string) => {
+      const { error } = await supabase.from("user_profiles").update({ coach_knowledge: text }).neq("id", "");
+      if (error) throw error;
+    },
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["profile-onboarding"] }),
+  });
+
+  const setAutoPlan = useMutation({
+    mutationFn: async (enabled: boolean) => {
+      const { error } = await supabase.from("user_profiles").update({ auto_plan: enabled }).neq("id", "");
+      if (error) throw error;
+    },
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["profile-onboarding"] }),
+  });
+
+  const signOut = async () => {
+    await supabase.auth.signOut();
+    router.push("/login");
+  };
 
   const o = draft;
   const patch = (p: Partial<OnboardingData>) => setDraft((d) => ({ ...(d ?? {}), ...p }));
@@ -132,6 +165,14 @@ export default function SettingsPage() {
                 value={o.injury_history ?? ""}
                 onChange={(e) => patch({ injury_history: e.target.value })}
               />
+              <Field label="Weekly load target">
+                <Input
+                  type="number"
+                  placeholder="Target weekly TSS (blank = auto-estimate)"
+                  value={o.weekly_tss_target ?? ""}
+                  onChange={(e) => patch({ weekly_tss_target: e.target.value ? +e.target.value : undefined })}
+                />
+              </Field>
 
               <Button className="w-full" disabled={save.isPending} onClick={() => save.mutate(o)}>
                 {save.isPending ? "Saving…" : "Save profile"}
@@ -140,6 +181,50 @@ export default function SettingsPage() {
               {save.isError && <p className="text-center text-sm text-red-400">{(save.error as Error).message}</p>}
             </>
           )}
+        </CardContent>
+      </Card>
+
+      {/* Planning ------------------------------------------------------------ */}
+      <Card>
+        <CardHeader className="pb-2"><CardTitle className="text-base">Planning</CardTitle></CardHeader>
+        <CardContent>
+          <label className="flex items-start gap-3 text-sm">
+            <input
+              type="checkbox"
+              className="mt-1 accent-primary"
+              checked={profile.data?.auto_plan ?? false}
+              onChange={(e) => setAutoPlan.mutate(e.target.checked)}
+            />
+            <span>
+              <span className="block font-medium">Auto-plan next week</span>
+              <span className="block text-xs text-muted-foreground">
+                Every Sunday the AI lays out your week and (if connected) pushes it to your watch.
+              </span>
+            </span>
+          </label>
+        </CardContent>
+      </Card>
+
+      {/* Coach knowledge ----------------------------------------------------- */}
+      <Card>
+        <CardHeader className="pb-2">
+          <CardTitle className="text-base">Coach knowledge</CardTitle>
+          <CardDescription>
+            Durable facts your coach must respect on every plan — injuries, equipment, scheduling.
+            The coach chat updates this automatically; you can edit it here.
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-2">
+          <textarea
+            className="min-h-[120px] w-full rounded-md border border-input bg-transparent px-3 py-2 text-sm placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+            placeholder={"- Left knee tendinitis — avoid deep knee flexion\n- Home gym: dumbbells + bands only\n- Runs only before work (mornings)"}
+            value={knowledge ?? ""}
+            onChange={(e) => setKnowledge(e.target.value)}
+          />
+          <Button className="w-full" disabled={saveKnowledge.isPending || knowledge === null} onClick={() => saveKnowledge.mutate(knowledge ?? "")}>
+            {saveKnowledge.isPending ? "Saving…" : "Save knowledge"}
+          </Button>
+          {saveKnowledge.isSuccess && <p className="text-center text-sm text-primary">✓ Saved</p>}
         </CardContent>
       </Card>
 
@@ -174,6 +259,15 @@ export default function SettingsPage() {
 
       {/* Data export --------------------------------------------------------- */}
       <DataExport />
+
+      {/* Account ------------------------------------------------------------- */}
+      <Card>
+        <CardContent className="space-y-2 p-4">
+          <p className="text-sm font-semibold">Workout Maker</p>
+          <p className="text-xs text-muted-foreground">Personalised endurance + strength coaching.</p>
+          <Button variant="outline" className="w-full" onClick={signOut}>Sign out</Button>
+        </CardContent>
+      </Card>
     </div>
   );
 }

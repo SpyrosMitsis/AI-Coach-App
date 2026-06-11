@@ -1,37 +1,129 @@
 "use client";
 
+import { useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "@/lib/api";
+import { createClient } from "@/lib/supabase-browser";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
+import { Input } from "@/components/ui/input";
 import { ReadinessRing } from "@/components/charts/readiness-ring";
 import { TsbSparkline } from "@/components/charts/tsb-sparkline";
 import { WorkoutDetail } from "@/components/workout-detail";
 import { WellnessCheckin } from "@/components/wellness-checkin";
-import { PROVIDER_LABELS } from "@shared/types";
-import { fmtCost } from "@/lib/utils";
-import { RefreshCw, Sparkles } from "lucide-react";
+import { ActivityDetailCard } from "@/components/activity-detail";
+import { PROVIDER_LABELS, type CompletedActivity, type DailySummary } from "@shared/types";
+import { activityMeta, displayName } from "@/lib/activity";
+import { ChevronDown, ChevronRight, ChevronUp, RefreshCw, Sparkles } from "lucide-react";
+
+function readinessHeadline(band: string): string {
+  switch (band) {
+    case "green": return "Ready to train";
+    case "amber": return "Train with care";
+    default: return "Prioritize recovery";
+  }
+}
+
+function hoursToHm(h: number): string {
+  const hh = Math.floor(h);
+  const mm = Math.round((h - hh) * 60);
+  return `${hh}h ${String(mm).padStart(2, "0")}m`;
+}
+
+const tsbLabel = (tsb: number) =>
+  tsb > 15 ? "fresh" : tsb > 5 ? "ready" : tsb < -20 ? "high fatigue" : tsb < -10 ? "building" : "neutral";
 
 export default function DashboardPage() {
   const qc = useQueryClient();
+  const supabase = createClient();
   const summary = useQuery({ queryKey: ["daily-summary"], queryFn: api.dailySummary });
+  const [showDetails, setShowDetails] = useState(false);
+  const [instruction, setInstruction] = useState("");
+  const [didIt, setDidIt] = useState(false);
+  const [feedbackStatus, setFeedbackStatus] = useState<string | null>(null);
+  const [openActivity, setOpenActivity] = useState<CompletedActivity | null>(null);
 
-  const sync = useMutation({
-    mutationFn: api.syncIntervals,
-    onSuccess: () => qc.invalidateQueries({ queryKey: ["daily-summary"] }),
+  // Recent activities — same list the Android Home shows under the fitness card.
+  const recent = useQuery({
+    queryKey: ["recent-activities"],
+    queryFn: async () => {
+      const since = new Date(Date.now() - 28 * 86400000).toISOString().slice(0, 10);
+      const { data } = await supabase
+        .from("completed_activities").select("*")
+        .gte("date", since).order("date", { ascending: false }).limit(8);
+      return (data ?? []) as CompletedActivity[];
+    },
   });
 
+  const reload = () => {
+    qc.invalidateQueries({ queryKey: ["daily-summary"] });
+    qc.invalidateQueries({ queryKey: ["recent-activities"] });
+  };
+
+  const sync = useMutation({ mutationFn: api.syncIntervals, onSuccess: reload });
+
+  // Unified regenerate: if a workout exists and the user typed a tweak, revise
+  // it with that instruction; otherwise generate a fresh one.
   const generate = useMutation({
-    mutationFn: () => api.generateWorkout({ type: "auto", duration: 60 }),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ["daily-summary"] }),
+    mutationFn: (vars: { base?: DailySummary["today_workout"]; tweak: string }) =>
+      vars.base && vars.tweak.trim()
+        ? api.generateWorkout({ adjustment: vars.tweak.trim(), base_workout: vars.base.workout_json, push: true })
+        : api.generateWorkout({ type: "auto" }),
+    onSuccess: () => { setInstruction(""); reload(); },
   });
+
+  // #1 parity: done/skip + difficulty rating that adapts the next workout.
+  const feedback = useMutation({
+    mutationFn: async (vars: { completed: boolean; difficulty: string | null }) => {
+      const today = summary.data?.today_workout;
+      const date = new Date().toISOString().slice(0, 10);
+      if (today?.id) {
+        await supabase.from("planned_workouts").update({ completed: vars.completed }).eq("id", today.id);
+        await supabase.from("workout_feedback").insert({
+          planned_workout_id: today.id, date, completed: vars.completed, difficulty: vars.difficulty,
+        });
+      } else {
+        await supabase.from("workout_feedback").insert({ date, completed: vars.completed, difficulty: vars.difficulty });
+      }
+    },
+    onSuccess: (_d, vars) => {
+      setFeedbackStatus(vars.completed ? "✓ Marked done — your next workout will adapt." : "Marked skipped — the plan will rebuild gradually.");
+      setDidIt(false);
+      reload();
+    },
+    onError: (e) => setFeedbackStatus((e as Error).message),
+  });
+
+  // Load guardrail (E3 parity) from the CTL/ATL sparkline.
+  const loadGuard = useMemo(() => {
+    const pts = summary.data?.tsb_sparkline ?? [];
+    const last = pts[pts.length - 1];
+    if (!last || last.ctl < 1) return null;
+    const ratio = last.atl / last.ctl;
+    const weekAgo = pts[Math.max(0, pts.length - 8)];
+    const ramp = last.ctl - (weekAgo?.ctl ?? last.ctl);
+    if (ratio >= 1.5) return { color: "#f87171", headline: "High overload risk", detail: `Fatigue is well above your fitness (ratio ${ratio.toFixed(2)}). Take easy days — an injury/illness spike zone.` };
+    if (ratio >= 1.3 || ramp >= 8) return { color: "#fbbf24", headline: "Ramping fast", detail: `Building quickly (ratio ${ratio.toFixed(2)}, ramp ${ramp >= 0 ? "+" : ""}${ramp.toFixed(1)}). Fine short-term; don't hold it for many weeks.` };
+    if (ratio < 0.8 && ramp < 0) return { color: "#fbbf24", headline: "Detraining / very fresh", detail: `Load is low relative to fitness (ratio ${ratio.toFixed(2)}). Good for a taper; otherwise add volume.` };
+    return { color: "#4ade80", headline: "Load well managed", detail: `Fatigue:fitness ratio ${ratio.toFixed(2)} sits in the productive 0.8–1.3 range.` };
+  }, [summary.data]);
 
   if (summary.isLoading) return <Skeleton />;
   if (summary.isError) {
     return <p className="text-sm text-red-400">Failed to load: {(summary.error as Error).message}</p>;
   }
   const d = summary.data!;
+  const rec = d.recovery;
+  const band = rec?.band ?? d.readiness.band;
+  const score = rec?.score ?? d.readiness.score;
+  const last = d.tsb_sparkline[d.tsb_sparkline.length - 1];
+
+  if (openActivity) {
+    return (
+      <ActivityDetailCard activity={openActivity} planned={null} onBack={() => setOpenActivity(null)} />
+    );
+  }
 
   return (
     <div className="space-y-5">
@@ -50,76 +142,211 @@ export default function DashboardPage() {
 
       <WellnessCheckin />
 
-      <div className="grid gap-4 sm:grid-cols-2">
-        <Card>
-          <CardContent className="flex items-center gap-5 pt-5">
-            <ReadinessRing score={d.readiness.score} band={d.readiness.band} />
-            <div className="space-y-1 text-sm">
-              <p className="font-medium capitalize text-foreground">{d.readiness.band} — ready to train</p>
-              <p className="text-muted-foreground">Wellness {d.readiness.components.wellness.toFixed(1)}/5</p>
-              <p className="text-muted-foreground">HRV Δ {(d.readiness.components.hrvDelta * 100).toFixed(0)}%</p>
-              <p className="text-muted-foreground">RHR Δ {(d.readiness.components.rhrDelta * 100).toFixed(0)}%</p>
-            </div>
-          </CardContent>
-        </Card>
-
-        <Card>
-          <CardHeader className="pb-2">
-            <CardTitle className="flex items-center justify-between text-base">
-              Weekly Load
-              <span className="text-sm font-normal text-muted-foreground">
-                {d.weekly_load.tss} / {d.weekly_load.target} TSS
-              </span>
-            </CardTitle>
-          </CardHeader>
-          <CardContent>
-            <div className="h-3 w-full overflow-hidden rounded-full bg-secondary">
-              <div
-                className="h-full rounded-full bg-primary transition-all"
-                style={{ width: `${Math.min(100, (d.weekly_load.tss / d.weekly_load.target) * 100)}%` }}
-              />
-            </div>
-          </CardContent>
-        </Card>
-      </div>
-
+      {/* Readiness — summary by default; the signals live behind "Details". */}
       <Card>
-        <CardHeader className="flex-row items-center justify-between pb-2">
-          <CardTitle className="text-base">Today&apos;s Workout</CardTitle>
-          <Button size="sm" onClick={() => generate.mutate()} disabled={generate.isPending}>
-            <Sparkles className="h-4 w-4" />
-            {generate.isPending ? "Generating…" : d.today_workout ? "Regenerate" : "Generate"}
-          </Button>
-        </CardHeader>
-        <CardContent>
-          {generate.isError && (
-            <p className="mb-2 text-sm text-red-400">{(generate.error as Error).message}</p>
-          )}
-          {d.today_workout ? (
-            <>
-              <h3 className="mb-2 text-lg font-semibold">{d.today_workout.workout_json.title}</h3>
-              <WorkoutDetail workout={d.today_workout.workout_json} />
-            </>
-          ) : (
-            <p className="text-sm text-muted-foreground">No workout planned. Generate one above.</p>
-          )}
-          {generate.data && (
-            <p className="mt-3 text-xs text-muted-foreground">
-              Generated via {PROVIDER_LABELS[generate.data.provider]} · {fmtCost(generate.data.estimated_cost_usd)}
-              {generate.data.intervals_event_id && " · pushed to Intervals.icu"}
-            </p>
+        <CardContent className="space-y-2 pt-5">
+          <div className="flex items-center gap-5">
+            <ReadinessRing score={score} band={band as "green" | "amber" | "red"} />
+            <div className="space-y-1">
+              <p className="font-semibold">{readinessHeadline(band)}</p>
+              {rec?.summary && <p className="text-sm text-muted-foreground">{rec.summary}</p>}
+            </div>
+          </div>
+          <button
+            onClick={() => setShowDetails((v) => !v)}
+            className="flex items-center gap-1 text-sm text-muted-foreground hover:text-foreground"
+          >
+            {showDetails ? "Hide details" : "Details"}
+            {showDetails ? <ChevronUp className="h-4 w-4" /> : <ChevronDown className="h-4 w-4" />}
+          </button>
+          {showDetails && (
+            <div className="space-y-1.5 pt-1">
+              {rec?.hrv && (
+                <MetricRow
+                  label="HRV" value={`${rec.hrv.latest.toFixed(0)} ms`}
+                  trendLabel={`${rec.hrv.deltaPct >= 0 ? "↑" : "↓"}${Math.abs(rec.hrv.deltaPct * 100).toFixed(0)}%`}
+                  good={rec.hrv.deltaPct >= 0}
+                />
+              )}
+              {rec?.rhr && (
+                <MetricRow
+                  label="Resting HR" value={`${rec.rhr.latest.toFixed(0)} bpm`}
+                  trendLabel={`${rec.rhr.deltaPct >= 0 ? "↑" : "↓"}${Math.abs(rec.rhr.deltaPct * 100).toFixed(0)}%`}
+                  good={rec.rhr.deltaPct <= 0}
+                />
+              )}
+              {rec?.sleep && (
+                <MetricRow label="Sleep" value={hoursToHm(rec.sleep.hours) + (rec.sleep.avgHours ? ` · avg ${hoursToHm(rec.sleep.avgHours)}` : "")} />
+              )}
+              <MetricRow label="Wellness" value={`${(rec?.wellness ?? d.readiness.components.wellness).toFixed(1)} / 5`} />
+              <MetricRow label="Weekly load" value={`${d.weekly_load.tss} / ${d.weekly_load.target} TSS`} />
+              {d.vo2max && (
+                <MetricRow
+                  label="VO₂ max" value={`${d.vo2max.value.toFixed(1)} ml/kg/min`}
+                  trendLabel={d.vo2max.change != null && Math.abs(d.vo2max.change) >= 0.1
+                    ? `${d.vo2max.change > 0 ? "↑" : "↓"}${Math.abs(d.vo2max.change).toFixed(1)}` : undefined}
+                  good={(d.vo2max.change ?? 0) >= 0}
+                />
+              )}
+            </div>
           )}
         </CardContent>
       </Card>
 
+      {/* Goal countdown */}
+      {d.goal && (
+        <Card>
+          <CardHeader className="pb-2"><CardTitle className="text-base">Goal · {d.goal.goal}</CardTitle></CardHeader>
+          <CardContent className="flex items-center justify-between">
+            <div>
+              <p className="font-semibold">
+                {(() => {
+                  const days = d.goal!.goal_date
+                    ? Math.round((new Date(d.goal!.goal_date + "T00:00:00").getTime() - Date.now()) / 86400000)
+                    : null;
+                  if (days != null && days > 0) return `${days} days to go`;
+                  if (days === 0) return "Race day! 🏁";
+                  if (d.goal!.weeks_to_goal != null) return `${d.goal!.weeks_to_goal} weeks to go`;
+                  return "No date set";
+                })()}
+              </p>
+              {d.goal.phase && <p className="text-sm text-muted-foreground">Phase: {d.goal.phase}</p>}
+            </div>
+            {d.goal.on_track && <Badge variant="outline">{d.goal.on_track}</Badge>}
+          </CardContent>
+        </Card>
+      )}
+
+      {/* Today's workout with tweak-regenerate + done/skip/rating */}
+      <Card>
+        <CardHeader className="pb-2">
+          <CardTitle className="text-base">Today&apos;s Workout</CardTitle>
+        </CardHeader>
+        <CardContent className="space-y-3">
+          {generate.isError && (
+            <p className="text-sm text-red-400">{(generate.error as Error).message}</p>
+          )}
+          {d.today_workout ? (
+            <>
+              <h3 className="text-lg font-semibold">{d.today_workout.workout_json.title}</h3>
+              <WorkoutDetail workout={d.today_workout.workout_json} />
+              <Input
+                placeholder="Tweak the regenerate (optional) — e.g. shorter, I'm sore, add hills"
+                value={instruction}
+                onChange={(e) => setInstruction(e.target.value)}
+              />
+            </>
+          ) : (
+            <p className="text-sm text-muted-foreground">No workout planned. Generate one below.</p>
+          )}
+          <Button
+            className="w-full"
+            disabled={generate.isPending}
+            onClick={() => generate.mutate({ base: d.today_workout, tweak: instruction })}
+          >
+            <Sparkles className="h-4 w-4" />
+            {generate.isPending ? "Generating…" : d.today_workout ? "Regenerate" : "Generate workout"}
+          </Button>
+
+          {d.today_workout && (
+            d.today_workout.completed ? (
+              <p className="text-sm font-medium text-primary">✓ Completed today</p>
+            ) : !didIt ? (
+              <div className="flex gap-2">
+                <Button variant="outline" className="flex-1" onClick={() => setDidIt(true)}>✓ I did this workout</Button>
+                <Button variant="ghost" onClick={() => feedback.mutate({ completed: false, difficulty: null })}>Skip</Button>
+              </div>
+            ) : (
+              <div className="space-y-1.5">
+                <p className="label-caps">How did it go?</p>
+                <div className="flex gap-2">
+                  {[["too_easy", "Too easy"], ["just_right", "Just right"], ["too_hard", "Too hard"]].map(([k, label]) => (
+                    <Button key={k} variant="outline" size="sm" className="flex-1" onClick={() => feedback.mutate({ completed: true, difficulty: k })}>
+                      {label}
+                    </Button>
+                  ))}
+                </div>
+              </div>
+            )
+          )}
+          {feedbackStatus && <p className="text-sm text-primary">{feedbackStatus}</p>}
+        </CardContent>
+      </Card>
+
+      {/* Fitness · Fatigue · Form */}
       <Card>
         <CardHeader className="pb-2">
           <CardTitle className="text-base">Fitness · Fatigue · Form (14d)</CardTitle>
         </CardHeader>
-        <CardContent>
+        <CardContent className="space-y-3">
+          {last && (
+            <div className="flex justify-between text-center">
+              <FitnessStat label="Fitness" value={last.ctl.toFixed(0)} sub="CTL" color="hsl(var(--primary))" />
+              <FitnessStat label="Fatigue" value={last.atl.toFixed(0)} sub="ATL" color="hsl(var(--sand))" />
+              <FitnessStat
+                label="Form" value={`${last.tsb >= 0 ? "+" : ""}${last.tsb.toFixed(0)}`} sub={tsbLabel(last.tsb)}
+                color={last.tsb > 5 ? "#4ade80" : last.tsb < -20 ? "#f87171" : last.tsb < -10 ? "#fbbf24" : "hsl(var(--primary))"}
+              />
+            </div>
+          )}
+          {loadGuard && (
+            <div className="flex items-start gap-2.5 rounded-xl p-3" style={{ background: `${loadGuard.color}26` }}>
+              <span className="mt-1.5 h-2.5 w-2.5 shrink-0 rounded-full" style={{ background: loadGuard.color }} />
+              <div>
+                <p className="text-sm font-semibold" style={{ color: loadGuard.color }}>{loadGuard.headline}</p>
+                <p className="text-xs text-muted-foreground">{loadGuard.detail}</p>
+              </div>
+            </div>
+          )}
           <TsbSparkline data={d.tsb_sparkline} />
         </CardContent>
       </Card>
+
+      {/* Recent activities */}
+      {(recent.data ?? []).length > 0 && (
+        <Card>
+          <CardHeader className="pb-2"><CardTitle className="text-base">Recent activities</CardTitle></CardHeader>
+          <CardContent className="space-y-1">
+            {recent.data!.map((a) => (
+              <button
+                key={a.id}
+                onClick={() => setOpenActivity(a)}
+                className="flex w-full items-center gap-2 rounded-lg px-2 py-2 text-left hover:bg-secondary/50"
+              >
+                <div className="min-w-0 flex-1">
+                  <p className="truncate text-sm font-medium">{a.date} · {displayName(a)}</p>
+                  <p className="text-xs text-muted-foreground">{activityMeta(a).join(" · ")}</p>
+                </div>
+                <ChevronRight className="h-4 w-4 shrink-0 text-muted-foreground" />
+              </button>
+            ))}
+          </CardContent>
+        </Card>
+      )}
+    </div>
+  );
+}
+
+function MetricRow({ label, value, trendLabel, good }: { label: string; value: string; trendLabel?: string; good?: boolean }) {
+  return (
+    <div className="flex items-center justify-between rounded-lg bg-background/60 px-3 py-2 text-sm">
+      <span className="text-muted-foreground">{label}</span>
+      <span className="flex items-center gap-2 font-medium tabular-nums">
+        {value}
+        {trendLabel && (
+          <span className="text-xs" style={{ color: good ? "#4ade80" : "#f87171" }}>{trendLabel}</span>
+        )}
+      </span>
+    </div>
+  );
+}
+
+function FitnessStat({ label, value, sub, color }: { label: string; value: string; sub: string; color: string }) {
+  return (
+    <div>
+      <p className="text-xs text-muted-foreground">{label}</p>
+      <p className="text-xl font-semibold" style={{ color }}>{value}</p>
+      <p className="text-xs text-muted-foreground">{sub}</p>
     </div>
   );
 }

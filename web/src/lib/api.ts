@@ -2,8 +2,10 @@
 
 import { createClient } from "./supabase-browser";
 import type {
+  ActivityAnalysis,
   DailySummary,
   LlmProvider,
+  StrengthAnalysis,
   Workout,
 } from "@shared/types";
 
@@ -73,6 +75,8 @@ export const api = {
     push?: boolean;
     request?: string; // free-text "Friday social 10k with friends"
     lock?: boolean; // pin it so re-planning won't touch it
+    adjustment?: string; // tweak an existing workout ("shorter, I'm sore")
+    base_workout?: Workout;
   }) =>
     invoke<{
       workout: Workout;
@@ -105,6 +109,10 @@ export const api = {
   moveWorkout: (workout_id: string, new_date: string) =>
     invoke<{ ok: boolean; event_moved: boolean }>("move-workout", { workout_id, new_date }),
 
+  // Delete a planned workout (and its Intervals.icu/watch event) server-side.
+  deletePlannedWorkout: (workout_id: string) =>
+    invoke<{ ok: boolean }>("delete-workout", { workout_id }),
+
   testLlmKey: (provider: LlmProvider, apiKey: string, sampleGeneration = false) =>
     invoke<{
       provider: LlmProvider;
@@ -114,4 +122,91 @@ export const api = {
       sample: string | null;
       estimated_cost_usd: number;
     }>("test-llm-key", { provider, apiKey, sampleGeneration }),
+
+  // Live model list from the provider's API (used by the model override picker).
+  listModels: (provider: LlmProvider) =>
+    invoke<{ provider: string; default_model: string | null; current: string | null; models: string[]; error: string | null }>(
+      "list-models",
+      { provider },
+    ),
+
+  // Garmin-style execution analysis. peek=true only returns a cached result
+  // (never triggers a fresh LLM run); force=true recomputes.
+  analyzeActivity: (activityId: string, opts?: { force?: boolean; peek?: boolean }) =>
+    invoke<ActivityAnalysis>("analyze-activity", { activity_id: activityId, ...opts }),
+
+  analyzeStrength: (date: string, opts?: { force?: boolean; peek?: boolean }) =>
+    invoke<StrengthAnalysis>("analyze-strength", { date, ...opts }),
+
+  coachFinalize: (
+    messages: { role: "user" | "assistant"; content: string }[],
+    kind: "workout" | "plan",
+    conversationId?: string | null,
+  ) =>
+    invoke<{ template: unknown; template_id: string | null }>("coach-chat", {
+      messages, mode: "finalize", finalizeKind: kind,
+      conversationId: conversationId ?? undefined, save: true,
+    }),
 };
+
+// --- agentic coach streaming (SSE) -----------------------------------------
+// Mirrors the Android client: POST with stream=true, then read `data:` lines
+// carrying {tool}, {token}, {error} and a final {done, conversation_id,
+// tools_used} event.
+export interface CoachStreamResult {
+  conversationId: string | null;
+  toolsUsed: string[];
+  error: string | null;
+  gotReply: boolean;
+}
+
+export async function coachChatStream(
+  messages: { role: "user" | "assistant"; content: string }[],
+  conversationId: string | null,
+  onTool: (name: string) => void,
+  onToken: (text: string) => void,
+): Promise<CoachStreamResult> {
+  const supabase = createClient();
+  const { data: { session } } = await supabase.auth.getSession();
+  const url = `${process.env.NEXT_PUBLIC_SUPABASE_URL}/functions/v1/coach-chat`;
+  const res = await fetch(url, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${session?.access_token ?? ""}`,
+      apikey: process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
+    },
+    body: JSON.stringify({
+      messages, mode: "chat", conversationId: conversationId ?? undefined,
+      purpose: "setup", stream: true,
+    }),
+  });
+  if (!res.ok || !res.body) throw new Error(humanizeError(`HTTP ${res.status}`));
+
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let buf = "";
+  const out: CoachStreamResult = { conversationId: null, toolsUsed: [], error: null, gotReply: false };
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buf += decoder.decode(value, { stream: true });
+    const lines = buf.split("\n");
+    buf = lines.pop() ?? "";
+    for (const line of lines) {
+      if (!line.startsWith("data:")) continue;
+      const data = line.slice(5).trim();
+      if (!data) continue;
+      let obj: Record<string, unknown>;
+      try { obj = JSON.parse(data); } catch { continue; }
+      if (typeof obj.tool === "string") onTool(obj.tool);
+      if (typeof obj.token === "string") { out.gotReply = true; onToken(obj.token); }
+      if (typeof obj.error === "string") out.error = humanizeError(obj.error);
+      if (obj.done) {
+        out.conversationId = (obj.conversation_id as string | null) ?? null;
+        out.toolsUsed = Array.isArray(obj.tools_used) ? (obj.tools_used as string[]) : [];
+      }
+    }
+  }
+  return out;
+}

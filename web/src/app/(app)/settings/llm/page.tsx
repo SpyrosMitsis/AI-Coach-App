@@ -36,11 +36,27 @@ export default function LlmSettingsPage() {
     queryFn: async () => {
       const { data, error } = await supabase
         .from("user_profiles")
-        .select("active_llm_provider, llm_fallback_chain")
+        .select("active_llm_provider, llm_fallback_chain, llm_models")
         .single();
       if (error) throw error;
-      return data as { active_llm_provider: LlmProvider; llm_fallback_chain: LlmProvider[] };
+      return data as {
+        active_llm_provider: LlmProvider;
+        llm_fallback_chain: LlmProvider[];
+        llm_models: Record<string, string> | null;
+      };
     },
+  });
+
+  // Per-provider model override (user_profiles.llm_models). Empty → defaults.
+  const setModelOverride = useMutation({
+    mutationFn: async (vars: { provider: LlmProvider; model: string | null }) => {
+      const current = { ...(profile.data?.llm_models ?? {}) };
+      if (vars.model) current[vars.provider] = vars.model;
+      else delete current[vars.provider];
+      const { error } = await supabase.from("user_profiles").update({ llm_models: current }).neq("id", "");
+      if (error) throw error;
+    },
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["profile"] }),
   });
 
   const keys = useQuery({
@@ -141,7 +157,14 @@ export default function LlmSettingsPage() {
 
       <div className="space-y-3">
         {ALL.map((p) => (
-          <ProviderRow key={p} provider={p} status={keyMap.get(p) ?? null} costPerGen={perGenCost(p)} />
+          <ProviderRow
+            key={p}
+            provider={p}
+            status={keyMap.get(p) ?? null}
+            costPerGen={perGenCost(p)}
+            modelOverride={profile.data?.llm_models?.[p] ?? null}
+            onModelChange={(model) => setModelOverride.mutate({ provider: p, model })}
+          />
         ))}
       </div>
     </div>
@@ -152,14 +175,27 @@ function ProviderRow({
   provider,
   status,
   costPerGen,
+  modelOverride,
+  onModelChange,
 }: {
   provider: LlmProvider;
   status: { is_valid: boolean | null; last_tested_at: string | null } | null;
   costPerGen: number;
+  modelOverride: string | null;
+  onModelChange: (model: string | null) => void;
 }) {
   const qc = useQueryClient();
   const [key, setKey] = useState("");
   const [sample, setSample] = useState<string | null>(null);
+  const [showModels, setShowModels] = useState(false);
+
+  // Live model list from the provider's API (the list-models edge function),
+  // fetched only when the picker is opened.
+  const models = useQuery({
+    queryKey: ["models", provider],
+    enabled: showModels,
+    queryFn: () => api.listModels(provider),
+  });
 
   const test = useMutation({
     mutationFn: (sampleGen: boolean) => api.testLlmKey(provider, key, sampleGen),
@@ -222,6 +258,30 @@ function ProviderRow({
           <pre className="max-h-40 overflow-auto rounded-md bg-secondary/50 p-2 text-[11px] text-muted-foreground">
             {sample}
           </pre>
+        )}
+
+        {/* Model override (defaults to the recommended model) */}
+        <button
+          onClick={() => setShowModels((v) => !v)}
+          className="text-xs text-muted-foreground hover:text-foreground"
+        >
+          Model: <span className="font-medium">{modelOverride ?? `${PROVIDER_MODELS[provider]} (default)`}</span> ▾
+        </button>
+        {showModels && (
+          <div className="space-y-1">
+            {models.isLoading && <p className="text-xs text-muted-foreground">Loading models…</p>}
+            {models.data?.error && <p className="text-xs text-red-400">{models.data.error}</p>}
+            {models.data && !models.data.error && (
+              <select
+                className="h-9 w-full rounded-md border border-input bg-transparent px-3 text-sm"
+                value={modelOverride ?? ""}
+                onChange={(e) => { onModelChange(e.target.value || null); setShowModels(false); }}
+              >
+                <option value="">{PROVIDER_MODELS[provider]} (default)</option>
+                {(models.data.models ?? []).map((m) => <option key={m} value={m}>{m}</option>)}
+              </select>
+            )}
+          </div>
         )}
       </CardContent>
     </Card>
