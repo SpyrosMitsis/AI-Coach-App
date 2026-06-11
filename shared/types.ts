@@ -156,6 +156,8 @@ export interface PlannedWorkout {
   // Added by migration 17 — a locked session is honored verbatim and excluded
   // from weekly/block re-planning. May be undefined until that migration runs.
   locked?: boolean;
+  // Added by migration 26 — user pressed Skip; shown collapsed with an Undo.
+  skipped?: boolean;
   created_at?: string | null;
 }
 

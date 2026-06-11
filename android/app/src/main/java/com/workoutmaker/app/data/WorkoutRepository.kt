@@ -467,8 +467,16 @@ class WorkoutRepository @Inject constructor(
         supabase.postgrest.from("races").insert(row)
     }
 
-    suspend fun deleteRace(id: String) {
-        supabase.postgrest.from("races").delete { filter { eq("id", id) } }
+    suspend fun deleteRace(race: Race) {
+        race.id?.let { id ->
+            supabase.postgrest.from("races").delete { filter { eq("id", id) } }
+        }
+        // Deleting the active goal also clears it from the profile (and Home).
+        val p = loadProfile()
+        if (p != null && p.goal == race.name && p.goal_date == race.date) {
+            val pace = if (race.target != null && p.target_pace == race.target) null else p.target_pace
+            saveProfile(p.copy(goal = null, goal_date = null, target_pace = pace))
+        }
     }
 
     // Make a goal the periodization anchor: drives weeks-to-goal / phase / taper.
@@ -543,11 +551,30 @@ class WorkoutRepository @Inject constructor(
 
     // Mark a planned workout done/skipped + log the feedback in one go.
     suspend fun markPlannedComplete(plannedId: String, date: String, completed: Boolean, difficulty: String?, rpe: Int?) {
-        supabase.postgrest.from("planned_workouts")
-            .update(mapOf("completed" to JsonPrimitive(completed))) { filter { eq("id", plannedId) } }
+        runCatching {
+            supabase.postgrest.from("planned_workouts")
+                .update(mapOf("completed" to JsonPrimitive(completed), "skipped" to JsonPrimitive(!completed))) {
+                    filter { eq("id", plannedId) }
+                }
+        }.getOrElse { // pre-migration-26 fallback: no `skipped` column yet
+            supabase.postgrest.from("planned_workouts")
+                .update(mapOf("completed" to JsonPrimitive(completed))) { filter { eq("id", plannedId) } }
+        }
         supabase.postgrest.from("workout_feedback").insert(
             WorkoutFeedback(planned_workout_id = plannedId, date = date, completed = completed, actual_rpe = rpe, difficulty = difficulty),
         )
+    }
+
+    // Undo a skip: restore the session and drop the skip feedback so the
+    // planner doesn't count it against adherence.
+    suspend fun undoSkip(plannedId: String) {
+        supabase.postgrest.from("planned_workouts")
+            .update(mapOf("skipped" to JsonPrimitive(false))) { filter { eq("id", plannedId) } }
+        runCatching {
+            supabase.postgrest.from("workout_feedback").delete {
+                filter { eq("planned_workout_id", plannedId); eq("completed", false) }
+            }
+        }.logFailure("undoSkip/feedback")
     }
 
     // Past activities pulled from Intervals.icu (or logged manually).

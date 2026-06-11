@@ -47,11 +47,12 @@ function mondayOf(date: string): string {
 
 const todayIso = () => new Date().toISOString().slice(0, 10);
 
-// "Primary session" ordering shared with Android Home/Calendar: incomplete
-// before completed, non-rest before rest, newest created_at first.
+// "Primary session" ordering shared with Android Home/Calendar: still-pending
+// before done/skipped, non-rest before rest, newest created_at first.
 function primaryFirst(sessions: PlannedWorkout[]): PlannedWorkout[] {
   return [...sessions].sort((a, b) => {
-    if (!!a.completed !== !!b.completed) return a.completed ? 1 : -1;
+    const as = !!a.completed || !!a.skipped, bs = !!b.completed || !!b.skipped;
+    if (as !== bs) return as ? 1 : -1;
     const ar = a.type === "rest" ? 1 : 0, br = b.type === "rest" ? 1 : 0;
     if (ar !== br) return ar - br;
     return (b.created_at ?? "").localeCompare(a.created_at ?? "");
@@ -163,8 +164,13 @@ export default function CalendarPage() {
   const markComplete = useMutation({
     mutationFn: async (vars: { w: PlannedWorkout; completed: boolean }) => {
       const { error } = await supabase.from("planned_workouts")
-        .update({ completed: vars.completed }).eq("id", vars.w.id);
-      if (error) throw error;
+        .update({ completed: vars.completed, skipped: !vars.completed }).eq("id", vars.w.id);
+      // Pre-migration-26 fallback: no `skipped` column yet.
+      if (error) {
+        const { error: e2 } = await supabase.from("planned_workouts")
+          .update({ completed: vars.completed }).eq("id", vars.w.id);
+        if (e2) throw e2;
+      }
       await supabase.from("workout_feedback").insert({
         planned_workout_id: vars.w.id, date: vars.w.date,
         completed: vars.completed, difficulty: vars.completed ? "just_right" : null,
@@ -176,8 +182,15 @@ export default function CalendarPage() {
 
   const markUndone = useMutation({
     mutationFn: async (w: PlannedWorkout) => {
-      const { error } = await supabase.from("planned_workouts").update({ completed: false }).eq("id", w.id);
-      if (error) throw error;
+      const { error } = await supabase.from("planned_workouts")
+        .update({ completed: false, skipped: false }).eq("id", w.id);
+      // Pre-migration-26 fallback: no `skipped` column yet.
+      if (error) {
+        const { error: e2 } = await supabase.from("planned_workouts").update({ completed: false }).eq("id", w.id);
+        if (e2) throw e2;
+      }
+      // Drop any skip feedback so the planner doesn't count it against you.
+      await supabase.from("workout_feedback").delete().eq("planned_workout_id", w.id).eq("completed", false);
     },
     onSuccess: () => setBannerAndReload("Marked as not done"),
     onError: fail,
@@ -438,7 +451,7 @@ export default function CalendarPage() {
                 <CardHeader className="pb-2">
                   <div className="flex items-center gap-1">
                     <p className="label-caps flex-1" style={{ color: w.type === "strength" ? "hsl(var(--sand))" : undefined }}>
-                      {w.type}{w.locked ? " · locked" : ""}
+                      {w.type}{w.locked ? " · locked" : ""}{w.skipped && !w.completed ? " · skipped" : ""}
                     </p>
                     <button
                       onClick={() => toggleLock.mutate(w)}
@@ -492,6 +505,13 @@ export default function CalendarPage() {
                         <p className="flex items-center gap-1.5 text-sm text-primary"><Check className="h-4 w-4" /> Completed</p>
                         <button className="text-xs text-muted-foreground hover:text-foreground" onClick={() => markUndone.mutate(w)}>
                           Mark as not done
+                        </button>
+                      </div>
+                    ) : w.skipped ? (
+                      <div className="flex items-center justify-between">
+                        <p className="text-sm text-muted-foreground">Skipped — the plan will adapt.</p>
+                        <button className="text-xs text-muted-foreground hover:text-foreground" onClick={() => markUndone.mutate(w)}>
+                          Undo skip
                         </button>
                       </div>
                     ) : (

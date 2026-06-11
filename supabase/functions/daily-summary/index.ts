@@ -35,10 +35,12 @@ Deno.serve(async (req) => {
       ]);
 
     // When today holds several sessions, pick the SAME "primary" the calendar
-    // shows first: incomplete before completed, real work before rest, newest
-    // first — so Home and Calendar never disagree about today's workout.
+    // shows first: still-pending before done/skipped, real work before rest,
+    // newest first — so Home and Calendar never disagree about today's workout.
     const todayWorkout = [...(planned ?? [])].sort((a, b) => {
-      if (!!a.completed !== !!b.completed) return a.completed ? 1 : -1;
+      const aSettled = !!a.completed || !!a.skipped;
+      const bSettled = !!b.completed || !!b.skipped;
+      if (aSettled !== bSettled) return aSettled ? 1 : -1;
       const aRest = a.type === "rest" ? 1 : 0;
       const bRest = b.type === "rest" ? 1 : 0;
       if (aRest !== bRest) return aRest - bRest;

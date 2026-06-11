@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 import { useRouter } from "next/navigation";
-import { createClient } from "@/lib/supabase-browser";
+import { createClient, currentUserId } from "@/lib/supabase-browser";
 import { api } from "@/lib/api";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -63,14 +63,15 @@ export default function OnboardingPage() {
         const res = await api.testLlmKey(provider, llmKey, false);
         if (!res.is_valid) throw new Error(res.error ?? "key invalid");
       }
-      await supabase.from("user_profiles").update({
+      const { error } = await supabase.from("user_profiles").update({
         onboarding: {
           goal, experience, days, session_duration: duration, equipment,
           race_result: raceResult || undefined, injury_history: injury || undefined,
         },
         onboarding_complete: true,
         active_llm_provider: provider,
-      }).neq("id", "");
+      }).eq("id", await currentUserId(supabase));
+      if (error) throw error;
       router.push("/dashboard");
       router.refresh();
     } catch (e) {

@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { createClient } from "@/lib/supabase-browser";
+import { createClient, currentUserId } from "@/lib/supabase-browser";
 import { api } from "@/lib/api";
 import {
   PROVIDER_FREE_KEY_URL,
@@ -53,7 +53,7 @@ export default function LlmSettingsPage() {
       const current = { ...(profile.data?.llm_models ?? {}) };
       if (vars.model) current[vars.provider] = vars.model;
       else delete current[vars.provider];
-      const { error } = await supabase.from("user_profiles").update({ llm_models: current }).neq("id", "");
+      const { error } = await supabase.from("user_profiles").update({ llm_models: current }).eq("id", await currentUserId(supabase));
       if (error) throw error;
     },
     onSuccess: () => qc.invalidateQueries({ queryKey: ["profile"] }),
@@ -72,7 +72,7 @@ export default function LlmSettingsPage() {
 
   const setActive = useMutation({
     mutationFn: async (provider: LlmProvider) => {
-      const { error } = await supabase.from("user_profiles").update({ active_llm_provider: provider }).neq("id", "");
+      const { error } = await supabase.from("user_profiles").update({ active_llm_provider: provider }).eq("id", await currentUserId(supabase));
       if (error) throw error;
     },
     onSuccess: () => qc.invalidateQueries({ queryKey: ["profile"] }),
@@ -80,7 +80,7 @@ export default function LlmSettingsPage() {
 
   const setChain = useMutation({
     mutationFn: async (chain: LlmProvider[]) => {
-      const { error } = await supabase.from("user_profiles").update({ llm_fallback_chain: chain }).neq("id", "");
+      const { error } = await supabase.from("user_profiles").update({ llm_fallback_chain: chain }).eq("id", await currentUserId(supabase));
       if (error) throw error;
     },
     onSuccess: () => qc.invalidateQueries({ queryKey: ["profile"] }),

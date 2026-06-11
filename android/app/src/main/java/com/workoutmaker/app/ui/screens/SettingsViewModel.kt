@@ -244,9 +244,12 @@ class SettingsViewModel @Inject constructor(
         }.onSuccess { saveStatus.value = "✓ Goal added" }.onFailure { saveStatus.value = "Couldn't add: ${it.message}" }
     }
 
-    fun deleteRace(id: String) = viewModelScope.launch {
-        runCatching { repo.deleteRace(id); races.value = repo.races() }
-            .onFailure { saveStatus.value = "Couldn't delete: ${it.message}" }
+    fun deleteRace(r: com.workoutmaker.app.data.Race) = viewModelScope.launch {
+        runCatching {
+            repo.deleteRace(r)
+            races.value = repo.races()
+            repo.loadProfile()?.let { profile.value = it }
+        }.onFailure { saveStatus.value = "Couldn't delete: ${it.message}" }
     }
 
     fun makeGoalRace(r: com.workoutmaker.app.data.Race) = viewModelScope.launch {

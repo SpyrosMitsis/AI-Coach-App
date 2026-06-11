@@ -4,7 +4,7 @@ import { useEffect, useState } from "react";
 import Link from "next/link";
 import { useTheme } from "next-themes";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { createClient } from "@/lib/supabase-browser";
+import { createClient, currentUserId } from "@/lib/supabase-browser";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -54,7 +54,7 @@ export default function SettingsPage() {
       const { error } = await supabase
         .from("user_profiles")
         .update({ onboarding: next })
-        .neq("id", "");
+        .eq("id", await currentUserId(supabase));
       if (error) throw error;
     },
     onSuccess: () => qc.invalidateQueries({ queryKey: ["profile-onboarding"] }),
@@ -68,7 +68,7 @@ export default function SettingsPage() {
 
   const saveKnowledge = useMutation({
     mutationFn: async (text: string) => {
-      const { error } = await supabase.from("user_profiles").update({ coach_knowledge: text }).neq("id", "");
+      const { error } = await supabase.from("user_profiles").update({ coach_knowledge: text }).eq("id", await currentUserId(supabase));
       if (error) throw error;
     },
     onSuccess: () => qc.invalidateQueries({ queryKey: ["profile-onboarding"] }),
@@ -76,7 +76,7 @@ export default function SettingsPage() {
 
   const setAutoPlan = useMutation({
     mutationFn: async (enabled: boolean) => {
-      const { error } = await supabase.from("user_profiles").update({ auto_plan: enabled }).neq("id", "");
+      const { error } = await supabase.from("user_profiles").update({ auto_plan: enabled }).eq("id", await currentUserId(supabase));
       if (error) throw error;
     },
     onSuccess: () => qc.invalidateQueries({ queryKey: ["profile-onboarding"] }),

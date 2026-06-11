@@ -56,6 +56,7 @@ data class PlannedWorkout(
     val intervals_event_id: String? = null,
     val completed: Boolean = false,
     val locked: Boolean = false,
+    val skipped: Boolean = false,
     val created_at: String? = null,
 )
 

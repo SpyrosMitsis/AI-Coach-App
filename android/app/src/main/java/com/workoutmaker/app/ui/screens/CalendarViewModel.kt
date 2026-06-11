@@ -171,6 +171,12 @@ class CalendarViewModel @Inject constructor(
             .onFailure { banner.value = it.message }
     }
 
+    fun undoSkip(plannedId: String) = viewModelScope.launch {
+        runCatching { repo.undoSkip(plannedId) }
+            .onSuccess { banner.value = "Skip undone"; load() }
+            .onFailure { banner.value = "Couldn't update: ${it.message}" }
+    }
+
     // Undo a completion (in case of a mistake) — flips the flag without logging
     // feedback.
     fun markUndone(plannedId: String) = viewModelScope.launch {

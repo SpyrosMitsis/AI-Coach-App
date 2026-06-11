@@ -161,7 +161,14 @@ class HomeViewModel @Inject constructor(
         val today = summary.value?.today_workout ?: return@launch
         val date = java.time.LocalDate.now().toString()
         runCatching { repo.markPlannedComplete(today.id, date, completed = false, difficulty = null, rpe = null) }
-            .onSuccess { feedbackStatus.value = "Marked skipped — the plan will rebuild gradually."; repo.refreshMemory(); load() }
+            .onSuccess { feedbackStatus.value = null; repo.refreshMemory(); load() }
+            .onFailure { feedbackStatus.value = it.message }
+    }
+
+    fun undoSkip() = viewModelScope.launch {
+        val today = summary.value?.today_workout ?: return@launch
+        runCatching { repo.undoSkip(today.id) }
+            .onSuccess { feedbackStatus.value = null; load() }
             .onFailure { feedbackStatus.value = it.message }
     }
 }
@@ -300,7 +307,25 @@ fun HomeScreen(vm: HomeViewModel = hiltViewModel()) {
         s.goal?.let { g -> GoalCard(mod, g) }
 
         SectionCard(mod, title = "Today's Workout") {
-            val w = s.today_workout?.workout_json
+            val tw = s.today_workout
+            val w = tw?.workout_json
+            if (w != null && tw.skipped && !tw.completed) {
+                // Skipped: collapse to one line + Undo instead of the full card.
+                Text(
+                    w.title,
+                    style = MaterialTheme.typography.titleMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    textDecoration = androidx.compose.ui.text.style.TextDecoration.LineThrough,
+                )
+                Text(
+                    "Skipped — rest matters too. The plan will adapt and rebuild gradually.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                GhostButton(onClick = { vm.undoSkip() }) { Text("Undo skip") }
+                feedbackStatus?.let { Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.primary) }
+                return@SectionCard
+            }
             if (w != null) WorkoutDetail(w)
             else Text("No workout planned yet.", style = MaterialTheme.typography.bodyMedium)
 

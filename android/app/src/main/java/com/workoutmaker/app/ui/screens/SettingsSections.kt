@@ -454,7 +454,7 @@ internal fun RacesSection(vm: SettingsViewModel) {
                     }, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
                 if (!isGoal) TextButton(onClick = { vm.makeGoalRace(r) }) { Text("Set goal") }
-                r.id?.let { id -> IconButton(onClick = { vm.deleteRace(id) }) {
+                r.id?.let { IconButton(onClick = { vm.deleteRace(r) }) {
                     Icon(Icons.Filled.Delete, "Delete goal", tint = MaterialTheme.colorScheme.onSurfaceVariant)
                 } }
             }

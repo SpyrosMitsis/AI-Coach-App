@@ -83,12 +83,12 @@ import java.time.format.TextStyle
 import java.util.Locale
 import javax.inject.Inject
 
-// Same "primary session first" rule the Home dashboard uses (incomplete before
-// completed, real work before rest, newest first) so the top card on a day is
-// always the workout Home shows.
+// Same "primary session first" rule the Home dashboard uses (still-pending
+// before done/skipped, real work before rest, newest first) so the top card on
+// a day is always the workout Home shows.
 internal fun primaryFirst(sessions: List<PlannedWorkout>): List<PlannedWorkout> =
     sessions.sortedWith(
-        compareBy<PlannedWorkout> { it.completed }
+        compareBy<PlannedWorkout> { it.completed || it.skipped }
             .thenBy { it.type == "rest" }
             .thenByDescending { it.created_at ?: "" },
     )
@@ -301,7 +301,8 @@ fun CalendarScreen(vm: CalendarViewModel = hiltViewModel(), onOpenStrength: () -
                     SectionCard {
                         Row(verticalAlignment = Alignment.CenterVertically) {
                             SectionLabel(
-                                w.type + if (w.locked) " · locked" else "",
+                                w.type + (if (w.locked) " · locked" else "") +
+                                    (if (w.skipped && !w.completed) " · skipped" else ""),
                                 color = if (w.locked) Sage else typeColor(w.type),
                             )
                             Spacer(Modifier.weight(1f))
@@ -324,6 +325,16 @@ fun CalendarScreen(vm: CalendarViewModel = hiltViewModel(), onOpenStrength: () -
                                     Text("✓ Completed", style = MaterialTheme.typography.labelMedium, color = Sage)
                                     Spacer(Modifier.weight(1f))
                                     TextButton(onClick = { vm.markUndone(w.id) }) { Text("Mark as not done") }
+                                }
+                            } else if (w.skipped) {
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    Text(
+                                        "Skipped — the plan will adapt.",
+                                        style = MaterialTheme.typography.labelMedium,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    )
+                                    Spacer(Modifier.weight(1f))
+                                    TextButton(onClick = { vm.undoSkip(w.id) }) { Text("Undo skip") }
                                 }
                             } else {
                                 // Strength plans open in the logger pre-filled; finishing

@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { createClient } from "@/lib/supabase-browser";
+import { createClient, currentUserId } from "@/lib/supabase-browser";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -43,10 +43,14 @@ export function ZonesRaces() {
   const patchProfile = useMutation({
     mutationFn: async (p: Partial<OnboardingData>) => {
       const next = { ...(o ?? {}), ...p };
-      const { error } = await supabase.from("user_profiles").update({ onboarding: next }).neq("id", "");
+      const { error } = await supabase.from("user_profiles").update({ onboarding: next })
+        .eq("id", await currentUserId(supabase));
       if (error) throw error;
     },
-    onSuccess: () => qc.invalidateQueries({ queryKey: ["profile-thresholds"] }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["profile-thresholds"] });
+      qc.invalidateQueries({ queryKey: ["daily-summary"] }); // goal card on Home
+    },
   });
 
   const addRace = useMutation({
@@ -58,11 +62,25 @@ export function ZonesRaces() {
   });
 
   const deleteRace = useMutation({
-    mutationFn: async (id: string) => {
-      const { error } = await supabase.from("races").delete().eq("id", id);
+    mutationFn: async (r: Race) => {
+      const { error } = await supabase.from("races").delete().eq("id", r.id);
       if (error) throw error;
+      // Deleting the active goal also clears it from the profile (and Home).
+      if (o && o.goal === r.name && o.goal_date === r.date) {
+        const next = {
+          ...o, goal: undefined, goal_date: undefined,
+          ...(r.target && o.target_pace === r.target ? { target_pace: undefined } : {}),
+        };
+        const { error: e2 } = await supabase.from("user_profiles").update({ onboarding: next })
+          .eq("id", await currentUserId(supabase));
+        if (e2) throw e2;
+      }
     },
-    onSuccess: () => qc.invalidateQueries({ queryKey: ["races"] }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["races"] });
+      qc.invalidateQueries({ queryKey: ["profile-thresholds"] });
+      qc.invalidateQueries({ queryKey: ["daily-summary"] });
+    },
   });
 
   return (
@@ -72,7 +90,7 @@ export function ZonesRaces() {
         races={races.data ?? []}
         goalDate={o?.goal_date}
         onAdd={(r) => addRace.mutate(r)}
-        onDelete={(id) => deleteRace.mutate(id)}
+        onDelete={(r) => deleteRace.mutate(r)}
         onSetGoal={(r) =>
           patchProfile.mutate({
             goal: r.name,
@@ -226,7 +244,7 @@ function RacesCard({
   races: Race[];
   goalDate: string | undefined;
   onAdd: (r: Omit<Race, "id">) => void;
-  onDelete: (id: string) => void;
+  onDelete: (r: Race) => void;
   onSetGoal: (r: Race) => void;
   adding: boolean;
 }) {
@@ -323,7 +341,7 @@ function RacesCard({
                   <Flag className="h-4 w-4" />
                 </button>
               )}
-              <button title="Delete" className="text-muted-foreground hover:text-red-400" onClick={() => onDelete(r.id)}>
+              <button title="Delete" className="text-muted-foreground hover:text-red-400" onClick={() => onDelete(r)}>
                 <Trash2 className="h-4 w-4" />
               </button>
             </div>

@@ -82,7 +82,10 @@ export default function DashboardPage() {
       const today = summary.data?.today_workout;
       const date = new Date().toISOString().slice(0, 10);
       if (today?.id) {
-        await supabase.from("planned_workouts").update({ completed: vars.completed }).eq("id", today.id);
+        const { error } = await supabase.from("planned_workouts")
+          .update({ completed: vars.completed, skipped: !vars.completed }).eq("id", today.id);
+        // Pre-migration-26 fallback: no `skipped` column yet.
+        if (error) await supabase.from("planned_workouts").update({ completed: vars.completed }).eq("id", today.id);
         await supabase.from("workout_feedback").insert({
           planned_workout_id: today.id, date, completed: vars.completed, difficulty: vars.difficulty,
         });
@@ -91,10 +94,22 @@ export default function DashboardPage() {
       }
     },
     onSuccess: (_d, vars) => {
-      setFeedbackStatus(vars.completed ? "✓ Marked done — your next workout will adapt." : "Marked skipped — the plan will rebuild gradually.");
+      setFeedbackStatus(vars.completed ? "✓ Marked done — your next workout will adapt." : null);
       setDidIt(false);
       reload();
     },
+    onError: (e) => setFeedbackStatus((e as Error).message),
+  });
+
+  // Skipped by mistake (or changed your mind): restore the card and drop the
+  // skip feedback so the planner doesn't count it against you.
+  const undoSkip = useMutation({
+    mutationFn: async (id: string) => {
+      const { error } = await supabase.from("planned_workouts").update({ skipped: false }).eq("id", id);
+      if (error) throw error;
+      await supabase.from("workout_feedback").delete().eq("planned_workout_id", id).eq("completed", false);
+    },
+    onSuccess: () => { setFeedbackStatus(null); reload(); },
     onError: (e) => setFeedbackStatus((e as Error).message),
   });
 
@@ -233,6 +248,22 @@ export default function DashboardPage() {
           {generate.isError && (
             <p className="text-sm text-red-400">{(generate.error as Error).message}</p>
           )}
+          {d.today_workout && d.today_workout.skipped && !d.today_workout.completed ? (
+            // Skipped: collapse to a single line + Undo instead of the full card.
+            <div className="space-y-2">
+              <h3 className="text-lg font-semibold text-muted-foreground line-through">
+                {d.today_workout.workout_json.title}
+              </h3>
+              <p className="text-sm text-muted-foreground">
+                Skipped — rest matters too. The plan will adapt and rebuild gradually.
+              </p>
+              <Button variant="outline" size="sm" disabled={undoSkip.isPending}
+                onClick={() => undoSkip.mutate(d.today_workout!.id)}>
+                {undoSkip.isPending ? "Restoring…" : "Undo skip"}
+              </Button>
+              {feedbackStatus && <p className="text-sm text-primary">{feedbackStatus}</p>}
+            </div>
+          ) : (<>
           {d.today_workout ? (
             <>
               <h3 className="text-lg font-semibold">{d.today_workout.workout_json.title}</h3>
@@ -277,6 +308,7 @@ export default function DashboardPage() {
             )
           )}
           {feedbackStatus && <p className="text-sm text-primary">{feedbackStatus}</p>}
+          </>)}
         </CardContent>
       </Card>
 
