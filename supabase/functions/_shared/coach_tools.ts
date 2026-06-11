@@ -5,6 +5,8 @@
 // function-calling required).
 import type { SupabaseClient } from "jsr:@supabase/supabase-js@2";
 
+import { computeRecovery } from "./recovery.ts";
+
 const DAY = 86400000;
 const iso = (d: number) => new Date(d).toISOString().slice(0, 10);
 
@@ -48,6 +50,14 @@ export const TOOL_CATALOG: ToolDef[] = [
     description: "Athlete profile: goal, experience, available days, session length, equipment, injuries, thresholds (LTHR/FTP/pace) and upcoming races.",
   },
   {
+    name: "get_readiness", kind: "read", args: "{}", schema: NO_ARGS,
+    description: "Today's recovery/readiness score (0-100) with the signals behind it: HRV trend, resting-HR trend, sleep, subjective wellness.",
+  },
+  {
+    name: "get_execution_analysis", kind: "read", args: "{}", schema: NO_ARGS,
+    description: "Measured execution of recent sessions vs their plan: per-workout score (0-100), what drifted (duration/load/intensity, or skipped exercises for strength). Use to answer 'how did my run/lift go?' and to autoregulate.",
+  },
+  {
     name: "plan_week", kind: "act", args: "{ start_date?: 'YYYY-MM-DD' }",
     schema: { type: "object", properties: { start_date: { type: "string", description: "YYYY-MM-DD; defaults to today" } } },
     description: "Generate/regenerate a full training week (pushes near-term sessions to the watch). Use after agreeing a plan with the athlete.",
@@ -66,6 +76,20 @@ export const TOOL_CATALOG: ToolDef[] = [
       },
     },
     description: "Create one workout on a date. Pass `request` for a specific session ('easy 8k', 'upper-body push'); set lock=true to fix it.",
+  },
+  {
+    name: "move_workout", kind: "act",
+    args: "{ new_date: 'YYYY-MM-DD', workout_id?: string, date?: 'YYYY-MM-DD' }",
+    schema: {
+      type: "object",
+      properties: {
+        new_date: { type: "string", description: "Target date YYYY-MM-DD" },
+        workout_id: { type: "string", description: "Planned workout id (from get_planned_week)" },
+        date: { type: "string", description: "Alternative to workout_id: move the (first incomplete) session on this date" },
+      },
+      required: ["new_date"],
+    },
+    description: "Move a planned workout to another date (the watch event moves with it). Identify it by workout_id from get_planned_week, or just by its current date.",
   },
   {
     name: "set_goal_race", kind: "act", args: "{ name: string, date: 'YYYY-MM-DD' }",
@@ -146,10 +170,10 @@ export async function executeTool(
         const start = (typeof args.week_start === "string" && args.week_start) || mondayOf();
         const end = iso(new Date(start + "T00:00:00").getTime() + 6 * DAY);
         const { data } = await admin.from("planned_workouts")
-          .select("date, type, completed, locked, workout_json")
+          .select("id, date, type, completed, locked, workout_json")
           .eq("user_id", userId).gte("date", start).lte("date", end).order("date");
         const rows = (data ?? []).map((r) => ({
-          date: r.date, type: r.type, completed: r.completed, locked: r.locked,
+          id: r.id, date: r.date, type: r.type, completed: r.completed, locked: r.locked,
           title: (r.workout_json as { title?: string })?.title ?? "",
         }));
         return JSON.stringify({ week_start: start, sessions: rows });
@@ -188,13 +212,72 @@ export async function executeTool(
           races: races ?? [], known: p?.coach_knowledge ?? "",
         });
       }
+      case "get_readiness": {
+        const since = iso(Date.now() - 7 * DAY);
+        const { data } = await admin.from("wellness_checkins")
+          .select("date, energy, soreness, sleep_quality, hrv_rmssd, resting_hr, zepp_sleep_minutes")
+          .eq("user_id", userId).gte("date", since).order("date", { ascending: false });
+        const wells = data ?? [];
+        const isNum = (v: unknown): v is number => typeof v === "number";
+        const chrono = [...wells].reverse();
+        const rec = computeRecovery(
+          wells,
+          chrono.map((w) => (w as { hrv_rmssd?: number }).hrv_rmssd).filter(isNum),
+          chrono.map((w) => (w as { resting_hr?: number }).resting_hr).filter(isNum),
+        );
+        return JSON.stringify({
+          score: rec.score, band: rec.band, summary: rec.summary,
+          hrv: rec.hrv ?? null, resting_hr: rec.rhr ?? null, sleep: rec.sleep ?? null,
+          wellness_1to5: rec.wellness,
+        });
+      }
+      case "get_execution_analysis": {
+        interface Comp { name: string; score: number; detail: string }
+        interface Stored { score?: number; label?: string; components?: Comp[]; feedback?: string }
+        const { data: endu } = await admin.from("completed_activities")
+          .select("date, type, analysis_json")
+          .eq("user_id", userId).not("analysis_json", "is", null)
+          .order("date", { ascending: false }).limit(5);
+        const { data: str } = await admin.from("strength_analyses")
+          .select("date, analysis_json")
+          .eq("user_id", userId).order("date", { ascending: false }).limit(3);
+        const brief = (kind: string, date: string, a: Stored) => ({
+          date, kind,
+          score: a.score ?? null, label: a.label ?? null,
+          components: (a.components ?? []).map((c) => `${c.name} ${c.score}/100 (${c.detail})`),
+        });
+        const rows = [
+          ...(endu ?? []).map((r) => brief(String(r.type ?? "endurance"), r.date, r.analysis_json as Stored)),
+          ...(str ?? []).map((r) => brief("strength", r.date, r.analysis_json as Stored)),
+        ].sort((x, y) => y.date.localeCompare(x.date));
+        if (!rows.length) return JSON.stringify({ note: "no analyzed sessions yet — the athlete can analyze a workout from its detail page, or it happens automatically after a sync" });
+        return JSON.stringify(rows);
+      }
+      case "move_workout": {
+        const newDate = String(args.new_date ?? "");
+        if (!/^\d{4}-\d{2}-\d{2}$/.test(newDate)) return "error: new_date (YYYY-MM-DD) is required";
+        let workoutId = typeof args.workout_id === "string" ? args.workout_id : null;
+        if (!workoutId && typeof args.date === "string") {
+          const { data: rows } = await admin.from("planned_workouts")
+            .select("id, type, completed")
+            .eq("user_id", userId).eq("date", args.date).neq("type", "rest")
+            .order("created_at", { ascending: false });
+          workoutId = (rows ?? []).find((r) => !r.completed)?.id ?? (rows ?? [])[0]?.id ?? null;
+        }
+        if (!workoutId) return "error: no workout found — pass workout_id (see get_planned_week) or date";
+        const r = await callFunction(auth, "move-workout", { workout_id: workoutId, new_date: newDate }) as Record<string, unknown>;
+        return JSON.stringify({ ok: !r.error, old_date: r.old_date ?? null, new_date: r.new_date ?? newDate, event_moved: r.event_moved ?? null, error: r.error ?? null });
+      }
       case "plan_week": {
         const r = await callFunction(auth, "plan-week", { start_date: args.start_date }) as Record<string, unknown>;
         return JSON.stringify({ ok: !r.error, error: r.error ?? null, scheduled: r.scheduled, week_focus: r.week_focus, pushed: r.pushed });
       }
       case "generate_workout": {
         const r = await callFunction(auth, "generate-workout", {
-          date: args.date, type: args.type ?? "auto", duration: args.duration ?? 60,
+          date: args.date, type: args.type ?? "auto",
+          // Only pin a duration when explicitly requested — otherwise the
+          // generator applies the athlete's flexible length preference.
+          ...(typeof args.duration === "number" ? { duration: args.duration } : {}),
           request: args.request, lock: args.lock === true, push: true,
         }) as Record<string, unknown>;
         const w = r.workout as { title?: string } | undefined;

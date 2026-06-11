@@ -15,6 +15,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.FitnessCenter
 import androidx.compose.material.icons.filled.Search
@@ -235,6 +236,133 @@ private fun HistoryCard(row: StrengthHistoryRow, onClick: () -> Unit) {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Strength execution analysis (analyze-strength edge function)
+// ---------------------------------------------------------------------------
+@dagger.hilt.android.lifecycle.HiltViewModel
+class StrengthAnalysisViewModel @javax.inject.Inject constructor(
+    private val repo: WorkoutRepository,
+) : androidx.lifecycle.ViewModel() {
+    val results = MutableStateFlow<Map<String, com.workoutmaker.app.data.StrengthAnalysis>>(emptyMap())
+    val busy = MutableStateFlow<String?>(null)
+    val error = MutableStateFlow<String?>(null)
+
+    fun analyze(date: String, force: Boolean = false) = viewModelScope.launch {
+        busy.value = date
+        error.value = null
+        runCatching { repo.analyzeStrength(date, force) }
+            .onSuccess { results.value = results.value + (date to it) }
+            .onFailure { error.value = it.message }
+        busy.value = null
+    }
+}
+
+@Composable
+internal fun StrengthAnalysisSection(
+    date: String,
+    vm: StrengthAnalysisViewModel = hiltViewModel(),
+) {
+    val results by vm.results.collectAsStateSafe()
+    val busy by vm.busy.collectAsStateSafe()
+    val error by vm.error.collectAsStateSafe()
+    val a = results[date]
+
+    SectionCard {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            SectionLabel("Workout analysis", color = Sage)
+            Spacer(Modifier.weight(1f))
+            if (a != null) {
+                androidx.compose.material3.TextButton(
+                    onClick = { vm.analyze(date, force = true) },
+                    enabled = busy == null,
+                ) { Text("Re-analyze") }
+            }
+        }
+
+        if (a == null) {
+            Text(
+                "Compare what you lifted with what was prescribed: completion, volume vs plan, and AI coach feedback on load selection.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            com.workoutmaker.app.ui.components.GhostButton(
+                onClick = { vm.analyze(date) },
+                enabled = busy == null,
+                modifier = Modifier.fillMaxWidth(),
+            ) {
+                Icon(
+                    Icons.Filled.AutoAwesome, null,
+                    Modifier.size(18.dp),
+                )
+                Text(if (busy == date) "  Analyzing…" else "  Analyze this session")
+            }
+            error?.let {
+                Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
+            }
+            return@SectionCard
+        }
+
+        if (a.score != null) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                ExecutionRing(a.score!!)
+                Column(Modifier.padding(start = 14.dp)) {
+                    Text(a.label ?: "", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+                    a.planned_title?.let {
+                        Text("vs “$it”", style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
+                }
+            }
+        } else {
+            Text(a.label ?: "No plan to compare against.", style = MaterialTheme.typography.bodyMedium)
+        }
+        a.components.forEach { c ->
+            Column(Modifier.fillMaxWidth().padding(vertical = 2.dp)) {
+                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                    Text(c.name, Modifier.weight(1f), style = MaterialTheme.typography.bodyMedium)
+                    Text("${c.score}/100", style = MaterialTheme.typography.bodyMedium,
+                        fontWeight = FontWeight.SemiBold, color = scoreColor(c.score))
+                }
+                ScoreBar(c.score)
+                Text(c.detail, style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+        }
+
+        // Planned vs lifted, per exercise.
+        if (a.exercises.isNotEmpty()) {
+            SectionLabel("Planned vs lifted", color = Sand)
+            a.exercises.forEach { ex ->
+                Column(Modifier.fillMaxWidth().padding(vertical = 2.dp)) {
+                    Text(ex.name, style = MaterialTheme.typography.titleSmall)
+                    val actual = buildString {
+                        append("${ex.actual_sets} sets")
+                        ex.top_weight_kg?.let { append(" · top ${if (it % 1.0 == 0.0) it.toInt() else it} kg") }
+                        ex.volume_kg?.let { append(" · ${it.toInt()} kg volume") }
+                    }
+                    Text(
+                        actual + (ex.planned?.let { "   (planned $it)" } ?: ""),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            }
+        }
+
+        if (!a.feedback.isNullOrBlank()) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Icon(
+                    Icons.Filled.AutoAwesome, null,
+                    Modifier.size(16.dp), tint = Sage,
+                )
+                Spacer(Modifier.width(6.dp))
+                SectionLabel("Coach feedback" + (a.feedback_provider?.let { " · $it" } ?: ""), color = Sage)
+            }
+            Text(a.feedback!!, style = MaterialTheme.typography.bodyMedium)
+        }
+    }
+}
+
 @Composable
 private fun SourceIcon(icon: androidx.compose.ui.graphics.vector.ImageVector, tint: androidx.compose.ui.graphics.Color) {
     Box(
@@ -300,6 +428,10 @@ fun StrengthSessionDetailScreen(
                 a.tss?.let { if (it > 0) InsetStat("Training load (TSS)", "${it.toInt()}") }
             }
         }
+
+        // Execution analysis: planned prescription vs what was actually lifted,
+        // with AI coach feedback — sibling of the run/ride analysis.
+        StrengthAnalysisSection(dateOf(w.startedAt).toString())
 
         val byExercise = remember(sets) { sets.groupBy { it.exerciseName } }
         byExercise.forEach { (name, exSets) ->

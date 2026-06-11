@@ -66,6 +66,47 @@ export async function intervalsPhysiology(
   return { apiKey, hrZones, block };
 }
 
+
+
+// Measured execution of recent sessions (from analyze-activity): how well the
+// athlete actually hit planned duration/load/intensity. Closes the
+// autoregulation loop with objective data, not just subjective ratings.
+export async function executionBlock(
+  admin: SupabaseClient,
+  userId: string,
+  sinceDate: string,
+): Promise<string> {
+  try {
+    const { data } = await admin
+      .from("completed_activities")
+      .select("date, type, analysis_json")
+      .eq("user_id", userId)
+      .not("analysis_json", "is", null)
+      .gte("date", sinceDate)
+      .order("date", { ascending: false })
+      .limit(5);
+    interface Comp { name: string; score: number; detail: string }
+    const rows = (data ?? []).filter((r) =>
+      typeof r.analysis_json?.score === "number"
+    );
+    if (!rows.length) return "";
+    const lines = rows.map((r) => {
+      const a = r.analysis_json as {
+        score: number;
+        label?: string;
+        components?: Comp[];
+      };
+      const comps = (a.components ?? [])
+        .map((c) => `${c.name} ${c.score}/100 (${c.detail})`)
+        .join("; ");
+      return `- ${r.date} ${r.type ?? "session"}: execution ${a.score}/100 "${a.label ?? ""}"${comps ? ` — ${comps}` : ""}`;
+    }).join("\n");
+    return `\n\nMEASURED EXECUTION OF RECENT SESSIONS (objective plan-vs-actual analysis — autoregulate from this: repeated intensity overshoot means prescribe easier targets and stress discipline in coach_note; chronic under-duration means shorter or simpler sessions; consistently high scores mean progress as planned):\n${lines}`;
+  } catch (_e) {
+    return "";
+  }
+}
+
 export function memoryBlock(profile: { training_memory?: string | null }): string {
   return profile.training_memory
     ? `\n\nATHLETE MEMORY (long-term notes from past sessions — honor these):\n${profile.training_memory}`

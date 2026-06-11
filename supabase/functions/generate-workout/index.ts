@@ -28,6 +28,7 @@ import { createEvent, deleteEvent, latestFitness } from "../_shared/intervals.ts
 import { renderIntervalsWorkout } from "../_shared/intervals_workout.ts";
 import {
   adherenceBlock,
+  executionBlock,
   goalBlock,
   intervalsPhysiology,
   knowledgeBlock,
@@ -290,6 +291,7 @@ Deno.serve(async (req) => {
       userPrompt += recoveryBlock(recovery);
       userPrompt += physiologyBlock;
       userPrompt += await adherenceBlock(admin, userId, since14, date, acts28);
+      userPrompt += await executionBlock(admin, userId, since14);
       userPrompt += goalBlock(onboarding, weeksToGoal, phase, acts28);
       if (type === "run") {
         const lat = typeof body.lat === "number" ? body.lat : profile.last_lat;

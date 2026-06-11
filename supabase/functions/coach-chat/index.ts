@@ -20,8 +20,8 @@ import {
   estimateCostUsd,
   extractJson,
   llmGenerateWithFallback,
-  llmStream,
 } from "../_shared/llm.ts";
+import { computeRecovery } from "../_shared/recovery.ts";
 import { corsHeaders } from "../_shared/cors.ts";
 import { COACH_SYSTEM_PROMPT, finalizeInstruction, trainingPhase } from "../_shared/prompt.ts";
 import type { LlmProvider } from "../_shared/types.ts";
@@ -34,8 +34,8 @@ import { runNativeToolLoop, supportsNativeTools } from "../_shared/llm_native_to
 // Behavioral rules shared by both tool channels (native + JSON protocol).
 const TOOL_RULES = `
 RULES:
-- Before giving training advice or a plan, READ the relevant data first (get_fitness, get_planned_week, get_recent_activities, get_strength_summary, get_profile). Ground every claim in what you read.
-- Take ACTIONS (plan_week, generate_workout, set_goal_race) ONLY after the athlete clearly agrees, then confirm what you did and why in your final message.
+- Before giving training advice or a plan, READ the relevant data first (get_fitness, get_planned_week, get_recent_activities, get_strength_summary, get_readiness, get_execution_analysis, get_profile). Ground every claim in what you read.
+- Take ACTIONS (plan_week, generate_workout, move_workout, set_goal_race) ONLY after the athlete clearly agrees, then confirm what you did and why in your final message.
 - Call remember when the athlete shares a durable preference, constraint, or injury.
 - Be efficient: a few targeted reads, then answer. You have at most 6 tool calls per turn.
 - Final messages are warm but concise — reference the actual numbers, and give one clear next step.`;
@@ -59,6 +59,23 @@ RESPONSE FORMAT — output ONLY one JSON object, nothing else:
 ${TOOL_RULES}`;
 
 const DAY = 86_400_000;
+
+// The JSON tool protocol occasionally leaks its envelope into the final reply
+// (fenced JSON, or {"action":"final","message":...} as raw text). Scrub it
+// server-side so leaked protocol never reaches the client or the saved thread.
+function cleanReply(text: string): string {
+  let t = text.trim();
+  const fence = t.match(/^```(?:json)?\s*([\s\S]*?)```$/i);
+  if (fence) t = fence[1].trim();
+  if (t.startsWith("{")) {
+    try {
+      const o = JSON.parse(t) as Record<string, unknown>;
+      const m = o.message ?? o.reply ?? o.final;
+      if (typeof m === "string" && m.trim()) return m.trim();
+    } catch { /* not JSON — keep as-is */ }
+  }
+  return t;
+}
 
 // Supabase Edge runtime keeps the worker alive for promises passed to
 // EdgeRuntime.waitUntil even if the client disconnects mid-stream — without it
@@ -145,10 +162,19 @@ Deno.serve(async (req) => {
     const existingKnowledge = (profile?.coach_knowledge ?? "") as string;
 
     const since28 = new Date(Date.now() - 28 * DAY).toISOString().slice(0, 10);
-    const { data: acts } = await admin
-      .from("completed_activities")
-      .select("type, date, distance_m, tss, ctl, atl")
-      .eq("user_id", userId).gte("date", since28).order("date", { ascending: false });
+    const since7 = new Date(Date.now() - 7 * DAY).toISOString().slice(0, 10);
+    const today = new Date().toISOString().slice(0, 10);
+    const [{ data: acts }, { data: todayPlanned }, { data: wellness }] = await Promise.all([
+      admin.from("completed_activities")
+        .select("type, date, distance_m, tss, ctl, atl")
+        .eq("user_id", userId).gte("date", since28).order("date", { ascending: false }),
+      admin.from("planned_workouts")
+        .select("type, completed, workout_json, created_at")
+        .eq("user_id", userId).eq("date", today),
+      admin.from("wellness_checkins")
+        .select("date, energy, soreness, sleep_quality, hrv_rmssd, resting_hr, zepp_sleep_minutes")
+        .eq("user_id", userId).gte("date", since7).order("date", { ascending: false }),
+    ]);
     const a = acts ?? [];
     const fitnessRow = a.find((r) => r.ctl != null);
     const ctl = fitnessRow?.ctl ?? 0;
@@ -162,13 +188,36 @@ Deno.serve(async (req) => {
       weeksToGoal = d >= 0 ? Math.round(d) : null;
     }
 
+    // Today's primary session (same rule as Home/Calendar) + readiness — so the
+    // coach can answer the most common first questions with zero tool calls.
+    const primaryToday = [...(todayPlanned ?? [])].sort((x, y) => {
+      if (!!x.completed !== !!y.completed) return x.completed ? 1 : -1;
+      const xr = x.type === "rest" ? 1 : 0, yr = y.type === "rest" ? 1 : 0;
+      if (xr !== yr) return xr - yr;
+      return String(y.created_at ?? "").localeCompare(String(x.created_at ?? ""));
+    })[0] ?? null;
+    const todayLine = primaryToday
+      ? `${(primaryToday.workout_json as { title?: string })?.title ?? primaryToday.type} (${primaryToday.type}${primaryToday.completed ? ", already completed" : ""})`
+      : "nothing planned yet";
+    const isNum = (v: unknown): v is number => typeof v === "number";
+    const wells = wellness ?? [];
+    const chrono = [...wells].reverse();
+    const recovery = computeRecovery(
+      wells,
+      chrono.map((w) => (w as { hrv_rmssd?: number }).hrv_rmssd).filter(isNum),
+      chrono.map((w) => (w as { resting_hr?: number }).resting_hr).filter(isNum),
+    );
+    const weeklyTss = Math.round(a.filter((r) => (r.date ?? "") >= since7).reduce((s2, r) => s2 + (r.tss ?? 0), 0));
+
     const context =
       `ATHLETE CONTEXT (use it, don't restate it verbatim):
-- Name: ${profile?.display_name ?? "athlete"}
+- Name: ${profile?.display_name ?? "athlete"}; today is ${today}
 - Goal: ${onboarding.goal ?? "not set"}; experience: ${onboarding.experience ?? "unknown"}
 - Available days: ${(onboarding.days as string[] | undefined)?.join(", ") ?? "unknown"}; session length: ${onboarding.session_duration ?? "?"} min
 - Equipment: ${onboarding.equipment ?? "unknown"}; injuries: ${onboarding.injury_history ?? "none noted"}
 - Fitness CTL ${ctl.toFixed(0)}, fatigue ATL ${atl.toFixed(0)}, form TSB ${(ctl - atl).toFixed(0)}
+- Readiness today: ${recovery.score}/100 (${recovery.band}); weekly load so far: ${weeklyTss} TSS
+- Today's plan: ${todayLine}
 - ~${weeklyKm.toFixed(0)} km/week recently; training phase: ${trainingPhase(weeksToGoal)}` +
       (existingKnowledge.trim()
         ? `\n\nKNOWN CONSTRAINTS & PREFERENCES (already on file — honor these, ask before changing them):\n${existingKnowledge.trim()}`
@@ -186,144 +235,133 @@ Deno.serve(async (req) => {
       turns.push({ role: "user", content: finalizeInstruction(kind) });
     }
 
-    // --- streaming chat (SSE) ----------------------------------------------
-    if (mode === "chat" && body.stream) {
-      // Pick the first provider in the chain that has a key.
-      let streamProvider: LlmProvider | null = null;
-      let streamKey: string | null = null;
-      for (const p of chain) {
-        const k = await resolveKey(p);
-        if (k) { streamProvider = p; streamKey = k; break; }
-      }
-      if (!streamProvider || !streamKey) return json({ error: "no LLM key configured" }, 400);
-
-      const provider = streamProvider, apiKey = streamKey;
-      const encoder = new TextEncoder();
-      const stream = new ReadableStream({
-        async start(controller) {
-          const send = (obj: unknown) => controller.enqueue(encoder.encode(`data: ${JSON.stringify(obj)}\n\n`));
-          let fullText = "";
-          try {
-            fullText = await llmStream(provider, { messages: turns, systemPrompt, jsonMode: false, apiKey, model: resolveModel(provider) }, (tok) => {
-              send({ token: tok });
-            });
-          } catch (e) {
-            send({ error: String(e instanceof Error ? e.message : e) });
-          }
-          // Persist the thread after the stream completes. waitUntil keeps the
-          // worker alive for this even if the client disconnected mid-stream.
-          const fullThread = [...messages, { role: "assistant", content: fullText }];
-          let convId: string | null = body.conversationId ?? null;
-          const saveThread = (async () => {
-            try {
-              if (convId) {
-                await admin.from("coach_conversations").update({ messages: fullThread }).eq("id", convId).eq("user_id", userId);
-              } else {
-                const { data: conv } = await admin.from("coach_conversations").insert({
-                  user_id: userId, title: messages[0]?.content?.slice(0, 60) ?? "Coaching chat",
-                  messages: fullThread, purpose: body.purpose ?? "setup",
-                }).select("id").single();
-                convId = conv?.id ?? null;
-              }
-            } catch { /* best effort */ }
-          })();
-          waitUntil(saveThread);
-          await saveThread; // need convId for the done event
-          const lastUser = [...messages].reverse().find((m) => m.role === "user")?.content ?? "";
-          if (KNOWLEDGE_HINTS.test(lastUser)) {
-            // Slow secondary LLM call — never block the response on it.
-            waitUntil(updateKnowledge(admin, userId, existingKnowledge, fullThread as ChatMessage[], chain, resolveKey));
-          }
-          try {
-            send({ done: true, conversation_id: convId, provider });
-            controller.close();
-          } catch { /* client already disconnected */ }
-        },
-      });
-      return new Response(stream, {
-        headers: { ...corsHeaders, "Content-Type": "text/event-stream", "Cache-Control": "no-cache" },
-      });
-    }
-
     // --- agentic chat: tool-use loop over the athlete's real data ----------
+    // One engine for both transports: plain JSON response, or SSE when
+    // body.stream is true (emits {tool} progress events while the loop runs,
+    // then the reply, then {done}).
     if (mode === "chat") {
       const auth = req.headers.get("Authorization") ?? "";
-      const toolsUsed: string[] = [];
-      let provider: LlmProvider | string = chain[0] ?? "";
-      let replyText = "";
 
-      // Prefer the provider's NATIVE tool-calling API when available — far more
-      // reliable than the JSON action protocol. Gemini (no adapter yet) and any
-      // native-loop error fall through to the JSON protocol below.
-      let keyedProvider: LlmProvider | null = null;
-      let keyedKey: string | null = null;
-      for (const p of chain) {
-        const k = await resolveKey(p);
-        if (k) { keyedProvider = p; keyedKey = k; break; }
-      }
-      if (keyedProvider && keyedKey && supportsNativeTools(keyedProvider)) {
-        try {
-          const out = await runNativeToolLoop({
-            provider: keyedProvider,
-            apiKey: keyedKey,
-            model: resolveModel(keyedProvider),
-            systemPrompt: `${COACH_SYSTEM_PROMPT}\n\n${context}${NATIVE_TOOL_PREAMBLE}`,
-            messages: trimThread(messages),
-            tools: nativeToolDefs(),
-            exec: (name, targs) => executeTool(admin, userId, auth, name, targs),
-            maxSteps: 6,
-          });
-          provider = keyedProvider;
-          replyText = out.text;
-          toolsUsed.push(...out.toolsUsed);
-        } catch { /* fall back to the JSON protocol */ }
-      }
+      const runAgentic = async (onTool?: (name: string) => void) => {
+        const toolsUsed: string[] = [];
+        let provider: LlmProvider | string = chain[0] ?? "";
+        let replyText = "";
+        const exec = (name: string, targs: Record<string, unknown>) => {
+          toolsUsed.push(name);
+          try { onTool?.(name); } catch { /* never block on UI events */ }
+          return executeTool(admin, userId, auth, name, targs);
+        };
 
-      const chatSystem = `${COACH_SYSTEM_PROMPT}\n\n${context}${TOOL_PROTOCOL}`;
-      const work: ChatMessage[] = trimThread(messages);
+        // Prefer the provider's NATIVE tool-calling API when available — far
+        // more reliable than the JSON action protocol. Gemini (no adapter yet)
+        // and any native-loop error fall through to the JSON protocol below.
+        let keyedProvider: LlmProvider | null = null;
+        let keyedKey: string | null = null;
+        for (const pr of chain) {
+          const k = await resolveKey(pr);
+          if (k) { keyedProvider = pr; keyedKey = k; break; }
+        }
+        if (keyedProvider && keyedKey && supportsNativeTools(keyedProvider)) {
+          try {
+            const out = await runNativeToolLoop({
+              provider: keyedProvider,
+              apiKey: keyedKey,
+              model: resolveModel(keyedProvider),
+              systemPrompt: `${COACH_SYSTEM_PROMPT}\n\n${context}${NATIVE_TOOL_PREAMBLE}`,
+              messages: trimThread(messages),
+              tools: nativeToolDefs(),
+              exec,
+              maxSteps: 6,
+            });
+            provider = keyedProvider;
+            replyText = out.text;
+          } catch { /* fall back to the JSON protocol */ }
+        }
 
-      for (let step = 0; !replyText.trim() && step < 6; step++) {
-        const step_out = await llmGenerateWithFallback(
-          chain, { messages: work, systemPrompt: chatSystem, jsonMode: true }, resolveKey, resolveModel,
-        );
-        provider = step_out.provider;
-        let parsed: Record<string, unknown> | null = null;
-        try { parsed = extractJson<Record<string, unknown>>(step_out.text); } catch { parsed = null; }
+        const chatSystem = `${COACH_SYSTEM_PROMPT}\n\n${context}${TOOL_PROTOCOL}`;
+        const work: ChatMessage[] = trimThread(messages);
 
-        // Model replied (or returned non-JSON prose) → that's the answer.
-        if (!parsed || parsed.action === "final" || typeof parsed.message === "string") {
-          replyText = (parsed?.message as string) ?? (parsed?.reply as string) ?? step_out.text;
+        for (let step = 0; !replyText.trim() && step < 6; step++) {
+          const step_out = await llmGenerateWithFallback(
+            chain, { messages: work, systemPrompt: chatSystem, jsonMode: true }, resolveKey, resolveModel,
+          );
+          provider = step_out.provider;
+          let parsed: Record<string, unknown> | null = null;
+          try { parsed = extractJson<Record<string, unknown>>(step_out.text); } catch { parsed = null; }
+
+          // Model replied (or returned non-JSON prose) → that's the answer.
+          if (!parsed || parsed.action === "final" || typeof parsed.message === "string") {
+            replyText = (parsed?.message as string) ?? (parsed?.reply as string) ?? step_out.text;
+            break;
+          }
+          // Tool call → run it and feed back the observation.
+          if (parsed.action === "tool" && typeof parsed.tool === "string") {
+            const obs = await exec(parsed.tool, (parsed.args ?? {}) as Record<string, unknown>);
+            work.push({ role: "assistant", content: JSON.stringify(parsed) });
+            work.push({ role: "user", content: `OBSERVATION from ${parsed.tool}: ${obs}` });
+            continue;
+          }
+          // Unknown shape — surface whatever text came back.
+          replyText = step_out.text;
           break;
         }
-        // Tool call → run it and feed back the observation.
-        if (parsed.action === "tool" && typeof parsed.tool === "string") {
-          const obs = await executeTool(admin, userId, auth, parsed.tool, (parsed.args ?? {}) as Record<string, unknown>);
-          toolsUsed.push(parsed.tool);
-          work.push({ role: "assistant", content: JSON.stringify(parsed) });
-          work.push({ role: "user", content: `OBSERVATION from ${parsed.tool}: ${obs}` });
-          continue;
+        replyText = cleanReply(replyText);
+        if (!replyText.trim()) replyText = "I gathered your data but need a bit more to act — what would you like me to do?";
+        return { replyText, toolsUsed, provider };
+      };
+
+      const persistThread = async (replyText: string): Promise<string | null> => {
+        const fullThread = [...messages, { role: "assistant", content: replyText }];
+        let convId: string | null = body.conversationId ?? null;
+        try {
+          if (convId) {
+            await admin.from("coach_conversations").update({ messages: fullThread }).eq("id", convId).eq("user_id", userId);
+          } else {
+            const { data: conv } = await admin.from("coach_conversations").insert({
+              user_id: userId, title: messages[0]?.content?.slice(0, 60) ?? "Coaching chat",
+              messages: fullThread, purpose: body.purpose ?? "setup",
+            }).select("id").single();
+            convId = conv?.id ?? null;
+          }
+        } catch { /* best effort */ }
+        const lastUser = [...messages].reverse().find((m) => m.role === "user")?.content ?? "";
+        if (KNOWLEDGE_HINTS.test(lastUser)) {
+          // Slow secondary LLM call — never block the response on it.
+          waitUntil(updateKnowledge(admin, userId, existingKnowledge, fullThread as ChatMessage[], chain, resolveKey));
         }
-        // Unknown shape — surface whatever text came back.
-        replyText = step_out.text;
-        break;
+        return convId;
+      };
+
+      if (body.stream) {
+        const encoder = new TextEncoder();
+        const stream = new ReadableStream({
+          async start(controller) {
+            const send = (obj: unknown) => {
+              try { controller.enqueue(encoder.encode(`data: ${JSON.stringify(obj)}\n\n`)); } catch { /* disconnected */ }
+            };
+            try {
+              const { replyText, toolsUsed, provider } = await runAgentic((name) => send({ tool: name }));
+              send({ token: replyText });
+              const saveAndFinish = (async () => {
+                const convId = await persistThread(replyText);
+                send({ done: true, conversation_id: convId, provider, tools_used: toolsUsed });
+                try { controller.close(); } catch { /* already closed */ }
+              })();
+              waitUntil(saveAndFinish);
+              await saveAndFinish;
+            } catch (e) {
+              send({ error: String(e instanceof Error ? e.message : e) });
+              try { controller.close(); } catch { /* already closed */ }
+            }
+          },
+        });
+        return new Response(stream, {
+          headers: { ...corsHeaders, "Content-Type": "text/event-stream", "Cache-Control": "no-cache" },
+        });
       }
-      if (!replyText.trim()) replyText = "I gathered your data but need a bit more to act — what would you like me to do?";
 
-      // Persist the thread.
-      const fullThread = [...messages, { role: "assistant", content: replyText }];
-      let convId: string | null = body.conversationId ?? null;
-      try {
-        if (convId) {
-          await admin.from("coach_conversations").update({ messages: fullThread }).eq("id", convId).eq("user_id", userId);
-        } else {
-          const { data: conv } = await admin.from("coach_conversations").insert({
-            user_id: userId, title: messages[0]?.content?.slice(0, 60) ?? "Coaching chat",
-            messages: fullThread, purpose: body.purpose ?? "setup",
-          }).select("id").single();
-          convId = conv?.id ?? null;
-        }
-      } catch { /* best effort */ }
-
+      const { replyText, toolsUsed, provider } = await runAgentic();
+      const convId = await persistThread(replyText);
       return json({ reply: replyText, conversation_id: convId, provider, tools_used: toolsUsed });
     }
 

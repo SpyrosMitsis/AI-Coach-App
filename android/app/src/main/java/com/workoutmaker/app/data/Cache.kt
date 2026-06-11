@@ -55,11 +55,19 @@ interface CacheDao {
     @Query("SELECT * FROM cached_workout ORDER BY date DESC")
     suspend fun workouts(): List<CachedWorkout>
 
+    // The cache mirrors the latest successful fetch; clearing before re-insert
+    // drops rows for workouts deleted on the server.
+    @Query("DELETE FROM cached_workout")
+    suspend fun clearWorkouts()
+
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun upsertSummary(summary: CachedSummary)
 
     @Query("SELECT * FROM cached_summary ORDER BY date DESC LIMIT 1")
     suspend fun latestSummary(): CachedSummary?
+
+    @Query("DELETE FROM cached_summary")
+    suspend fun clearSummaries()
 }
 
 @Database(

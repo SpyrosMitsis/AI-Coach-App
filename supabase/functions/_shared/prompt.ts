@@ -346,7 +346,11 @@ export function buildWeekPrompt(c: WeekContext): string {
     : `${c.acwr.toFixed(2)} (${c.acwr > 1.5 ? "HIGH — hold/reduce volume" : c.acwr < 0.8 ? "low — room to build" : "safe band"})`;
   const tsbInterp = c.tsb > 5 ? "fresh" : c.tsb >= -10 ? "neutral" : c.tsb >= -20 ? "fatigued" : "very fatigued";
 
-  return `Design a complete, coherent 7-DAY TRAINING WEEK (microcycle) starting ${c.startDate}.
+  const planNote = c.dayList.length < 7
+    ? `\n\nNOTE: the training week began on ${c.startDate}, but the earlier days have ALREADY HAPPENED (see the actuals above) — plan ONLY the ${c.dayList.length} remaining day(s) listed, accounting for the load already done this week.`
+    : "";
+
+  return `Design a complete, coherent TRAINING WEEK (microcycle) starting ${c.startDate}.${planNote}
 
 ATHLETE CONTEXT
 - Goal: ${c.goal}; Experience: ${c.experience}; Training phase: ${c.phase}
@@ -371,7 +375,7 @@ PLANNING RULES (apply rigorously)
 OUTPUT — ONLY a JSON object (no prose, no code fences) EXACTLY matching:
 ${WEEK_JSON_SCHEMA}
 
-Return EXACTLY 7 day objects, one per listed date, in order. Each "session" follows the workout schema; rest days use type "rest" with guidance in coach_note.`;
+Return EXACTLY ${c.dayList.length} day objects, one per listed date, in order. Each "session" follows the workout schema; rest days use type "rest" with guidance in coach_note.`;
 }
 
 export { validateWeekPlan } from "./workout_schema.ts";

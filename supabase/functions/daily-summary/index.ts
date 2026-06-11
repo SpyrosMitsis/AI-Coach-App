@@ -31,8 +31,19 @@ Deno.serve(async (req) => {
           .eq("user_id", userId).gte("date", since14).order("date", { ascending: false }),
         admin.from("completed_activities").select("date, distance_m, tss, ctl, atl, data_json")
           .eq("user_id", userId).gte("date", since14).order("date", { ascending: true }),
-        admin.from("planned_workouts").select("*").eq("user_id", userId).eq("date", today).order("created_at", { ascending: false }).limit(1),
+        admin.from("planned_workouts").select("*").eq("user_id", userId).eq("date", today),
       ]);
+
+    // When today holds several sessions, pick the SAME "primary" the calendar
+    // shows first: incomplete before completed, real work before rest, newest
+    // first — so Home and Calendar never disagree about today's workout.
+    const todayWorkout = [...(planned ?? [])].sort((a, b) => {
+      if (!!a.completed !== !!b.completed) return a.completed ? 1 : -1;
+      const aRest = a.type === "rest" ? 1 : 0;
+      const bRest = b.type === "rest" ? 1 : 0;
+      if (aRest !== bRest) return aRest - bRest;
+      return String(b.created_at ?? "").localeCompare(String(a.created_at ?? ""));
+    })[0] ?? null;
 
     const wells = wellness ?? [];
     const acts = activities ?? [];
@@ -123,7 +134,7 @@ Deno.serve(async (req) => {
       },
       recovery,
       vo2max,
-      today_workout: planned?.[0] ?? null,
+      today_workout: todayWorkout,
       tsb_sparkline: tsbSparkline,
       weekly_load: { tss: Math.round(weeklyTss), target: targetWeeklyTss },
       active_llm_provider: profile?.active_llm_provider ?? "groq",

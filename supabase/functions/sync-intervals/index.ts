@@ -12,7 +12,21 @@ import {
   getWellness,
   latestFitness,
 } from "../_shared/intervals.ts";
+import { autoAnalyzeRecent } from "../_shared/analyze_core.ts";
 import type { SupabaseClient } from "jsr:@supabase/supabase-js@2";
+
+// Keep the worker alive for post-response work (auto-analysis) without
+// delaying the sync response.
+declare const EdgeRuntime: { waitUntil?: (p: Promise<unknown>) => void } | undefined;
+function waitUntil(p: Promise<unknown>) {
+  try {
+    if (typeof EdgeRuntime !== "undefined" && EdgeRuntime?.waitUntil) {
+      EdgeRuntime.waitUntil(p);
+      return;
+    }
+  } catch (_e) { /* fall through */ }
+  p.catch(() => {});
+}
 
 interface SyncResult {
   user_id: string;
@@ -98,6 +112,8 @@ Deno.serve(async (req) => {
       for (const u of users ?? []) {
         try {
           results.push(await syncUser(admin, u.id));
+          // Auto-analyze the freshly synced sessions (best-effort, capped).
+          waitUntil(autoAnalyzeRecent(admin, u.id));
         } catch (e) {
           results.push({ user_id: u.id, error: e instanceof Error ? e.message : String(e) });
         }
@@ -108,6 +124,9 @@ Deno.serve(async (req) => {
     const userId = await getUserId(req);
     if (!userId) return json({ error: "unauthorized" }, 401);
     const result = await syncUser(admin, userId);
+    // Analyze today's/yesterday's matched run/ride in the background so the
+    // execution score + AI feedback are ready when the activity is opened.
+    waitUntil(autoAnalyzeRecent(admin, userId));
     return json(result);
   } catch (e) {
     return json({ error: e instanceof Error ? e.message : String(e) }, 500);

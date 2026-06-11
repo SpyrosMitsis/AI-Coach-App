@@ -56,10 +56,18 @@ class WorkoutRepository @Inject constructor(
     suspend fun signUp(email: String, password: String) =
         supabase.auth.signUpWith(Email) { this.email = email; this.password = password }
 
+    // Sends the Supabase recovery email; the link opens the web app's
+    // /reset-password page where a new password can be set.
+    suspend fun resetPassword(email: String) {
+        supabase.auth.resetPasswordForEmail(email)
+    }
+
     suspend fun signOut() {
         supabase.auth.signOut()
         invalidateProfileCache()
         runCatching { prefs.setOnboardingComplete(false) }
+        // Don't leak one account's cached data into the next sign-in.
+        runCatching { cache.clearWorkouts(); cache.clearSummaries() }
     }
 
     // --- Profile row cache ----------------------------------------------------
@@ -154,6 +162,19 @@ class WorkoutRepository @Inject constructor(
             }.body(),
         )
 
+    // Execution analysis for a logged strength session (planned vs lifted).
+    suspend fun analyzeStrength(date: String, force: Boolean = false): StrengthAnalysis =
+        json.decodeFromString(
+            supabase.functions.invoke("analyze-strength") {
+                setBody(
+                    kotlinx.serialization.json.buildJsonObject {
+                        put("date", JsonPrimitive(date))
+                        put("force", JsonPrimitive(force))
+                    }.toString(),
+                )
+            }.body(),
+        )
+
     // Delete a logged/manual completed activity (and its Intervals event if it was one).
     suspend fun deleteCompletedActivity(intervalsId: String) {
         supabase.postgrest.from("completed_activities").delete { filter { eq("intervals_id", intervalsId) } }
@@ -167,11 +188,36 @@ class WorkoutRepository @Inject constructor(
         )
 
     // --- Direct table access (RLS-scoped to the signed-in user) --------------
-    suspend fun plannedWorkouts(fromDate: String): List<PlannedWorkout> =
-        supabase.postgrest.from("planned_workouts").select {
+    // Write-through cached so the Calendar still renders the plan offline.
+    suspend fun plannedWorkouts(fromDate: String): List<PlannedWorkout> {
+        val rows: List<PlannedWorkout> = supabase.postgrest.from("planned_workouts").select {
             filter { gte("date", fromDate) }
             order("date", Order.DESCENDING)
         }.decodeList()
+        runCatching {
+            cache.clearWorkouts()
+            cache.upsertWorkouts(
+                rows.map {
+                    CachedWorkout(
+                        id = it.id,
+                        date = it.date,
+                        type = it.type,
+                        workoutJson = json.encodeToString(PlannedWorkout.serializer(), it),
+                    )
+                },
+            )
+        }.logFailure("plannedWorkouts/cache")
+        return rows
+    }
+
+    // Last successfully-fetched plan (offline fallback for the Calendar).
+    suspend fun cachedPlannedWorkouts(): List<PlannedWorkout> = runCatching {
+        cache.workouts().mapNotNull { row ->
+            runCatching {
+                json.decodeFromString(PlannedWorkout.serializer(), row.workoutJson)
+            }.getOrNull()
+        }
+    }.logFailure("cachedPlannedWorkouts").getOrDefault(emptyList())
 
     suspend fun upsertWellness(checkin: WellnessCheckin) {
         supabase.postgrest.from("wellness_checkins").upsert(checkin, onConflict = "user_id,date")
@@ -581,13 +627,21 @@ class WorkoutRepository @Inject constructor(
             }.body(),
         )
 
-    // Streaming coach chat (SSE). Emits each token; returns conversation id at end.
-    suspend fun coachStream(
+    // Streaming agentic coach chat (SSE): emits a {tool} progress event for each
+    // tool the coach runs, then the reply text, then {done}.
+    data class CoachStreamResult(
+        val conversationId: String?,
+        val toolsUsed: List<String>,
+        val error: String?,
+        val gotReply: Boolean,
+    )
+
+    suspend fun coachAgenticStream(
         messages: List<ChatMessage>,
         conversationId: String?,
+        onTool: (String) -> Unit,
         onToken: (String) -> Unit,
-        onDone: (String?) -> Unit,
-    ) {
+    ): CoachStreamResult {
         val token = supabase.auth.currentSessionOrNull()?.accessToken
         val url = BuildConfig.SUPABASE_URL.trimEnd('/') + "/functions/v1/coach-chat"
         val payload = json.encodeToString(
@@ -595,6 +649,10 @@ class WorkoutRepository @Inject constructor(
             CoachChatRequest(messages = messages, mode = "chat", conversationId = conversationId, purpose = "setup", stream = true),
         )
 
+        var convId: String? = null
+        var tools: List<String> = emptyList()
+        var error: String? = null
+        var gotReply = false
         streamingHttp.preparePost(url) {
             header("Authorization", "Bearer $token")
             header("apikey", BuildConfig.SUPABASE_ANON_KEY)
@@ -608,10 +666,17 @@ class WorkoutRepository @Inject constructor(
                 val data = line.removePrefix("data:").trim()
                 if (data.isEmpty()) continue
                 val obj = runCatching { json.parseToJsonElement(data).jsonObject }.getOrNull() ?: continue
-                obj["token"]?.let { onToken(it.jsonPrimitive.content) }
-                if (obj["done"] != null) onDone(obj["conversation_id"]?.jsonPrimitive?.contentOrNull)
+                obj["tool"]?.let { onTool(it.jsonPrimitive.content) }
+                obj["token"]?.let { gotReply = true; onToken(it.jsonPrimitive.content) }
+                obj["error"]?.let { error = it.jsonPrimitive.contentOrNull }
+                if (obj["done"] != null) {
+                    convId = obj["conversation_id"]?.jsonPrimitive?.contentOrNull
+                    tools = (obj["tools_used"] as? kotlinx.serialization.json.JsonArray)
+                        ?.mapNotNull { (it as? JsonPrimitive)?.contentOrNull } ?: emptyList()
+                }
             }
         }
+        return CoachStreamResult(convId, tools, error, gotReply)
     }
 
     private fun uid(): String = supabase.auth.currentUserOrNull()?.id ?: ""

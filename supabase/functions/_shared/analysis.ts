@@ -206,12 +206,14 @@ export function scoreLabel(score: number): string {
   return "Off plan";
 }
 
-// Weighted combination of whichever components exist (intensity counts double).
+// Weighted combination of whichever components exist. The component that
+// captures the session's purpose counts double: Intensity for endurance,
+// Coverage (planned exercises completed) for strength.
 export function combineScore(components: AnalysisComponent[]): number | null {
   if (!components.length) return null;
   let sum = 0, wsum = 0;
   for (const c of components) {
-    const w = c.name === "Intensity" ? 2 : 1;
+    const w = c.name === "Intensity" || c.name === "Coverage" ? 2 : 1;
     sum += c.score * w;
     wsum += w;
   }

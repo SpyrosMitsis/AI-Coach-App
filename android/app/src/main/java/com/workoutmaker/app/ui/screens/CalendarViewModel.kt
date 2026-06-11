@@ -115,7 +115,17 @@ class CalendarViewModel @Inject constructor(
     fun load() = viewModelScope.launch {
         loading.value = true
         val from = LocalDate.now().minusMonths(2).toString()
-        runCatching { repo.plannedWorkouts(from) }.onSuccess { workouts.value = it }
+        runCatching { repo.plannedWorkouts(from) }
+            .onSuccess { workouts.value = it }
+            .onFailure {
+                // Offline (incl. cold start): render the last cached plan.
+                // Logged strength sessions below are local Room data anyway.
+                val cached = repo.cachedPlannedWorkouts()
+                if (cached.isNotEmpty() && workouts.value.isEmpty()) {
+                    workouts.value = cached
+                    banner.value = "Offline — showing your last synced plan."
+                }
+            }
         runCatching { repo.templates() }.onSuccess { templates.value = it }
         runCatching { repo.completedActivities(from) }
             .onSuccess { acts -> activitiesByDate.value = acts.filter { it.date != null }.groupBy { it.date!! } }

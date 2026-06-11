@@ -6,10 +6,10 @@ import kotlinx.serialization.Serializable
 // Kotlin mirror of /shared/types.ts. Keep field names in sync with the schema.
 
 enum class LlmProvider(val label: String, val model: String, val freeKeyUrl: String, val freeTier: Boolean) {
-    @SerialName("anthropic") ANTHROPIC("Anthropic", "claude-sonnet-4-20250514", "https://console.anthropic.com/settings/keys", false),
+    @SerialName("anthropic") ANTHROPIC("Anthropic", "claude-opus-4-8", "https://console.anthropic.com/settings/keys", false),
     @SerialName("deepseek")  DEEPSEEK("DeepSeek", "deepseek-chat", "https://platform.deepseek.com/api_keys", false),
-    @SerialName("openai")    OPENAI("OpenAI", "gpt-4o-mini", "https://platform.openai.com/api-keys", false),
-    @SerialName("gemini")    GEMINI("Google Gemini", "gemini-2.0-flash", "https://aistudio.google.com/app/apikey", true),
+    @SerialName("openai")    OPENAI("OpenAI", "gpt-5-mini", "https://platform.openai.com/api-keys", false),
+    @SerialName("gemini")    GEMINI("Google Gemini", "gemini-2.5-flash", "https://aistudio.google.com/app/apikey", true),
     @SerialName("groq")      GROQ("Groq", "llama-3.3-70b-versatile", "https://console.groq.com/keys", true);
 
     val key: String get() = name.lowercase()
@@ -56,6 +56,7 @@ data class PlannedWorkout(
     val intervals_event_id: String? = null,
     val completed: Boolean = false,
     val locked: Boolean = false,
+    val created_at: String? = null,
 )
 
 @Serializable
@@ -369,6 +370,39 @@ data class ActivityAnalysis(
     val splits: List<AnalysisSplit> = emptyList(),
     val planned_title: String? = null,
     val streams_error: String? = null,
+    val error: String? = null,
+)
+
+// --- Strength session analysis (analyze-strength) ---------------------------
+@Serializable
+data class StrengthAnalysisExercise(
+    val name: String,
+    val actual_sets: Int = 0,
+    val top_weight_kg: Double? = null,
+    val volume_kg: Double? = null,
+    val planned: String? = null,
+)
+
+@Serializable
+data class StrengthAnalysisWatch(
+    val duration_min: Int? = null,
+    val avg_hr: Int? = null,
+    val tss: Double? = null,
+)
+
+@Serializable
+data class StrengthAnalysis(
+    val ok: Boolean = false,
+    val score: Int? = null,
+    val label: String? = null,
+    val components: List<AnalysisComponent> = emptyList(),
+    val feedback: String? = null,
+    val feedback_provider: String? = null,
+    val exercises: List<StrengthAnalysisExercise> = emptyList(),
+    val total_volume_kg: Double? = null,
+    val total_sets: Int? = null,
+    val watch: StrengthAnalysisWatch? = null,
+    val planned_title: String? = null,
     val error: String? = null,
 )
 

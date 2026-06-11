@@ -15,10 +15,10 @@ export const PROVIDER_LABELS: Record<LlmProvider, string> = {
 };
 
 export const PROVIDER_MODELS: Record<LlmProvider, string> = {
-  anthropic: "claude-sonnet-4-20250514",
+  anthropic: "claude-opus-4-8",
   deepseek: "deepseek-chat",
-  openai: "gpt-4o-mini",
-  gemini: "gemini-2.0-flash",
+  openai: "gpt-5-mini",
+  gemini: "gemini-2.5-flash",
   groq: "llama-3.3-70b-versatile",
 };
 
@@ -32,10 +32,10 @@ export const PROVIDER_FREE_KEY_URL: Record<LlmProvider, string> = {
 
 // ~USD per 1M tokens (input/output) for the per-generation cost estimate.
 export const PROVIDER_PRICING: Record<LlmProvider, { inputPer1M: number; outputPer1M: number }> = {
-  anthropic: { inputPer1M: 3.0, outputPer1M: 15.0 },
-  deepseek: { inputPer1M: 0.27, outputPer1M: 1.1 },
-  openai: { inputPer1M: 0.15, outputPer1M: 0.6 },
-  gemini: { inputPer1M: 0.1, outputPer1M: 0.4 },
+  anthropic: { inputPer1M: 5.0, outputPer1M: 25.0 },
+  deepseek: { inputPer1M: 0.28, outputPer1M: 0.42 },
+  openai: { inputPer1M: 0.25, outputPer1M: 2.0 },
+  gemini: { inputPer1M: 0.3, outputPer1M: 2.5 },
   groq: { inputPer1M: 0.59, outputPer1M: 0.79 },
 };
 

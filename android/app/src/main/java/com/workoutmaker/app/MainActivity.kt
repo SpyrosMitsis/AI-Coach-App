@@ -122,7 +122,15 @@ private fun MainScaffold() {
     ) { padding ->
         NavHost(nav, startDestination = startDestination, modifier = Modifier.padding(padding)) {
             composable("home") { HomeScreen() }
-            composable("coach") { CoachScreen() }
+            composable("coach") {
+                CoachScreen(onOpenCalendar = {
+                    nav.navigate("calendar") {
+                        popUpTo(nav.graph.findStartDestination().id) { saveState = true }
+                        launchSingleTop = true
+                        restoreState = true
+                    }
+                })
+            }
             composable("calendar") {
                 CalendarScreen(onOpenStrength = {
                     nav.navigate("strength") {

@@ -34,19 +34,73 @@ import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.launch
 import javax.inject.Inject
 
+// Supabase auth errors are terse and technical — translate the common ones.
+internal fun friendlyAuthError(t: Throwable): String {
+    val m = t.message ?: return "Something went wrong — please try again."
+    return when {
+        m.contains("Invalid login credentials", true) -> "Wrong email or password."
+        m.contains("Email not confirmed", true) ->
+            "Your email isn't confirmed yet — check your inbox for the confirmation link."
+        m.contains("already registered", true) ->
+            "An account with this email already exists — sign in instead."
+        m.contains("Password should be", true) -> "Password is too short — use at least 6 characters."
+        m.contains("rate limit", true) || m.contains("too many", true) ->
+            "Too many attempts — wait a minute and try again."
+        m.contains("is invalid", true) || m.contains("validate email", true) ->
+            "That doesn't look like a valid email address."
+        m.contains("Unable to resolve host", true) || m.contains("Failed to connect", true) ||
+            m.contains("timeout", true) || m.contains("No address associated", true) ->
+            "Can't reach the server — check your internet connection."
+        else -> m
+    }
+}
+
 @HiltViewModel
 class AuthViewModel @Inject constructor(
     val repo: WorkoutRepository,
 ) : ViewModel() {
     val sessionStatus: StateFlow<SessionStatus> = repo.auth.sessionStatus as StateFlow<SessionStatus>
     val error = MutableStateFlow<String?>(null)
+    // Non-error guidance (confirmation mail sent, reset mail sent…).
+    val info = MutableStateFlow<String?>(null)
+    val busy = MutableStateFlow(false)
 
     fun signIn(email: String, pw: String) = viewModelScope.launch {
-        runCatching { repo.signIn(email, pw) }.onFailure { error.value = it.message }
+        busy.value = true
+        error.value = null
+        info.value = null
+        runCatching { repo.signIn(email.trim(), pw) }
+            .onFailure { error.value = friendlyAuthError(it) }
+        busy.value = false
     }
 
     fun signUp(email: String, pw: String) = viewModelScope.launch {
-        runCatching { repo.signUp(email, pw) }.onFailure { error.value = it.message }
+        busy.value = true
+        error.value = null
+        info.value = null
+        runCatching { repo.signUp(email.trim(), pw) }
+            .onSuccess {
+                // With email confirmation enabled there's no session yet — say
+                // what to do instead of failing silently.
+                if (repo.auth.currentSessionOrNull() == null) {
+                    info.value = "Almost there — confirm your email from the link in your inbox, then sign in."
+                }
+            }
+            .onFailure { error.value = friendlyAuthError(it) }
+        busy.value = false
+    }
+
+    fun forgotPassword(email: String) = viewModelScope.launch {
+        if (email.isBlank()) {
+            error.value = "Type your email above first, then tap “Forgot password?”."
+            return@launch
+        }
+        busy.value = true
+        error.value = null
+        runCatching { repo.resetPassword(email.trim()) }
+            .onSuccess { info.value = "Check your email — we sent you a link to set a new password." }
+            .onFailure { error.value = friendlyAuthError(it) }
+        busy.value = false
     }
 }
 
@@ -86,6 +140,8 @@ private fun LoginScreen(vm: AuthViewModel) {
     var email by remember { mutableStateOf("") }
     var pw by remember { mutableStateOf("") }
     val error by vm.error.collectAsStateSafe()
+    val info by vm.info.collectAsStateSafe()
+    val busy by vm.busy.collectAsStateSafe()
 
     Column(
         Modifier.fillMaxSize().padding(24.dp),
@@ -126,8 +182,26 @@ private fun LoginScreen(vm: AuthViewModel) {
                 onDone = { focus.clearFocus(); vm.signIn(email, pw) },
             ),
         )
-        Button({ vm.signIn(email, pw) }, Modifier.fillMaxWidth().padding(top = 16.dp)) { Text("Sign in") }
-        OutlinedButton({ vm.signUp(email, pw) }, Modifier.fillMaxWidth().padding(top = 8.dp)) { Text("Create account") }
+        Button({ vm.signIn(email, pw) }, Modifier.fillMaxWidth().padding(top = 16.dp), enabled = !busy) { Text("Sign in") }
+        OutlinedButton({ vm.signUp(email, pw) }, Modifier.fillMaxWidth().padding(top = 8.dp), enabled = !busy) { Text("Create account") }
+        androidx.compose.material3.TextButton(
+            onClick = { vm.forgotPassword(email) },
+            modifier = Modifier.fillMaxWidth().padding(top = 4.dp),
+            enabled = !busy,
+        ) {
+            Text(
+                "Forgot password?",
+                style = androidx.compose.material3.MaterialTheme.typography.labelMedium,
+                color = androidx.compose.material3.MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
         error?.let { Text(it, color = com.workoutmaker.app.ui.theme.Red, modifier = Modifier.padding(top = 12.dp)) }
+        info?.let {
+            Text(
+                it,
+                color = androidx.compose.material3.MaterialTheme.colorScheme.primary,
+                modifier = Modifier.padding(top = 12.dp),
+            )
+        }
     }
 }

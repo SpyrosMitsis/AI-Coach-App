@@ -7,6 +7,7 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
@@ -71,6 +72,23 @@ private const val GREETING =
         "“set my goal race to the Berlin marathon on 2026-09-27”. I'll check your " +
         "numbers, then plan, generate, or adjust your training for you."
 
+// Live progress line while the agentic loop runs ("checking your fitness…").
+internal fun friendlyToolProgress(tool: String): String = when (tool) {
+    "get_fitness" -> "Checking your fitness…"
+    "get_recent_activities" -> "Reviewing recent activities…"
+    "get_planned_week" -> "Looking at your week…"
+    "get_strength_summary" -> "Reviewing your lifting…"
+    "get_profile" -> "Checking your profile…"
+    "get_readiness" -> "Checking today's readiness…"
+    "get_execution_analysis" -> "Reviewing how recent sessions went…"
+    "plan_week" -> "Planning your week (this can take ~30s)…"
+    "generate_workout" -> "Creating your workout…"
+    "move_workout" -> "Moving the session…"
+    "set_goal_race" -> "Setting your goal race…"
+    "remember" -> "Noting that down…"
+    else -> "Working…"
+}
+
 // Maps tool names the agentic coach used into a friendly "what I just did" note.
 private fun friendlyTools(tools: List<String>): String {
     val label = { t: String ->
@@ -82,6 +100,9 @@ private fun friendlyTools(tools: List<String>): String {
             "get_profile" -> "checked your profile"
             "plan_week" -> "planned your week"
             "generate_workout" -> "created a workout"
+            "get_readiness" -> "checked your readiness"
+            "get_execution_analysis" -> "reviewed your execution"
+            "move_workout" -> "moved a session"
             "set_goal_race" -> "set your goal race"
             "remember" -> "noted that for next time"
             else -> t
@@ -95,7 +116,46 @@ class CoachViewModel @Inject constructor(private val repo: WorkoutRepository) : 
     val messages = MutableStateFlow(listOf(ChatMessage("assistant", GREETING)))
     val sending = MutableStateFlow(false)
     val banner = MutableStateFlow<String?>(null)
+    // Live tool-progress line while the agentic loop runs.
+    val liveStatus = MutableStateFlow<String?>(null)
+    // After the coach changes the calendar: this week's sessions for the result card.
+    val actionWeek = MutableStateFlow<List<com.workoutmaker.app.data.PlannedWorkout>?>(null)
+    // Contextual conversation starters, built from the cached dashboard.
+    val suggestions = MutableStateFlow(listOf("How's my fitness looking?", "Plan my week"))
     private var conversationId: String? = null
+
+    init {
+        viewModelScope.launch {
+            val cached = runCatching { repo.cachedDailySummary() }.getOrNull()?.first
+            val chips = mutableListOf("How's my fitness looking?")
+            val today = cached?.today_workout
+            if (today?.workout_json != null && !today.completed) {
+                chips += "Explain today's workout"
+            } else if (today == null) {
+                chips += "Make me a workout for today"
+            }
+            chips += "Plan my week"
+            cached?.goal?.let { g ->
+                g.weeks_to_goal?.let { w -> chips += "Am I on track for ${g.goal} ($w weeks out)?" }
+            }
+            chips += "How did my last workouts go?"
+            suggestions.value = chips.take(5)
+        }
+    }
+
+    fun dismissActionCard() { actionWeek.value = null }
+
+    // After plan_week / generate_workout / move_workout: show what's actually on
+    // the calendar now, fetched fresh from the source of truth.
+    private fun loadActionWeek() = viewModelScope.launch {
+        runCatching {
+            val monday = java.time.LocalDate.now().with(java.time.DayOfWeek.MONDAY)
+            val sunday = monday.plusDays(6)
+            repo.plannedWorkouts(monday.toString())
+                .filter { it.date <= sunday.toString() }
+                .sortedBy { it.date }
+        }.onSuccess { actionWeek.value = it }
+    }
 
     // Chat history
     val conversations = MutableStateFlow<List<com.workoutmaker.app.data.CoachConversation>>(emptyList())
@@ -151,25 +211,62 @@ class CoachViewModel @Inject constructor(private val repo: WorkoutRepository) : 
         messages.value = outgoing
         sending.value = true
         banner.value = null
+        liveStatus.value = "Thinking…"
         val history = outgoing.drop(1) // drop the local greeting
 
-        // The coach is now agentic: it reads your real data and can act on your
-        // plan via tools, so it runs a loop server-side and returns one reply
-        // (no token streaming, but far more useful).
+        // Agentic + streamed: the server emits a progress event per tool while
+        // the loop runs, then the reply. Falls back to the plain request if the
+        // stream fails before any reply arrived.
         viewModelScope.launch {
-            runCatching {
-                repo.coachChat(
-                    CoachChatRequest(messages = history, mode = "chat", conversationId = conversationId, purpose = "setup"),
+            var gotReply = false
+            fun appendToken(tok: String) {
+                if (!gotReply) {
+                    gotReply = true
+                    messages.value = messages.value + ChatMessage("assistant", tok)
+                } else {
+                    val last = messages.value.last()
+                    messages.value = messages.value.dropLast(1) +
+                        ChatMessage(last.role, last.content + tok)
+                }
+            }
+            val streamed = runCatching {
+                repo.coachAgenticStream(
+                    history, conversationId,
+                    onTool = { liveStatus.value = friendlyToolProgress(it) },
+                    onToken = { appendToken(it) },
                 )
-            }.onSuccess { reply ->
-                conversationId = reply.conversation_id ?: conversationId
-                messages.value = messages.value + ChatMessage("assistant", reply.reply ?: "(no reply)")
-                if (reply.tools_used.isNotEmpty()) banner.value = "🔧 " + friendlyTools(reply.tools_used)
+            }
+            streamed.onSuccess { r ->
+                conversationId = r.conversationId ?: conversationId
+                r.error?.let { err ->
+                    if (!gotReply) messages.value = messages.value + ChatMessage("assistant", "⚠️ $err")
+                }
+                if (r.toolsUsed.isNotEmpty()) banner.value = "🔧 " + friendlyTools(r.toolsUsed)
+                if (r.toolsUsed.any { it == "plan_week" || it == "generate_workout" || it == "move_workout" }) {
+                    loadActionWeek()
+                }
             }.onFailure {
-                banner.value = it.message
-                messages.value = messages.value + ChatMessage("assistant", "⚠️ ${it.message}")
+                if (!gotReply) {
+                    // Stream transport failed — retry once over the plain endpoint.
+                    runCatching {
+                        repo.coachChat(
+                            CoachChatRequest(messages = history, mode = "chat", conversationId = conversationId, purpose = "setup"),
+                        )
+                    }.onSuccess { reply ->
+                        conversationId = reply.conversation_id ?: conversationId
+                        messages.value = messages.value + ChatMessage("assistant", reply.reply ?: "(no reply)")
+                        if (reply.tools_used.isNotEmpty()) banner.value = "🔧 " + friendlyTools(reply.tools_used)
+                        if (reply.tools_used.any { t -> t == "plan_week" || t == "generate_workout" || t == "move_workout" }) {
+                            loadActionWeek()
+                        }
+                    }.onFailure { e2 ->
+                        banner.value = e2.message
+                        messages.value = messages.value + ChatMessage("assistant", "⚠️ ${e2.message}")
+                    }
+                }
             }
             sending.value = false
+            liveStatus.value = null
         }
     }
 
@@ -199,10 +296,13 @@ class CoachViewModel @Inject constructor(private val repo: WorkoutRepository) : 
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun CoachScreen(vm: CoachViewModel = hiltViewModel()) {
+fun CoachScreen(vm: CoachViewModel = hiltViewModel(), onOpenCalendar: () -> Unit = {}) {
     val messages by vm.messages.collectAsStateSafe()
     val sending by vm.sending.collectAsStateSafe()
     val banner by vm.banner.collectAsStateSafe()
+    val liveStatus by vm.liveStatus.collectAsStateSafe()
+    val actionWeek by vm.actionWeek.collectAsStateSafe()
+    val suggestions by vm.suggestions.collectAsStateSafe()
     val showHistory by vm.showHistory.collectAsStateSafe()
     val conversations by vm.conversations.collectAsStateSafe()
     var input by remember { mutableStateOf("") }
@@ -273,12 +373,27 @@ fun CoachScreen(vm: CoachViewModel = hiltViewModel()) {
             verticalArrangement = Arrangement.spacedBy(8.dp),
         ) {
             items(messages) { msg -> Bubble(msg) }
+            actionWeek?.let { week ->
+                item { CalendarResultCard(week, onOpen = onOpenCalendar, onDismiss = { vm.dismissActionCard() }) }
+            }
             if (sending) {
                 item {
                     Row(Modifier.padding(8.dp), verticalAlignment = Alignment.CenterVertically) {
                         CircularProgressIndicator(Modifier.padding(end = 8.dp), strokeWidth = 2.dp)
-                        Text("Coach is reading your data…", style = MaterialTheme.typography.bodySmall)
+                        Text(liveStatus ?: "Coach is thinking…", style = MaterialTheme.typography.bodySmall)
                     }
+                }
+            }
+        }
+
+        // Contextual conversation starters on a fresh thread.
+        if (messages.size <= 1 && !sending) {
+            androidx.compose.foundation.lazy.LazyRow(
+                Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 4.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                items(suggestions) { sgn ->
+                    androidx.compose.material3.AssistChip(onClick = { vm.send(sgn) }, label = { Text(sgn) })
                 }
             }
         }
@@ -292,20 +407,41 @@ fun CoachScreen(vm: CoachViewModel = hiltViewModel()) {
             )
         }
 
-        // Quick "finalize" actions once a conversation has started.
+        // Primary action: put what was discussed onto the REAL calendar (the
+        // coach uses its plan_week / generate_workout tools). Saving a reusable
+        // template is the secondary path, tucked into a small menu.
         if (messages.size > 2) {
             Row(
                 Modifier.fillMaxWidth().padding(horizontal = 12.dp),
+                verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
             ) {
                 GhostButton(
-                    onClick = { vm.finalize("workout") }, enabled = !sending,
+                    onClick = {
+                        vm.send("Yes — apply that to my real calendar now and push it to my watch, then confirm exactly what you scheduled.")
+                    },
+                    enabled = !sending,
                     modifier = Modifier.weight(1f),
-                ) { Text("Make a workout") }
-                GhostButton(
-                    onClick = { vm.finalize("plan") }, enabled = !sending,
-                    modifier = Modifier.weight(1f),
-                ) { Text("Make a plan") }
+                ) { Text("📅 Apply to my calendar") }
+                var templateMenu by remember { mutableStateOf(false) }
+                Box {
+                    TextButton(onClick = { templateMenu = true }, enabled = !sending) {
+                        Text("Save ▾", style = MaterialTheme.typography.labelMedium)
+                    }
+                    androidx.compose.material3.DropdownMenu(
+                        expanded = templateMenu,
+                        onDismissRequest = { templateMenu = false },
+                    ) {
+                        androidx.compose.material3.DropdownMenuItem(
+                            text = { Text("Save as workout template") },
+                            onClick = { templateMenu = false; vm.finalize("workout") },
+                        )
+                        androidx.compose.material3.DropdownMenuItem(
+                            text = { Text("Save as plan template") },
+                            onClick = { templateMenu = false; vm.finalize("plan") },
+                        )
+                    }
+                }
             }
         }
 
@@ -420,6 +556,59 @@ private fun ConversationRow(
     }
 }
 
+// Shown after the coach changes the calendar: the week as it now actually is,
+// straight from planned_workouts, with a jump into the Calendar tab.
+@Composable
+private fun CalendarResultCard(
+    week: List<com.workoutmaker.app.data.PlannedWorkout>,
+    onOpen: () -> Unit,
+    onDismiss: () -> Unit,
+) {
+    com.workoutmaker.app.ui.components.SectionCard {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            com.workoutmaker.app.ui.components.SectionLabel("Now on your calendar")
+            Spacer(Modifier.weight(1f))
+            TextButton(onClick = onDismiss) { Text("Hide", style = MaterialTheme.typography.labelMedium) }
+        }
+        if (week.isEmpty()) {
+            Text(
+                "Nothing scheduled this week yet.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+        week.forEach { w ->
+            val day = runCatching {
+                java.time.LocalDate.parse(w.date).dayOfWeek
+                    .getDisplayName(java.time.format.TextStyle.SHORT, java.util.Locale.getDefault())
+            }.getOrDefault(w.date)
+            Row(Modifier.fillMaxWidth().padding(vertical = 2.dp), verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    day,
+                    Modifier.widthIn(min = 44.dp),
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Text(
+                    if (w.type == "rest") "Rest" else w.workout_json.title,
+                    Modifier.weight(1f),
+                    style = MaterialTheme.typography.bodySmall,
+                    maxLines = 1,
+                )
+                val tss = w.workout_json.tss_estimate
+                if (tss > 0) {
+                    Text(
+                        "${tss.toInt()} TSS",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            }
+        }
+        GhostButton(onClick = onOpen, modifier = Modifier.fillMaxWidth()) { Text("View in calendar") }
+    }
+}
+
 @Composable
 private fun Bubble(msg: ChatMessage) {
     val isUser = msg.role == "user"
@@ -457,12 +646,20 @@ private fun Bubble(msg: ChatMessage) {
                 )
                 .padding(horizontal = 16.dp, vertical = 12.dp),
         ) {
-            Text(
-                msg.content,
-                color = if (isUser) MaterialTheme.colorScheme.onPrimary
-                else MaterialTheme.colorScheme.onSurface,
-                style = MaterialTheme.typography.bodyMedium,
-            )
+            if (isUser) {
+                Text(
+                    msg.content,
+                    color = MaterialTheme.colorScheme.onPrimary,
+                    style = MaterialTheme.typography.bodyMedium,
+                )
+            } else {
+                // The model writes markdown (bold, lists, headers) — render it.
+                com.workoutmaker.app.ui.components.MarkdownText(
+                    msg.content,
+                    color = MaterialTheme.colorScheme.onSurface,
+                    style = MaterialTheme.typography.bodyMedium,
+                )
+            }
         }
     }
 }
@@ -479,7 +676,11 @@ private fun AssistantText(text: String) {
                 .border(1.dp, MaterialTheme.colorScheme.outlineVariant, shape)
                 .padding(horizontal = 16.dp, vertical = 12.dp),
         ) {
-            Text(text, color = MaterialTheme.colorScheme.onSurface, style = MaterialTheme.typography.bodyMedium)
+            com.workoutmaker.app.ui.components.MarkdownText(
+                text,
+                color = MaterialTheme.colorScheme.onSurface,
+                style = MaterialTheme.typography.bodyMedium,
+            )
         }
     }
 }

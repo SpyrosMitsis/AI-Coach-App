@@ -24,30 +24,30 @@ export interface ProviderSpec {
 export const PROVIDERS: Record<LlmProvider, ProviderSpec> = {
   anthropic: {
     label: "Anthropic",
-    model: "claude-sonnet-4-20250514",
-    inputPer1M: 3.0,
-    outputPer1M: 15.0,
+    model: "claude-opus-4-8",
+    inputPer1M: 5.0,
+    outputPer1M: 25.0,
     getFreeKeyUrl: "https://console.anthropic.com/settings/keys",
   },
   deepseek: {
     label: "DeepSeek",
     model: "deepseek-chat",
-    inputPer1M: 0.27,
-    outputPer1M: 1.1,
+    inputPer1M: 0.28,
+    outputPer1M: 0.42,
     getFreeKeyUrl: "https://platform.deepseek.com/api_keys",
   },
   openai: {
     label: "OpenAI",
-    model: "gpt-4o-mini",
-    inputPer1M: 0.15,
-    outputPer1M: 0.6,
+    model: "gpt-5-mini",
+    inputPer1M: 0.25,
+    outputPer1M: 2.0,
     getFreeKeyUrl: "https://platform.openai.com/api-keys",
   },
   gemini: {
     label: "Google Gemini",
-    model: "gemini-2.0-flash",
-    inputPer1M: 0.1,
-    outputPer1M: 0.4,
+    model: "gemini-2.5-flash",
+    inputPer1M: 0.3,
+    outputPer1M: 2.5,
     getFreeKeyUrl: "https://aistudio.google.com/app/apikey",
   },
   groq: {
@@ -104,6 +104,12 @@ function promptText(args: GenArgs): string {
 // OpenAI-compatible adapter — covers OpenAI, DeepSeek, and Groq, which all
 // speak the /chat/completions schema. Only base URL + JSON-mode flag differ.
 // ---------------------------------------------------------------------------
+// Newer OpenAI models (gpt-5 family, o-series) require `max_completion_tokens`
+// instead of `max_tokens` and reject custom temperature values.
+export function openAiModernParams(provider: LlmProvider, model: string): boolean {
+  return provider === "openai" && /^(gpt-5|o\d|chatgpt)/i.test(model);
+}
+
 async function openAiCompatible(
   provider: LlmProvider,
   baseUrl: string,
@@ -116,9 +122,13 @@ async function openAiCompatible(
       { role: "system", content: args.systemPrompt },
       ...turns(args),
     ],
-    temperature: 0.6,
-    max_tokens: 2500,
   };
+  if (openAiModernParams(provider, model)) {
+    body.max_completion_tokens = 2500;
+  } else {
+    body.temperature = 0.6;
+    body.max_tokens = 2500;
+  }
   if (args.jsonMode !== false) body.response_format = { type: "json_object" };
 
   const res = await fetch(`${baseUrl}/chat/completions`, {
@@ -147,8 +157,22 @@ async function openAiCompatible(
 // ---------------------------------------------------------------------------
 // Anthropic Messages API
 // ---------------------------------------------------------------------------
+
+// Opus 4.7+ and Fable removed sampling parameters — sending `temperature`
+// returns a 400 on those models, so only include it where still accepted.
+export function anthropicAcceptsTemperature(model: string): boolean {
+  return !/opus-4-[78]|fable/i.test(model);
+}
+
 async function anthropic(args: GenArgs): Promise<LlmResult> {
   const model = args.model ?? PROVIDERS.anthropic.model;
+  const body: Record<string, unknown> = {
+    model,
+    max_tokens: 2500,
+    system: args.systemPrompt,
+    messages: turns(args),
+  };
+  if (anthropicAcceptsTemperature(model)) body.temperature = 0.6;
   const res = await fetch("https://api.anthropic.com/v1/messages", {
     method: "POST",
     headers: {
@@ -156,13 +180,7 @@ async function anthropic(args: GenArgs): Promise<LlmResult> {
       "x-api-key": args.apiKey,
       "anthropic-version": "2023-06-01",
     },
-    body: JSON.stringify({
-      model,
-      max_tokens: 2500,
-      temperature: 0.6,
-      system: args.systemPrompt,
-      messages: turns(args),
-    }),
+    body: JSON.stringify(body),
   });
   if (!res.ok) {
     throw new Error(`anthropic HTTP ${res.status}: ${await res.text()}`);
@@ -252,14 +270,21 @@ export async function llmStream(
     const base = provider === "openai" ? "https://api.openai.com/v1"
       : provider === "deepseek" ? "https://api.deepseek.com/v1"
       : "https://api.groq.com/openai/v1";
+    const body: Record<string, unknown> = {
+      model,
+      messages: [{ role: "system", content: args.systemPrompt }, ...turns(args)],
+      stream: true,
+    };
+    if (openAiModernParams(provider, model)) {
+      body.max_completion_tokens = 2500;
+    } else {
+      body.temperature = 0.6;
+      body.max_tokens = 2500;
+    }
     const res = await fetch(`${base}/chat/completions`, {
       method: "POST",
       headers: { "Content-Type": "application/json", Authorization: `Bearer ${args.apiKey}` },
-      body: JSON.stringify({
-        model,
-        messages: [{ role: "system", content: args.systemPrompt }, ...turns(args)],
-        temperature: 0.6, max_tokens: 2500, stream: true,
-      }),
+      body: JSON.stringify(body),
     });
     if (!res.ok) throw new Error(`${provider} HTTP ${res.status}: ${await res.text()}`);
     for await (const data of sseLines(res)) {
@@ -273,13 +298,15 @@ export async function llmStream(
   }
 
   if (provider === "anthropic") {
+    const streamBody: Record<string, unknown> = {
+      model, max_tokens: 2500, stream: true,
+      system: args.systemPrompt, messages: turns(args),
+    };
+    if (anthropicAcceptsTemperature(model)) streamBody.temperature = 0.6;
     const res = await fetch("https://api.anthropic.com/v1/messages", {
       method: "POST",
       headers: { "Content-Type": "application/json", "x-api-key": args.apiKey, "anthropic-version": "2023-06-01" },
-      body: JSON.stringify({
-        model, max_tokens: 2500, temperature: 0.6, stream: true,
-        system: args.systemPrompt, messages: turns(args),
-      }),
+      body: JSON.stringify(streamBody),
     });
     if (!res.ok) throw new Error(`anthropic HTTP ${res.status}: ${await res.text()}`);
     for await (const data of sseLines(res)) {

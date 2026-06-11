@@ -306,7 +306,7 @@ internal fun scoreColor(score: Int) = when {
 }
 
 @Composable
-private fun ExecutionRing(score: Int) {
+internal fun ExecutionRing(score: Int) {
     val color = scoreColor(score)
     Box(Modifier.size(72.dp), contentAlignment = Alignment.Center) {
         androidx.compose.foundation.Canvas(Modifier.size(72.dp)) {
@@ -321,7 +321,7 @@ private fun ExecutionRing(score: Int) {
 }
 
 @Composable
-private fun ScoreBar(score: Int) {
+internal fun ScoreBar(score: Int) {
     Box(
         Modifier.fillMaxWidth().height(6.dp)
             .clip(RoundedCornerShape(3.dp))

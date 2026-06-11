@@ -83,6 +83,16 @@ import java.time.format.TextStyle
 import java.util.Locale
 import javax.inject.Inject
 
+// Same "primary session first" rule the Home dashboard uses (incomplete before
+// completed, real work before rest, newest first) so the top card on a day is
+// always the workout Home shows.
+internal fun primaryFirst(sessions: List<PlannedWorkout>): List<PlannedWorkout> =
+    sessions.sortedWith(
+        compareBy<PlannedWorkout> { it.completed }
+            .thenBy { it.type == "rest" }
+            .thenByDescending { it.created_at ?: "" },
+    )
+
 internal fun typeColor(type: String) = when {
     type.contains("run", true) || type.contains("ride", true) || type.contains("bike", true) -> Sage
     type.contains("strength", true) || type.contains("gym", true) || type.contains("weight", true) -> Sand
@@ -117,7 +127,7 @@ fun CalendarScreen(vm: CalendarViewModel = hiltViewModel(), onOpenStrength: () -
     LaunchedEffect(Unit) { vm.load() }
 
     val byDate = remember(workouts) { workouts.groupBy { it.date } }
-    val daySessions = byDate[selectedDate.toString()].orEmpty()
+    val daySessions = primaryFirst(byDate[selectedDate.toString()].orEmpty())
     val dayStrength = strengthByDate[selectedDate.toString()].orEmpty()
     val dayActivities = activitiesByDate[selectedDate.toString()].orEmpty()
     val weekStart = selectedDate.minusDays((selectedDate.dayOfWeek.value - 1).toLong())

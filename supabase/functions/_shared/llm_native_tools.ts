@@ -10,7 +10,7 @@
 // ============================================================================
 
 import type { LlmProvider } from "./types.ts";
-import { PROVIDERS } from "./llm.ts";
+import { anthropicAcceptsTemperature, openAiModernParams, PROVIDERS } from "./llm.ts";
 import type { ChatMessage } from "./llm.ts";
 
 export interface NativeToolDef {
@@ -64,7 +64,7 @@ async function anthropicLoop(args: NativeLoopArgs): Promise<NativeLoopResult> {
       body: JSON.stringify({
         model,
         max_tokens: 2500,
-        temperature: 0.6,
+        ...(anthropicAcceptsTemperature(model) ? { temperature: 0.6 } : {}),
         system: args.systemPrompt,
         messages: msgs,
         tools: args.tools,
@@ -123,7 +123,14 @@ async function openAiCompatibleLoop(args: NativeLoopArgs): Promise<NativeLoopRes
     const res = await fetch(`${base}/chat/completions`, {
       method: "POST",
       headers: { "Content-Type": "application/json", Authorization: `Bearer ${args.apiKey}` },
-      body: JSON.stringify({ model, messages: msgs, tools, temperature: 0.6, max_tokens: 2500 }),
+      body: JSON.stringify({
+        model,
+        messages: msgs,
+        tools,
+        ...(openAiModernParams(args.provider, model)
+          ? { max_completion_tokens: 2500 }
+          : { temperature: 0.6, max_tokens: 2500 }),
+      }),
     });
     if (!res.ok) throw new Error(`${args.provider} HTTP ${res.status}: ${await res.text()}`);
     const data = await res.json();

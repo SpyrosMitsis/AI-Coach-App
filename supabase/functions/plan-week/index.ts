@@ -20,7 +20,7 @@ import {
 } from "../_shared/prompt.ts";
 import { createEvent, deleteEvent, latestFitness } from "../_shared/intervals.ts";
 import { renderIntervalsWorkout } from "../_shared/intervals_workout.ts";
-import { adherenceBlock, goalBlock, intervalsPhysiology, knowledgeBlock, memoryBlock } from "../_shared/context.ts";
+import { adherenceBlock, executionBlock, goalBlock, intervalsPhysiology, knowledgeBlock, memoryBlock } from "../_shared/context.ts";
 import type { LlmProvider, Workout } from "../_shared/types.ts";
 import type { SupabaseClient } from "jsr:@supabase/supabase-js@2";
 
@@ -45,8 +45,15 @@ const safeJson = (text: string): unknown => {
 };
 
 async function planForUser(admin: SupabaseClient, userId: string, start: string, shouldPush: boolean) {
-  const dates = Array.from({ length: 7 }, (_, i) => addDays(start, i));
-  const end = dates[6];
+  const allDates = Array.from({ length: 7 }, (_, i) => addDays(start, i));
+  const end = allDates[6];
+  // Never touch days that have already happened: re-planning mid-week only
+  // rebuilds today onward. The earlier days stay as the record of what was
+  // planned (and the actuals feed the prompt via the adherence block).
+  const today = new Date().toISOString().slice(0, 10);
+  const dates = allDates.filter((d) => d >= today);
+  if (dates.length === 0) throw new Error("that week is already over — nothing left to plan");
+  const planFrom = dates[0];
 
   const { data: profile } = await admin.from("user_profiles").select("*").eq("id", userId).single();
   if (!profile) throw new Error("profile not found");
@@ -103,7 +110,7 @@ async function planForUser(admin: SupabaseClient, userId: string, start: string,
   // The planner must work around them, not over them.
   const { data: lockedRows } = await admin
     .from("planned_workouts").select("date, type, workout_json")
-    .eq("user_id", userId).gte("date", start).lte("date", end).eq("locked", true);
+    .eq("user_id", userId).gte("date", planFrom).lte("date", end).eq("locked", true);
   const lockedByDate = new Map((lockedRows ?? []).map((r) => [r.date as string, r]));
   const lockedBlock = lockedByDate.size === 0 ? "" :
     `\n\nFIXED SESSIONS — the athlete has LOCKED these days; DO NOT schedule anything on them. Plan the rest of the week AROUND them (respect easy/recovery before and after a hard fixed session):\n` +
@@ -113,6 +120,7 @@ async function planForUser(admin: SupabaseClient, userId: string, start: string,
   const contextBlocks =
     knowledgeBlock(profile) + memoryBlock(profile) + phys.block +
     await adherenceBlock(admin, userId, since14, start, acts28) +
+    await executionBlock(admin, userId, since14) +
     goalBlock(onboarding, weeksToGoal, phase, acts28) + lockedBlock;
 
   const dayList = dates.map((d) => ({
@@ -151,7 +159,7 @@ async function planForUser(admin: SupabaseClient, userId: string, start: string,
   // NEVER touch locked, athlete-fixed sessions.
   const { data: stale } = await admin
     .from("planned_workouts").select("id, intervals_event_id")
-    .eq("user_id", userId).gte("date", start).lte("date", end).eq("completed", false).eq("locked", false);
+    .eq("user_id", userId).gte("date", planFrom).lte("date", end).eq("completed", false).eq("locked", false);
   if (stale?.length && phys.apiKey && profile.intervals_athlete_id) {
     for (const r of stale) {
       if (r.intervals_event_id) {
@@ -160,7 +168,7 @@ async function planForUser(admin: SupabaseClient, userId: string, start: string,
     }
   }
   await admin.from("planned_workouts").delete()
-    .eq("user_id", userId).gte("date", start).lte("date", end).eq("completed", false).eq("locked", false);
+    .eq("user_id", userId).gte("date", planFrom).lte("date", end).eq("completed", false).eq("locked", false);
 
   // Don't insert on dates that already hold a locked session.
   const rows = dates.map((date, i) => {
