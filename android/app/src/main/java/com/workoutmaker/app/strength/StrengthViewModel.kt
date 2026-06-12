@@ -380,6 +380,9 @@ class StrengthViewModel @Inject constructor(
         workoutDetail.value = null
         nav.value = StrengthNav.Active
         startTick()
+        // Persist right away so the edit session survives process death / the
+        // ViewModel being recreated by tab navigation.
+        persistSession()
     }
 
     // Q8: save a logged workout as a reusable routine.

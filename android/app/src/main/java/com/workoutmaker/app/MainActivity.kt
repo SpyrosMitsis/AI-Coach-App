@@ -120,6 +120,18 @@ private fun MainScaffold() {
             }
         },
     ) { padding ->
+        // Handoffs (Calendar "Log this session", History/Calendar "Edit") need the
+        // LOGGER itself on screen. Plain tab navigation restores the strength
+        // tab's saved sub-stack — which can have the History screen on top, hiding
+        // the logger — so after restoring we pop anything above "strength".
+        val openStrengthLogger: () -> Unit = {
+            nav.navigate("strength") {
+                popUpTo(nav.graph.findStartDestination().id) { saveState = true }
+                launchSingleTop = true
+                restoreState = true
+            }
+            nav.popBackStack("strength", false)
+        }
         NavHost(nav, startDestination = startDestination, modifier = Modifier.padding(padding)) {
             composable("home") { HomeScreen() }
             composable("coach") {
@@ -132,13 +144,7 @@ private fun MainScaffold() {
                 })
             }
             composable("calendar") {
-                CalendarScreen(onOpenStrength = {
-                    nav.navigate("strength") {
-                        popUpTo(nav.graph.findStartDestination().id) { saveState = true }
-                        launchSingleTop = true
-                        restoreState = true
-                    }
-                })
+                CalendarScreen(onOpenStrength = openStrengthLogger)
             }
             composable("strength") {
                 StrengthScreen(onOpenHistory = { nav.navigate("history") })
@@ -146,13 +152,7 @@ private fun MainScaffold() {
             composable("history") {
                 WorkoutHistoryScreen(
                     onBack = { nav.popBackStack() },
-                    onEditInLogger = {
-                        nav.navigate("strength") {
-                            popUpTo(nav.graph.findStartDestination().id) { saveState = true }
-                            launchSingleTop = true
-                            restoreState = true
-                        }
-                    },
+                    onEditInLogger = openStrengthLogger,
                 )
             }
             composable("settings") { SettingsScreen() }
