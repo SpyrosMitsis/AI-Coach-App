@@ -687,6 +687,12 @@ class StrengthViewModel @Inject constructor(
     // --- timers ------------------------------------------------------------
     private fun startTick() {
         tickJob?.cancel()
+        // Editing a past workout: freeze the clock at the session's original
+        // duration — ticking from the old start would show days of "elapsed".
+        if (isEditing) {
+            elapsedSec.value = ((editingEndedAt - startedAt) / 1000).coerceAtLeast(0)
+            return
+        }
         tickJob = viewModelScope.launch {
             while (true) {
                 elapsedSec.value = (System.currentTimeMillis() - startedAt) / 1000

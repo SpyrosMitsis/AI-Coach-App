@@ -77,12 +77,23 @@ fun ScreenScaffold(
                             letterSpacing = 2.sp,
                             fontWeight = FontWeight.Bold,
                         )
-                        Text(title, style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
+                        // One line each: the app bar has a fixed height, so a long
+                        // title (e.g. a workout name) wrapping would get clipped by
+                        // the content below instead of ellipsized.
+                        Text(
+                            title,
+                            style = MaterialTheme.typography.headlineSmall,
+                            fontWeight = FontWeight.Bold,
+                            maxLines = 1,
+                            overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
+                        )
                         if (subtitle != null) {
                             Text(
                                 subtitle,
                                 style = MaterialTheme.typography.bodySmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                maxLines = 1,
+                                overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
                             )
                         }
                     }

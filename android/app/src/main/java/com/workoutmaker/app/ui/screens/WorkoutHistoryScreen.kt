@@ -438,6 +438,8 @@ fun StrengthSessionDetailScreen(
     ) { mod ->
         SectionCard(mod) {
             SectionLabel("Logged in app", color = Sand)
+            // Full name here — the app bar ellipsizes long ones to a single line.
+            Text(w.name, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
                 InsetStat("Volume", "${w.totalVolumeKg.toInt()} kg")
                 if (w.durationSec > 0) InsetStat("Time", "${w.durationSec / 60} min")
