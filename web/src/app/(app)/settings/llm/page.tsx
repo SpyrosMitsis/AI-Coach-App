@@ -21,6 +21,15 @@ import { ArrowDown, ArrowUp, CheckCircle2, ChevronLeft, ExternalLink, XCircle } 
 
 const ALL: LlmProvider[] = ["anthropic", "deepseek", "openai", "gemini", "groq"];
 
+// A saved key row — the key itself never leaves the server; key_hint is the
+// masked preview ("sk-an••••3kQx") written at save time.
+interface KeyStatusRow {
+  provider: LlmProvider;
+  is_valid: boolean | null;
+  last_tested_at: string | null;
+  key_hint?: string | null;
+}
+
 // Rough per-generation cost: ~1500 prompt + ~700 completion tokens.
 function perGenCost(p: LlmProvider): number {
   const pr = PROVIDER_PRICING[p];
@@ -62,11 +71,15 @@ export default function LlmSettingsPage() {
   const keys = useQuery({
     queryKey: ["llm-keys"],
     queryFn: async () => {
-      const { data, error } = await supabase
+      // key_hint arrives with migration 27 — retry without it when missing.
+      let res = await supabase
         .from("llm_api_keys")
-        .select("provider, is_valid, last_tested_at");
-      if (error) throw error;
-      return data as { provider: LlmProvider; is_valid: boolean | null; last_tested_at: string | null }[];
+        .select("provider, is_valid, last_tested_at, key_hint");
+      if (res.error) {
+        res = await supabase.from("llm_api_keys").select("provider, is_valid, last_tested_at");
+      }
+      if (res.error) throw res.error;
+      return res.data as KeyStatusRow[];
     },
   });
 
@@ -186,7 +199,7 @@ function ProviderRow({
   onModelChange,
 }: {
   provider: LlmProvider;
-  status: { is_valid: boolean | null; last_tested_at: string | null } | null;
+  status: KeyStatusRow | null;
   costPerGen: number;
   modelOverride: string | null;
   onModelChange: (model: string | null) => void;
@@ -241,6 +254,12 @@ function ProviderRow({
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-2">
+        {isSet && (
+          <p className="text-xs text-muted-foreground">
+            Saved key: <span className="font-mono">{status?.key_hint ?? "••••••••"}</span>
+            {status?.last_tested_at && ` · tested ${status.last_tested_at.slice(0, 10)}`}
+          </p>
+        )}
         <div className="flex gap-2">
           <Input
             type="password"

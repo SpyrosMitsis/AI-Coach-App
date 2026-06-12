@@ -56,6 +56,8 @@ import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
+import com.workoutmaker.app.ui.components.GhostButton
+import com.workoutmaker.app.ui.theme.Sage
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -249,25 +251,47 @@ internal fun AiSection(vm: SettingsViewModel) {
 @Composable
 internal fun ConnectionsSection(vm: SettingsViewModel) {
     val intervalsStatus by vm.intervalsStatus.collectAsStateSafe()
+    val intervalsSaved by vm.intervalsSaved.collectAsStateSafe()
     val healthStatus by vm.healthStatus.collectAsStateSafe()
     val busy by vm.busy.collectAsStateSafe()
     val scope = androidx.compose.runtime.rememberCoroutineScope()
+    val context = androidx.compose.ui.platform.LocalContext.current
+    // Sync runs with whatever was granted — a partial grant (e.g. no steps) is
+    // still useful; only a fully-empty grant is a real denial.
     val healthPermLauncher = androidx.activity.compose.rememberLauncherForActivityResult(
         androidx.health.connect.client.PermissionController.createRequestPermissionResultContract(),
     ) { granted ->
-        if (granted.containsAll(vm.healthPermissions)) vm.syncHealth()
-        else vm.setHealthStatus("Permission denied in Health Connect.")
+        if (granted.intersect(vm.healthPermissions).isNotEmpty()) vm.syncHealth()
+        else vm.setHealthStatus(
+            "Permission denied. Android stops asking after two denials — use “Open Health Connect” below " +
+                "and grant Workout Maker access under App permissions.",
+        )
     }
-    val connected = intervalsStatus?.startsWith("✓") == true
+    val connected = intervalsSaved != null || intervalsStatus?.startsWith("✓") == true
 
     SectionCard(title = "Intervals.icu") {
         StatusChip("Intervals.icu", connected)
+        intervalsSaved?.let { (athlete, hint) ->
+            Text(
+                "Saved: athlete $athlete · API key ${hint ?: "••••••••"}",
+                style = MaterialTheme.typography.bodySmall,
+                color = Sage,
+            )
+        }
         Text("Pushes structured workouts to your Amazfit watch (via Zepp → Intervals.icu). Find the athlete ID + API key in Intervals.icu → Settings → Developer.",
             style = MaterialTheme.typography.bodySmall)
         var athleteId by remember { mutableStateOf("") }
         var apiKey by remember { mutableStateOf("") }
-        OutlinedTextField(athleteId, { athleteId = it }, label = { Text("Athlete ID (e.g. i123456)") }, modifier = Modifier.fillMaxWidth())
-        OutlinedTextField(apiKey, { apiKey = it }, label = { Text("API key") }, visualTransformation = PasswordVisualTransformation(), modifier = Modifier.fillMaxWidth())
+        OutlinedTextField(
+            athleteId, { athleteId = it },
+            label = { Text(if (intervalsSaved != null) "Athlete ID (replace)" else "Athlete ID (e.g. i123456)") },
+            modifier = Modifier.fillMaxWidth(),
+        )
+        OutlinedTextField(
+            apiKey, { apiKey = it },
+            label = { Text(if (intervalsSaved != null) "API key (replace)" else "API key") },
+            visualTransformation = PasswordVisualTransformation(), modifier = Modifier.fillMaxWidth(),
+        )
         Button(onClick = { vm.connectIntervals(athleteId.trim(), apiKey.trim()) }, enabled = !busy && athleteId.isNotBlank() && apiKey.isNotBlank(), modifier = Modifier.fillMaxWidth()) { Text("Verify & connect") }
         intervalsStatus?.let { Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.primary) }
     }
@@ -278,10 +302,27 @@ internal fun ConnectionsSection(vm: SettingsViewModel) {
         Button(
             onClick = {
                 if (!vm.healthAvailable) vm.setHealthStatus("Health Connect isn't available. Install/update it from the Play Store.")
-                else scope.launch { if (vm.hasHealthPerms()) vm.syncHealth() else healthPermLauncher.launch(vm.healthPermissions) }
+                else scope.launch {
+                    if (vm.grantedHealthPerms().isNotEmpty()) vm.syncHealth()
+                    else healthPermLauncher.launch(vm.healthPermissions)
+                }
             },
             modifier = Modifier.fillMaxWidth(),
         ) { Text("Sync wellness from Health Connect") }
+        // Recovery path when the in-app dialog can no longer appear (Android
+        // auto-denies after two refusals): grant directly in Health Connect.
+        GhostButton(
+            onClick = {
+                runCatching {
+                    context.startActivity(
+                        android.content.Intent(
+                            androidx.health.connect.client.HealthConnectClient.ACTION_HEALTH_CONNECT_SETTINGS,
+                        ),
+                    )
+                }.onFailure { vm.setHealthStatus("Couldn't open Health Connect — open it from your app drawer instead.") }
+            },
+            modifier = Modifier.fillMaxWidth(),
+        ) { Text("Open Health Connect (manage permissions)") }
         healthStatus?.let { Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.primary) }
     }
 }
@@ -514,6 +555,8 @@ internal fun ProviderCard(mod: Modifier, provider: LlmProvider, vm: SettingsView
     var key by remember { mutableStateOf("") }
     val result = vm.results[provider.key]
     val overrides by vm.modelOverrides.collectAsStateSafe()
+    val llmKeys by vm.llmKeys.collectAsStateSafe()
+    val saved = llmKeys[provider.key]
     val activeModel = overrides[provider.key] ?: provider.model
     var showModelPicker by remember { mutableStateOf(false) }
 
@@ -532,7 +575,23 @@ internal fun ProviderCard(mod: Modifier, provider: LlmProvider, vm: SettingsView
             }
             TextButton(onClick = { showModelPicker = true }) { Text("Change model") }
         }
-        OutlinedTextField(key, { key = it }, label = { Text("API key") }, visualTransformation = PasswordVisualTransformation(), modifier = Modifier.fillMaxWidth())
+        // What's already configured, masked — so you know which key is in use.
+        saved?.let { s ->
+            Text(
+                "Saved key: ${s.key_hint ?: "••••••••"} · " + when (s.is_valid) {
+                    true -> "valid ✓"
+                    false -> "invalid ✗"
+                    null -> "untested"
+                },
+                style = MaterialTheme.typography.bodySmall,
+                color = if (s.is_valid == false) MaterialTheme.colorScheme.error else Sage,
+            )
+        }
+        OutlinedTextField(
+            key, { key = it },
+            label = { Text(if (saved != null) "API key (replace)" else "API key") },
+            visualTransformation = PasswordVisualTransformation(), modifier = Modifier.fillMaxWidth(),
+        )
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             Button(onClick = { vm.testKey(provider, key, false) }, enabled = key.isNotBlank()) { Text("Save & Test") }
             OutlinedButton(onClick = { vm.testKey(provider, key, true) }, enabled = key.isNotBlank()) { Text("Test Gen") }

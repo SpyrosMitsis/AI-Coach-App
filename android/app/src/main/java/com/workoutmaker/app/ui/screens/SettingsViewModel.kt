@@ -193,6 +193,9 @@ class SettingsViewModel @Inject constructor(
     val healthStatus = MutableStateFlow<String?>(null)
 
     suspend fun hasHealthPerms(): Boolean = health.hasAllPermissions()
+
+    /** Granted read permissions — syncing works with a partial grant too. */
+    suspend fun grantedHealthPerms(): Set<String> = health.grantedPermissions()
     fun setHealthStatus(msg: String) { healthStatus.value = msg }
 
     fun syncHealth() = viewModelScope.launch {
@@ -225,6 +228,11 @@ class SettingsViewModel @Inject constructor(
     val races = MutableStateFlow<List<com.workoutmaker.app.data.Race>>(emptyList())
     val thresholdTests = MutableStateFlow<List<com.workoutmaker.app.data.ThresholdTest>>(emptyList())
 
+    // Saved credentials, shown masked so it's clear what's already configured:
+    // Intervals.icu (athlete id + key hint) and per-provider LLM key rows.
+    val intervalsSaved = MutableStateFlow<Pair<String, String?>?>(null)
+    val llmKeys = MutableStateFlow<Map<String, com.workoutmaker.app.data.LlmKeyRow>>(emptyMap())
+
     fun load() = viewModelScope.launch {
         repo.loadProfile()?.let { profile.value = it }
         autoPlan.value = repo.autoPlanEnabled()
@@ -233,6 +241,8 @@ class SettingsViewModel @Inject constructor(
         runCatching { repo.generationLogs() }.onSuccess { logs.value = it }
         runCatching { repo.races() }.onSuccess { races.value = it }
         runCatching { repo.thresholdTests() }.onSuccess { thresholdTests.value = it }
+        runCatching { repo.intervalsConnection() }.onSuccess { intervalsSaved.value = it }
+        runCatching { repo.llmKeyRows() }.onSuccess { rows -> llmKeys.value = rows.associateBy { it.provider } }
     }
 
     fun addRace(r: com.workoutmaker.app.data.Race, setAsGoal: Boolean) = viewModelScope.launch {
@@ -310,7 +320,10 @@ class SettingsViewModel @Inject constructor(
             .onSuccess { r ->
                 intervalsStatus.value = if (r.ok) "✓ Connected as ${r.athlete_name}"
                 else "Failed: ${r.error ?: "unknown"}"
-                if (r.ok) runCatching { repo.syncIntervals() }
+                if (r.ok) {
+                    runCatching { repo.intervalsConnection() }.onSuccess { intervalsSaved.value = it }
+                    runCatching { repo.syncIntervals() }
+                }
             }
             .onFailure { intervalsStatus.value = "Failed: ${it.message}" }
         busy.value = false
@@ -323,7 +336,11 @@ class SettingsViewModel @Inject constructor(
 
     fun testKey(p: LlmProvider, key: String, sample: Boolean) = viewModelScope.launch {
         runCatching { repo.testLlmKey(TestKeyRequest(p.key, key, sample)) }
-            .onSuccess { results[p.key] = it }
+            .onSuccess {
+                results[p.key] = it
+                // Refresh the saved-key rows so the masked hint appears.
+                runCatching { repo.llmKeyRows() }.onSuccess { rows -> llmKeys.value = rows.associateBy { r -> r.provider } }
+            }
     }
 
     fun signOut() = viewModelScope.launch { repo.signOut() }

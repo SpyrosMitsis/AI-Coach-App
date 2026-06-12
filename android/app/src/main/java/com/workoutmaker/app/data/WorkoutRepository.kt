@@ -389,8 +389,32 @@ class WorkoutRepository @Inject constructor(
         invalidateProfileCache()
     }
 
-    suspend fun connectIntervalsVerified(athleteId: String, apiKey: String): ConnectIntervalsResult =
-        json.decodeFromString(connectIntervals(athleteId, apiKey))
+    suspend fun connectIntervalsVerified(athleteId: String, apiKey: String): ConnectIntervalsResult {
+        val r: ConnectIntervalsResult = json.decodeFromString(connectIntervals(athleteId, apiKey))
+        invalidateProfileCache() // athlete id + key hint changed on the profile
+        return r
+    }
+
+    // Saved Intervals.icu connection: athlete id + masked key hint (null when
+    // not connected). The hint column arrives with migration 27.
+    suspend fun intervalsConnection(): Pair<String, String?>? {
+        val row = profileRow() ?: return null
+        val athlete = (row["intervals_athlete_id"] as? JsonPrimitive)?.contentOrNull ?: return null
+        val hint = (row["intervals_api_key_hint"] as? JsonPrimitive)?.contentOrNull
+        return athlete to hint
+    }
+
+    // Saved LLM keys (provider, validity, masked hint) for the settings UI.
+    // key_hint may not exist before migration 27 — fall back to a hint-less select.
+    suspend fun llmKeyRows(): List<LlmKeyRow> = runCatching {
+        supabase.postgrest.from("llm_api_keys").select(
+            columns = io.github.jan.supabase.postgrest.query.Columns.list("provider", "is_valid", "last_tested_at", "key_hint"),
+        ).decodeList<LlmKeyRow>()
+    }.getOrElse {
+        supabase.postgrest.from("llm_api_keys").select(
+            columns = io.github.jan.supabase.postgrest.query.Columns.list("provider", "is_valid", "last_tested_at"),
+        ).decodeList()
+    }
 
     suspend fun templates(): List<WorkoutTemplate> =
         supabase.postgrest.from("workout_templates").select {

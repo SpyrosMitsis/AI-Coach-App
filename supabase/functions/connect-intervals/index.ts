@@ -6,6 +6,7 @@
 import { handleOptions, json } from "../_shared/cors.ts";
 import { adminClient, encryptSecret, getUserId } from "../_shared/supabase.ts";
 import { getAthlete } from "../_shared/intervals.ts";
+import { maskKey } from "../_shared/mask.ts";
 
 Deno.serve(async (req) => {
   const pre = handleOptions(req);
@@ -28,10 +29,14 @@ Deno.serve(async (req) => {
 
     const admin = adminClient();
     const encrypted = await encryptSecret(admin, apiKey);
-    await admin
+    const update = { intervals_athlete_id: String(athleteId), intervals_api_key_encrypted: encrypted };
+    // A masked hint lets Settings show which key is saved (migration 27;
+    // fall back to a hint-less update until it's applied).
+    const { error: upErr } = await admin
       .from("user_profiles")
-      .update({ intervals_athlete_id: String(athleteId), intervals_api_key_encrypted: encrypted })
+      .update({ ...update, intervals_api_key_hint: maskKey(apiKey) })
       .eq("id", userId);
+    if (upErr) await admin.from("user_profiles").update(update).eq("id", userId);
 
     // First sync is triggered client-side (with the user's JWT) right after
     // this call returns, so credentials are guaranteed to be persisted first.

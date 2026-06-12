@@ -29,14 +29,23 @@ export default function SettingsPage() {
   const profile = useQuery({
     queryKey: ["profile-onboarding"],
     queryFn: async () => {
-      const { data, error } = await supabase
+      // intervals_api_key_hint arrives with migration 27 — retry without it
+      // when the column doesn't exist yet.
+      let res = await supabase
         .from("user_profiles")
-        .select("onboarding, intervals_athlete_id, auto_plan, coach_knowledge")
+        .select("onboarding, intervals_athlete_id, intervals_api_key_hint, auto_plan, coach_knowledge")
         .single();
-      if (error) throw error;
-      return data as {
+      if (res.error) {
+        res = await supabase
+          .from("user_profiles")
+          .select("onboarding, intervals_athlete_id, auto_plan, coach_knowledge")
+          .single();
+      }
+      if (res.error) throw res.error;
+      return res.data as {
         onboarding: OnboardingData;
         intervals_athlete_id: string | null;
+        intervals_api_key_hint?: string | null;
         auto_plan: boolean | null;
         coach_knowledge: string | null;
       };
@@ -258,7 +267,9 @@ export default function SettingsPage() {
             href="/onboarding"
             icon={<Activity className="h-5 w-5" />}
             title="Intervals.icu connection"
-            subtitle={profile.data?.intervals_athlete_id ? `Connected · ${profile.data.intervals_athlete_id}` : "Not connected"}
+            subtitle={profile.data?.intervals_athlete_id
+              ? `Connected · athlete ${profile.data.intervals_athlete_id} · key ${profile.data.intervals_api_key_hint ?? "••••••••"}`
+              : "Not connected"}
           />
         </CardContent>
       </Card>

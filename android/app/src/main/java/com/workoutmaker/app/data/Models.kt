@@ -284,6 +284,16 @@ data class AdaptResult(
     val error: String? = null,
 )
 
+// A saved LLM API key row (the key itself never leaves the server — only a
+// masked hint like "sk-an••••3kQx" for the settings UI).
+@Serializable
+data class LlmKeyRow(
+    val provider: String,
+    val is_valid: Boolean? = null,
+    val last_tested_at: String? = null,
+    val key_hint: String? = null,
+)
+
 @Serializable
 data class WorkoutFeedback(
     val planned_workout_id: String? = null,

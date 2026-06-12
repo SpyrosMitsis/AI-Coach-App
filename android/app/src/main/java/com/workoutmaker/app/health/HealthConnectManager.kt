@@ -61,6 +61,11 @@ class HealthConnectManager @Inject constructor(
         runCatching { client.permissionController.getGrantedPermissions().containsAll(permissions) }
             .getOrDefault(false)
 
+    /** The read permissions actually granted (empty on any failure). */
+    suspend fun grantedPermissions(): Set<String> =
+        runCatching { client.permissionController.getGrantedPermissions().intersect(permissions) }
+            .getOrDefault(emptySet())
+
     /**
      * Read the most recent ~36h of metrics and reduce to today's snapshot:
      * latest HRV rmssd & resting HR, last night's sleep duration, today's steps.

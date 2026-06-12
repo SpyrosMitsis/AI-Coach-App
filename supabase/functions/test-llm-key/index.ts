@@ -6,6 +6,7 @@
 import { handleOptions, json } from "../_shared/cors.ts";
 import { adminClient, encryptSecret, getUserId } from "../_shared/supabase.ts";
 import { estimateCostUsd, llmGenerate, PROVIDERS } from "../_shared/llm.ts";
+import { maskKey } from "../_shared/mask.ts";
 import type { LlmProvider } from "../_shared/types.ts";
 
 Deno.serve(async (req) => {
@@ -45,18 +46,22 @@ Deno.serve(async (req) => {
       error = e instanceof Error ? e.message : String(e);
     }
 
-    // Persist key (encrypted) + validity, upsert on (user, provider).
+    // Persist key (encrypted) + validity, upsert on (user, provider). A masked
+    // hint (start + end of the key) lets Settings show WHICH key is saved.
     const encrypted = await encryptSecret(admin, apiKey);
-    await admin.from("llm_api_keys").upsert(
-      {
-        user_id: userId,
-        provider: p,
-        api_key_encrypted: encrypted,
-        is_valid: isValid,
-        last_tested_at: new Date().toISOString(),
-      },
+    const row = {
+      user_id: userId,
+      provider: p,
+      api_key_encrypted: encrypted,
+      is_valid: isValid,
+      last_tested_at: new Date().toISOString(),
+    };
+    const { error: upErr } = await admin.from("llm_api_keys").upsert(
+      { ...row, key_hint: maskKey(apiKey) },
       { onConflict: "user_id,provider" },
     );
+    // Pre-migration-27 fallback: no key_hint column yet.
+    if (upErr) await admin.from("llm_api_keys").upsert(row, { onConflict: "user_id,provider" });
 
     return json({
       provider: p,
