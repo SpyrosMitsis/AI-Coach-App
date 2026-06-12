@@ -191,6 +191,11 @@ class CalendarViewModel @Inject constructor(
         strengthHandoff.request(w.workout_json, w.id, w.date)
     }
 
+    // Open a LOGGED strength session in the Strength logger's edit mode.
+    fun editLoggedStrength(workoutId: String) {
+        strengthHandoff.requestEdit(workoutId)
+    }
+
     fun deletePlanned(plannedId: String) = viewModelScope.launch {
         runCatching { repo.deletePlannedWorkout(plannedId) }
             .onSuccess { banner.value = "Workout deleted"; load() }

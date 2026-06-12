@@ -130,6 +130,7 @@ internal fun trimKg(v: Double): String =
 fun StrengthScreen(vm: StrengthViewModel = hiltViewModel(), onOpenHistory: () -> Unit = {}) {
     val nav by vm.nav.collectAsStateSafe()
     val pendingPlanned by vm.pendingPlannedStart.collectAsStateSafe()
+    val pendingEdit by vm.pendingEditStart.collectAsStateSafe()
     LaunchedEffect(Unit) { vm.loadHome() }
     when (val n = nav) {
         is StrengthNav.Home -> StrengthHomeView(vm, onOpenHistory)
@@ -137,6 +138,25 @@ fun StrengthScreen(vm: StrengthViewModel = hiltViewModel(), onOpenHistory: () ->
         is StrengthNav.Picker -> ExercisePickerView(vm)
         is StrengthNav.Stats -> ExerciseStatsView(vm, n.exercise)
         is StrengthNav.WorkoutDetail -> WorkoutDetailView(vm)
+    }
+
+    // Guard: an edit of a logged workout was requested while a session is in
+    // progress — editing replaces the logger's contents.
+    if (pendingEdit != null) {
+        AlertDialog(
+            onDismissRequest = { vm.keepCurrentSessionOverEdit() },
+            confirmButton = {
+                TextButton(onClick = { vm.confirmReplaceWithEdit() }) { Text("Discard & edit", color = BandRed) }
+            },
+            dismissButton = { TextButton(onClick = { vm.keepCurrentSessionOverEdit() }) { Text("Keep current") } },
+            title = { Text("Unsaved session in progress") },
+            text = {
+                Text(
+                    "You're in the middle of logging a workout. Open the logged session " +
+                        "for editing instead? Your current, unsaved sets will be discarded.",
+                )
+            },
+        )
     }
 
     // Guard: a planned session was requested while one is in progress.

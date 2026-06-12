@@ -141,6 +141,22 @@ class StrengthViewModel @Inject constructor(
         }
     }
 
+    // History/Calendar → "edit this logged workout" handoff, with the same
+    // in-progress-session guard as planned starts.
+    val pendingEditStart = MutableStateFlow<String?>(null)
+
+    init {
+        viewModelScope.launch {
+            handoff.pendingEdit.collect { id ->
+                if (id != null) {
+                    handoff.clearEdit()
+                    if (exercises.isNotEmpty()) pendingEditStart.value = id // ask before discarding
+                    else editWorkout(id)
+                }
+            }
+        }
+    }
+
     /** User chose to discard the in-progress session and load the planned one. */
     fun confirmReplaceWithPlanned() {
         pendingPlannedStart.value?.let { startPlanned(it) }
@@ -149,6 +165,15 @@ class StrengthViewModel @Inject constructor(
 
     /** User chose to keep their current session; drop the planned request. */
     fun keepCurrentSession() { pendingPlannedStart.value = null }
+
+    /** User chose to discard the in-progress session and edit the logged one. */
+    fun confirmReplaceWithEdit() {
+        pendingEditStart.value?.let { editWorkout(it) }
+        pendingEditStart.value = null
+    }
+
+    /** User chose to keep their current session; drop the edit request. */
+    fun keepCurrentSessionOverEdit() { pendingEditStart.value = null }
 
     // Today's planned strength sessions from the calendar, shown on the
     // Strength home so the plan is one tap from the logger.

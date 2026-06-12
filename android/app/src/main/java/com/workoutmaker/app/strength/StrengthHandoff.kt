@@ -24,4 +24,12 @@ class StrengthHandoff @Inject constructor() {
     }
 
     fun clear() { _pending.value = null }
+
+    // Edit handoff: History/Calendar ask the Strength logger to open a LOGGED
+    // workout in edit mode (finish re-saves it in place).
+    private val _pendingEdit = MutableStateFlow<String?>(null)
+    val pendingEdit = _pendingEdit.asStateFlow()
+
+    fun requestEdit(workoutId: String) { _pendingEdit.value = workoutId }
+    fun clearEdit() { _pendingEdit.value = null }
 }

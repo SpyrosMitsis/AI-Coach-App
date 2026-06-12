@@ -17,6 +17,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.FitnessCenter
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Watch
@@ -87,7 +88,12 @@ private fun dateOf(epoch: Long): LocalDate =
 class HistoryViewModel @Inject constructor(
     private val strength: StrengthRepository,
     private val repo: WorkoutRepository,
+    private val handoff: com.workoutmaker.app.strength.StrengthHandoff,
 ) : ViewModel() {
+    // Ask the Strength tab to open this workout in its edit mode; the caller
+    // then navigates to the tab.
+    fun requestEdit(workoutId: String) = handoff.requestEdit(workoutId)
+
     val rows = MutableStateFlow<List<StrengthHistoryRow>>(emptyList())
     val loading = MutableStateFlow(true)
 
@@ -129,7 +135,11 @@ class HistoryViewModel @Inject constructor(
 }
 
 @Composable
-fun WorkoutHistoryScreen(onBack: () -> Unit, vm: HistoryViewModel = hiltViewModel()) {
+fun WorkoutHistoryScreen(
+    onBack: () -> Unit,
+    onEditInLogger: () -> Unit = {},
+    vm: HistoryViewModel = hiltViewModel(),
+) {
     val rows by vm.rows.collectAsStateSafe()
     val loading by vm.loading.collectAsStateSafe()
     val detailSets by vm.detailSets.collectAsStateSafe()
@@ -148,6 +158,7 @@ fun WorkoutHistoryScreen(onBack: () -> Unit, vm: HistoryViewModel = hiltViewMode
             watch = row.watch,
             onBack = { selected = null },
             onDelete = { vm.deleteWorkout(row.workout.id); selected = null },
+            onEdit = { vm.requestEdit(row.workout.id); selected = null; onEditInLogger() },
         )
         return
     }
@@ -395,6 +406,9 @@ fun StrengthSessionDetailScreen(
     watch: CompletedActivity?,
     onBack: () -> Unit,
     onDelete: (() -> Unit)? = null,
+    // Opens this workout in the Strength logger's edit mode (sets/reps/weights
+    // editable; finishing re-saves it in place).
+    onEdit: (() -> Unit)? = null,
 ) {
     var confirmDelete by remember { mutableStateOf(false) }
     if (confirmDelete && onDelete != null) {
@@ -410,6 +424,11 @@ fun StrengthSessionDetailScreen(
         subtitle = dateOf(w.startedAt).toString(),
         navigationIcon = { IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "Back") } },
         actions = {
+            if (onEdit != null) {
+                IconButton(onClick = onEdit) {
+                    Icon(Icons.Filled.Edit, "Edit workout", tint = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+            }
             if (onDelete != null) {
                 IconButton(onClick = { confirmDelete = true }) {
                     Icon(Icons.Filled.Delete, "Delete workout", tint = MaterialTheme.colorScheme.onSurfaceVariant)

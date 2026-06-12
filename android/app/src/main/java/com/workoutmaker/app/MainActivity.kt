@@ -143,7 +143,18 @@ private fun MainScaffold() {
             composable("strength") {
                 StrengthScreen(onOpenHistory = { nav.navigate("history") })
             }
-            composable("history") { WorkoutHistoryScreen(onBack = { nav.popBackStack() }) }
+            composable("history") {
+                WorkoutHistoryScreen(
+                    onBack = { nav.popBackStack() },
+                    onEditInLogger = {
+                        nav.navigate("strength") {
+                            popUpTo(nav.graph.findStartDestination().id) { saveState = true }
+                            launchSingleTop = true
+                            restoreState = true
+                        }
+                    },
+                )
+            }
             composable("settings") { SettingsScreen() }
         }
     }

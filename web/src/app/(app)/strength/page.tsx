@@ -102,6 +102,9 @@ export default function StrengthPage() {
   const [name, setName] = useState("");
   const [picker, setPicker] = useState("");
   const [linkedPlannedId, setLinkedPlannedId] = useState<string | null>(null);
+  // Editing mode: a past workout loaded into the builder; saving replaces it
+  // in place (same id, original start/end times) instead of logging a new one.
+  const [editing, setEditing] = useState<CloudWorkout | null>(null);
   const [openSession, setOpenSession] = useState<string | null>(null); // history detail
   const [banner, setBanner] = useState<string | null>(null);
   const [generating, setGenerating] = useState(false);
@@ -168,7 +171,31 @@ export default function StrengthPage() {
     setName(w.title || "Planned Strength");
     setSessionStart(Date.now());
     setLinkedPlannedId(plannedId);
+    setEditing(null);
     setBanner(plannedId ? "Logging your planned session — finishing marks it done on the calendar." : null);
+    window.scrollTo({ top: 0, behavior: "smooth" });
+  };
+
+  // Edit mode: load a logged session into the builder; "Save changes" replaces
+  // it in place.
+  const startEditing = (w: CloudWorkout, sets: CloudSet[]) => {
+    const grouped = new Map<string, CloudSet[]>();
+    for (const s of [...sets].sort((a, b) => a.idx - b.idx)) {
+      const arr = grouped.get(s.exercise_name) ?? [];
+      arr.push(s);
+      grouped.set(s.exercise_name, arr);
+    }
+    setSession([...grouped.entries()].map(([exName, list]) => ({
+      name: exName,
+      muscle: list[0]?.muscle ?? muscleOf(exName),
+      sets: list.map((s) => ({ reps: s.reps, weight_kg: s.weight_kg, rpe: s.rpe, is_warmup: s.is_warmup })),
+    })));
+    setName(w.name);
+    setSessionStart(w.started_at);
+    setLinkedPlannedId(null);
+    setEditing(w);
+    setOpenSession(null);
+    setBanner(`Editing “${w.name}” — adjust sets/reps and Save changes.`);
     window.scrollTo({ top: 0, behavior: "smooth" });
   };
 
@@ -190,6 +217,7 @@ export default function StrengthPage() {
     setName(r.name);
     setSessionStart(Date.now());
     setLinkedPlannedId(null);
+    setEditing(null);
     for (const it of items) addExercise(it.exercise_name, it.target_sets || 1);
   };
 
@@ -206,6 +234,7 @@ export default function StrengthPage() {
     setName(last.name);
     setSessionStart(Date.now());
     setLinkedPlannedId(null);
+    setEditing(null);
   };
 
   // AI-generated lift for today: same engine as the phone (generate-workout
@@ -235,7 +264,7 @@ export default function StrengthPage() {
   const removeSet = (ei: number, si: number) =>
     setSession((s) => s.map((ex, i) => i !== ei ? ex : { ...ex, sets: ex.sets.filter((_, j) => j !== si) }));
   const removeExercise = (ei: number) => setSession((s) => s.filter((_, i) => i !== ei));
-  const discard = () => { setSession([]); setSessionStart(null); setName(""); setLinkedPlannedId(null); };
+  const discard = () => { setSession([]); setSessionStart(null); setName(""); setLinkedPlannedId(null); setEditing(null); };
 
   const sessionVolume = useMemo(
     () => session.reduce((t, ex) => t + ex.sets.filter((s) => !s.is_warmup).reduce((a, s) => a + s.weight_kg * s.reps, 0), 0),
@@ -244,9 +273,10 @@ export default function StrengthPage() {
 
   const save = useMutation({
     mutationFn: async () => {
-      const id = crypto.randomUUID();
-      const start = sessionStart ?? Date.now();
-      const end = Date.now();
+      const id = editing?.id ?? crypto.randomUUID();
+      // Editing keeps the original times; a new log stamps now.
+      const start = editing?.started_at ?? sessionStart ?? Date.now();
+      const end = editing?.ended_at ?? Date.now();
       const setRows: CloudSet[] = [];
       for (const ex of session) {
         ex.sets.forEach((s, i) => {
@@ -256,18 +286,45 @@ export default function StrengthPage() {
           });
         });
       }
-      // 1. Full workout model (syncs to the phone).
-      const { error: we } = await supabase.from("strength_workouts").insert({
-        id, name: name.trim() || "Workout", started_at: start, ended_at: end,
-        duration_sec: Math.round((end - start) / 1000), total_volume_kg: sessionVolume, note: "",
-      });
-      if (we) throw we;
+      // 1. Full workout model (syncs to the phone). Edits replace in place.
+      if (editing) {
+        const { error: we } = await supabase.from("strength_workouts").update({
+          name: name.trim() || "Workout", total_volume_kg: sessionVolume,
+        }).eq("id", id);
+        if (we) throw we;
+        const { error: de } = await supabase.from("strength_workout_sets").delete().eq("workout_id", id);
+        if (de) throw de;
+      } else {
+        const { error: we } = await supabase.from("strength_workouts").insert({
+          id, name: name.trim() || "Workout", started_at: start, ended_at: end,
+          duration_sec: Math.round((end - start) / 1000), total_volume_kg: sessionVolume, note: "",
+        });
+        if (we) throw we;
+      }
       if (setRows.length) {
         const { error: se } = await supabase.from("strength_workout_sets").insert(setRows);
         if (se) throw se;
       }
       // 2. Per-exercise strength_logs so the AI generator sees volume / e1RM.
+      //    On edit, rebuild the whole date from the cloud workouts (otherwise
+      //    the old prescription's rows would survive alongside the new ones).
       const date = dayOf(start);
+      if (editing) {
+        await supabase.from("strength_logs").delete().eq("date", date);
+        const sameDay = (workouts.data?.workouts ?? []).filter((w) => w.id !== id && dayOf(w.started_at) === date);
+        for (const w of sameDay) {
+          const wSets = (workouts.data?.sets ?? []).filter((s) => s.workout_id === w.id && !s.is_warmup && s.reps > 0);
+          const byEx = new Map<string, CloudSet[]>();
+          for (const s of wSets) { const a = byEx.get(s.exercise_name) ?? []; a.push(s); byEx.set(s.exercise_name, a); }
+          for (const [exName, list] of byEx) {
+            await supabase.from("strength_logs").insert({
+              date, exercise_name: exName, muscle_groups: [list[0]?.muscle ?? muscleOf(exName)],
+              sets: list.map((s) => ({ reps: s.reps, weight_kg: s.weight_kg, rpe: s.rpe })),
+              estimated_1rm: Math.max(0, ...list.map((s) => epley1rm(s.weight_kg, s.reps))) || null,
+            });
+          }
+        }
+      }
       for (const ex of session) {
         const working = ex.sets.filter((s) => !s.is_warmup && s.reps > 0);
         if (!working.length) continue;
@@ -282,11 +339,11 @@ export default function StrengthPage() {
       }
       // 4. Kick off the execution analysis in the background (same as the phone).
       api.analyzeStrength(date, { force: true }).catch(() => null);
-      return { linked: !!linkedPlannedId };
+      return { linked: !!linkedPlannedId, edited: !!editing };
     },
-    onSuccess: ({ linked }) => {
+    onSuccess: ({ linked, edited }) => {
       discard();
-      setBanner(linked ? "✓ Logged — planned session marked done" : "✓ Workout saved");
+      setBanner(edited ? "✓ Session updated" : linked ? "✓ Logged — planned session marked done" : "✓ Workout saved");
       qc.invalidateQueries({ queryKey: ["strength-workouts"] });
       qc.invalidateQueries({ queryKey: ["today-planned-strength"] });
     },
@@ -380,12 +437,17 @@ export default function StrengthPage() {
         <button onClick={() => setOpenSession(null)} className="text-sm text-muted-foreground hover:text-foreground">
           ‹ Back to Strength
         </button>
-        <header className="space-y-1">
-          <h1 className="text-2xl font-bold">{openDetail.w.name}</h1>
-          <p className="text-sm text-muted-foreground">
-            {dayOf(openDetail.w.started_at)} · {Math.round(openDetail.w.total_volume_kg)} kg
-            {openDetail.w.duration_sec > 0 && ` · ${Math.round(openDetail.w.duration_sec / 60)} min`}
-          </p>
+        <header className="flex items-start justify-between gap-3">
+          <div className="space-y-1">
+            <h1 className="text-2xl font-bold">{openDetail.w.name}</h1>
+            <p className="text-sm text-muted-foreground">
+              {dayOf(openDetail.w.started_at)} · {Math.round(openDetail.w.total_volume_kg)} kg
+              {openDetail.w.duration_sec > 0 && ` · ${Math.round(openDetail.w.duration_sec / 60)} min`}
+            </p>
+          </div>
+          <Button size="sm" variant="outline" onClick={() => startEditing(openDetail.w, openDetail.sets)}>
+            Edit session
+          </Button>
         </header>
 
         <Card>
@@ -458,9 +520,13 @@ export default function StrengthPage() {
       <Card>
         <CardHeader className="pb-2">
           <div className="flex items-center justify-between">
-            <CardTitle className="text-base">Log a session</CardTitle>
+            <CardTitle className="text-base">
+              {editing ? `Editing · ${dayOf(editing.started_at)}` : "Log a session"}
+            </CardTitle>
             {session.length > 0 && (
-              <button onClick={discard} className="text-xs text-muted-foreground hover:text-red-400">Discard</button>
+              <button onClick={discard} className="text-xs text-muted-foreground hover:text-red-400">
+                {editing ? "Cancel edit" : "Discard"}
+              </button>
             )}
           </div>
         </CardHeader>
@@ -536,7 +602,7 @@ export default function StrengthPage() {
               </div>
               <div className="flex gap-2">
                 <Button className="flex-1" disabled={save.isPending} onClick={() => save.mutate()}>
-                  {save.isPending ? "Saving…" : linkedPlannedId ? "Finish — marks plan done" : "Finish workout"}
+                  {save.isPending ? "Saving…" : editing ? "Save changes" : linkedPlannedId ? "Finish — marks plan done" : "Finish workout"}
                 </Button>
                 <Button variant="ghost" disabled={saveAsRoutine.isPending} onClick={() => saveAsRoutine.mutate()}>
                   Save as routine

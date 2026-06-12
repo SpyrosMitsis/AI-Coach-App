@@ -158,6 +158,7 @@ fun CalendarScreen(vm: CalendarViewModel = hiltViewModel(), onOpenStrength: () -
             sets = strengthSets[sw.id].orEmpty(),
             watch = watch,
             onBack = { strengthDetail = null },
+            onEdit = { vm.editLoggedStrength(sw.id); strengthDetail = null; onOpenStrength() },
         )
         return
     }

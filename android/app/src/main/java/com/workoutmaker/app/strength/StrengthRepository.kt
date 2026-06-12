@@ -339,23 +339,37 @@ class StrengthRepository @Inject constructor(
     }
 
     /** Pull-merge: insert any cloud workouts we don't already have locally (e.g.
-     *  sessions logged on the web app). Unlike restoreIfEmpty this runs even when
-     *  local history is non-empty, giving true two-way sync. Returns # merged in. */
+     *  sessions logged on the web app), and refresh ones EDITED elsewhere (the
+     *  cloud row differs from a local copy with no pending local change).
+     *  Unlike restoreIfEmpty this runs even when local history is non-empty,
+     *  giving true two-way sync. Returns # merged in. */
     suspend fun mergeFromCloud(): Int = runCatching {
-        val localIds = dao.allWorkoutIds().toHashSet()
+        val localById = dao.recentWorkouts(10_000).associateBy { it.id }
         val cloud = supabase.postgrest.from("strength_workouts").select {
             order("started_at", Order.DESCENDING); limit(300)
         }.decodeList<CloudWorkout>()
-        val missing = cloud.filter { it.id !in localIds }
-        if (missing.isEmpty()) return@runCatching 0
-        val ids = missing.map { it.id }
+        val missing = cloud.filter { it.id !in localById }
+        // A web edit shows up as a changed cloud row. Local pending edits
+        // (synced = false) win — they'll overwrite the cloud on the next push.
+        val changed = cloud.filter { c ->
+            val l = localById[c.id]
+            l != null && l.synced && (
+                l.name != c.name || l.note != c.note || l.endedAt != c.ended_at ||
+                    l.durationSec != c.duration_sec ||
+                    kotlin.math.abs(l.totalVolumeKg - c.total_volume_kg) > 0.01
+                )
+        }
+        if (missing.isEmpty() && changed.isEmpty()) return@runCatching 0
+        val ids = (missing + changed).map { it.id }
         val cs = supabase.postgrest.from("strength_workout_sets").select {
             filter { isIn("workout_id", ids) }
         }.decodeList<CloudSet>()
+        // Changed workouts are replaced wholesale (old local sets dropped first).
+        changed.forEach { dao.deleteSetsForWorkout(it.id) }
         // synced defaults true ⇒ a merged workout isn't queued for re-push.
-        missing.forEach { dao.insertWorkout(WorkoutEntity(it.id, it.name, it.started_at, it.ended_at, it.duration_sec, it.total_volume_kg, it.note)) }
+        (missing + changed).forEach { dao.insertWorkout(WorkoutEntity(it.id, it.name, it.started_at, it.ended_at, it.duration_sec, it.total_volume_kg, it.note)) }
         if (cs.isNotEmpty()) dao.insertSets(cs.map { SetEntity(it.id, it.workout_id, it.exercise_name, it.muscle, it.idx, it.weight_kg, it.reps, it.rpe, it.is_warmup) })
-        missing.size
+        missing.size + changed.size
     }.logFailure("mergeFromCloud").getOrDefault(0)
 
     /**
@@ -453,35 +467,51 @@ class StrengthRepository @Inject constructor(
 
     suspend fun syncPending(): Int {
         val analyzeDates = mutableSetOf<String>()
-        // 1. Push workouts logged/imported offline (+ their sets + strength_logs).
+        val zone = java.time.ZoneId.systemDefault()
+        // 1. Push workouts logged/imported/edited offline (+ their sets).
         for (w in dao.unsyncedWorkouts()) {
             val sets = dao.setsForWorkout(w.id)
             supabase.postgrest.from("strength_workouts").upsert(
                 CloudWorkout(w.id, w.name, w.startedAt, w.endedAt, w.durationSec, w.totalVolumeKg, w.note),
             )
+            // Edited workouts re-save with FRESH set ids, so upsert alone would
+            // leave the old rows behind — replace the cloud sets wholesale.
+            supabase.postgrest.from("strength_workout_sets").delete { filter { eq("workout_id", w.id) } }
             if (sets.isNotEmpty()) {
                 supabase.postgrest.from("strength_workout_sets").upsert(
                     sets.map { CloudSet(it.id, it.workoutId, it.exerciseName, it.muscle, it.idx, it.weightKg, it.reps, it.rpe, it.isWarmup) },
                 )
             }
-            // strength_logs feed the AI generator (one row per exercise, working sets).
-            val date = java.time.Instant.ofEpochMilli(w.startedAt)
-                .atZone(java.time.ZoneId.systemDefault()).toLocalDate().toString()
-            sets.filter { !it.isWarmup }.groupBy { it.exerciseName }.forEach { (name, exSets) ->
-                runCatching {
-                    cloud.logStrengthSet(
-                        StrengthLogInsert(
-                            date = date,
-                            exercise_name = name,
-                            muscle_groups = listOf(ExerciseCatalog.muscleOf(name)),
-                            sets = exSets.map { StrengthSet(reps = it.reps, weight_kg = it.weightKg, rpe = it.rpe) },
-                            estimated_1rm = exSets.maxOf { epley1rm(it.weightKg, it.reps) },
-                        ),
-                    )
-                }
-            }
             dao.markWorkoutSynced(w.id)
-            analyzeDates += date
+            analyzeDates += java.time.Instant.ofEpochMilli(w.startedAt).atZone(zone).toLocalDate().toString()
+        }
+
+        // 1b. Rebuild strength_logs (the AI generator's volume/e1RM feed) for the
+        // affected dates from local truth — insert-only pushes duplicated rows
+        // every time a workout was edited. Merge cloud sessions in first so a
+        // same-day web-logged workout isn't dropped from the rebuild.
+        if (analyzeDates.isNotEmpty()) runCatching { mergeFromCloud() }
+        for (date in analyzeDates) {
+            runCatching {
+                supabase.postgrest.from("strength_logs").delete { filter { eq("date", date) } }
+                val dayWorkouts = dao.recentWorkouts(10_000).filter {
+                    java.time.Instant.ofEpochMilli(it.startedAt).atZone(zone).toLocalDate().toString() == date
+                }
+                for (w in dayWorkouts) {
+                    dao.setsForWorkout(w.id).filter { !it.isWarmup && it.reps > 0 }
+                        .groupBy { it.exerciseName }.forEach { (name, exSets) ->
+                            cloud.logStrengthSet(
+                                StrengthLogInsert(
+                                    date = date,
+                                    exercise_name = name,
+                                    muscle_groups = listOf(ExerciseCatalog.muscleOf(name)),
+                                    sets = exSets.map { StrengthSet(reps = it.reps, weight_kg = it.weightKg, rpe = it.rpe) },
+                                    estimated_1rm = exSets.maxOf { epley1rm(it.weightKg, it.reps) },
+                                ),
+                            )
+                        }
+                }
+            }.logFailure("syncPending/logs")
         }
 
         // Kick off the execution analysis for the just-synced day(s) so the
