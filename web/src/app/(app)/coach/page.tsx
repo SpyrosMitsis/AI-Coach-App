@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { api, coachChatStream } from "@/lib/api";
+import { api, coachChatStream, localDateIso } from "@/lib/api";
 import { createClient } from "@/lib/supabase-browser";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
@@ -86,7 +86,7 @@ function looksLikeWorkoutProposal(text: string): boolean {
 const mondayIso = () => {
   const d = new Date();
   d.setDate(d.getDate() - ((d.getDay() + 6) % 7));
-  return d.toISOString().slice(0, 10);
+  return localDateIso(d);
 };
 
 export default function CoachPage() {

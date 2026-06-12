@@ -68,14 +68,31 @@ export async function intervalsPhysiology(
 
 
 
-// Measured execution of recent sessions (from analyze-activity): how well the
-// athlete actually hit planned duration/load/intensity. Closes the
+// Measured execution of recent sessions (from analyze-activity and
+// analyze-strength): how well the athlete actually hit planned
+// duration/load/intensity, plus the analyzer's written coach notes. Closes the
 // autoregulation loop with objective data, not just subjective ratings.
 export async function executionBlock(
   admin: SupabaseClient,
   userId: string,
   sinceDate: string,
 ): Promise<string> {
+  interface Comp { name: string; score: number; detail: string }
+  interface Analysis { score?: number; label?: string; components?: Comp[]; feedback?: string }
+  const clip = (s: string, n = 320) => {
+    const t = s.replace(/\s+/g, " ").trim();
+    return t.length > n ? t.slice(0, n - 1) + "…" : t;
+  };
+  const line = (date: string, kind: string, a: Analysis): string => {
+    const comps = (a.components ?? [])
+      .map((c) => `${c.name} ${c.score}/100 (${c.detail})`)
+      .join("; ");
+    const notes = a.feedback ? ` Analyst notes: "${clip(a.feedback)}"` : "";
+    const score = typeof a.score === "number" ? `execution ${a.score}/100 "${a.label ?? ""}"` : `"${a.label ?? "analyzed"}"`;
+    return `- ${date} ${kind}: ${score}${comps ? ` — ${comps}` : ""}.${notes}`;
+  };
+
+  const entries: { date: string; text: string }[] = [];
   try {
     const { data } = await admin
       .from("completed_activities")
@@ -85,26 +102,37 @@ export async function executionBlock(
       .gte("date", sinceDate)
       .order("date", { ascending: false })
       .limit(5);
-    interface Comp { name: string; score: number; detail: string }
-    const rows = (data ?? []).filter((r) =>
-      typeof r.analysis_json?.score === "number"
-    );
-    if (!rows.length) return "";
-    const lines = rows.map((r) => {
-      const a = r.analysis_json as {
-        score: number;
-        label?: string;
-        components?: Comp[];
-      };
-      const comps = (a.components ?? [])
-        .map((c) => `${c.name} ${c.score}/100 (${c.detail})`)
-        .join("; ");
-      return `- ${r.date} ${r.type ?? "session"}: execution ${a.score}/100 "${a.label ?? ""}"${comps ? ` — ${comps}` : ""}`;
-    }).join("\n");
-    return `\n\nMEASURED EXECUTION OF RECENT SESSIONS (objective plan-vs-actual analysis — autoregulate from this: repeated intensity overshoot means prescribe easier targets and stress discipline in coach_note; chronic under-duration means shorter or simpler sessions; consistently high scores mean progress as planned):\n${lines}`;
-  } catch (_e) {
-    return "";
-  }
+    for (const r of data ?? []) {
+      const a = r.analysis_json as Analysis;
+      if (typeof a?.score !== "number" && !a?.feedback) continue;
+      entries.push({ date: r.date, text: line(r.date, r.type ?? "session", a) });
+    }
+  } catch (_e) { /* best-effort */ }
+
+  // Strength sessions are analyzed into their own table — fold them in too so
+  // EVERY activity type's analysis feeds the next prescriptions.
+  try {
+    const { data } = await admin
+      .from("strength_analyses")
+      .select("date, analysis_json")
+      .eq("user_id", userId)
+      .gte("date", sinceDate)
+      .order("date", { ascending: false })
+      .limit(3);
+    for (const r of data ?? []) {
+      const a = r.analysis_json as Analysis;
+      if (typeof a?.score !== "number" && !a?.feedback) continue;
+      entries.push({ date: r.date, text: line(r.date, "strength", a) });
+    }
+  } catch (_e) { /* table may not exist yet */ }
+
+  if (!entries.length) return "";
+  const lines = entries
+    .sort((a, b) => b.date.localeCompare(a.date))
+    .slice(0, 6)
+    .map((e) => e.text)
+    .join("\n");
+  return `\n\nMEASURED EXECUTION OF RECENT SESSIONS (objective plan-vs-actual analysis with the reviewing coach's notes — autoregulate from this: honor the analyst's cues, repeated intensity overshoot means prescribe easier targets and stress discipline in coach_note; chronic under-duration means shorter or simpler sessions; consistently high scores mean progress as planned):\n${lines}`;
 }
 
 export function memoryBlock(profile: { training_memory?: string | null }): string {

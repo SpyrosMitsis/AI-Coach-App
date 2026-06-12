@@ -3,13 +3,16 @@
 //
 // Readiness = composite of HRV delta, resting-HR delta, and 3-day avg wellness.
 //
-// GET or POST (no body required).
+// GET or POST { date?: "YYYY-MM-DD" } — the client's LOCAL date. Without it
+// the server falls back to UTC, which is yesterday for tz-ahead users until
+// mid-morning (the "Home stuck on yesterday's workout" bug).
 
 import { handleOptions, json } from "../_shared/cors.ts";
 import { adminClient, getUserId } from "../_shared/supabase.ts";
 import { computeRecovery } from "../_shared/recovery.ts";
 
 const DAY = 86_400_000;
+const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
 
 Deno.serve(async (req) => {
   const pre = handleOptions(req);
@@ -20,7 +23,10 @@ Deno.serve(async (req) => {
     if (!userId) return json({ error: "unauthorized" }, 401);
 
     const admin = adminClient();
-    const today = new Date().toISOString().slice(0, 10);
+    const body = await req.json().catch(() => ({}));
+    const qDate = new URL(req.url).searchParams.get("date");
+    const clientDate = [body?.date, qDate].find((d) => typeof d === "string" && ISO_DATE.test(d));
+    const today = (clientDate as string | undefined) ?? new Date().toISOString().slice(0, 10);
     const since14 = new Date(Date.now() - 14 * DAY).toISOString().slice(0, 10);
     const since7 = new Date(Date.now() - 7 * DAY).toISOString().slice(0, 10);
 

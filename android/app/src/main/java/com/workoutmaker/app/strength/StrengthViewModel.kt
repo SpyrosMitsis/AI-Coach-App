@@ -60,6 +60,9 @@ class UiExercise(val name: String) {
     val sets = mutableStateListOf<UiSet>()
     var previous by mutableStateOf<List<SetEntity>>(emptyList())
     var suggestion by mutableStateOf<ProgressionSuggestion?>(null) // B1 next-session target
+
+    // Cardio entries log MINUTES (in the reps slot) and no weight.
+    val isCardio: Boolean get() = ExerciseCatalog.find(name)?.category == "Cardio"
 }
 
 // Format a kg value tersely (no trailing ".0").
@@ -377,9 +380,43 @@ class StrengthViewModel @Inject constructor(
     }
 
     fun cancelWorkout() { stopTick(); reset(); nav.value = StrengthNav.Home }
-    fun openPicker() { nav.value = StrengthNav.Picker; loadPicker() }
-    fun backToActive() { nav.value = StrengthNav.Active }
+    fun openPicker() { replaceTarget.value = null; nav.value = StrengthNav.Picker; loadPicker() }
+    fun backToActive() { replaceTarget.value = null; nav.value = StrengthNav.Active }
     fun goHome() { nav.value = StrengthNav.Home; loadHome() }
+
+    // --- replace an exercise mid-session (hamburger → "Replace exercise") ---
+    // The picker opens in single-select mode; the chosen exercise takes over the
+    // slot, keeping everything already typed/ticked.
+    val replaceTarget = MutableStateFlow<UiExercise?>(null)
+
+    fun openPickerForReplace(ux: UiExercise) {
+        replaceTarget.value = ux
+        nav.value = StrengthNav.Picker
+        loadPicker()
+    }
+
+    fun replaceExercise(newName: String) {
+        val target = replaceTarget.value
+        replaceTarget.value = null
+        nav.value = StrengthNav.Active
+        val i = target?.let { exercises.indexOf(it) } ?: -1
+        if (target == null || i < 0) return
+        val ux = UiExercise(newName)
+        // Keep the athlete's entered sets; drop the old exercise's suggestions.
+        target.sets.forEach { s -> ux.sets.add(UiSet(s.weight, s.reps, s.rpe, s.done, s.warmup, s.note)) }
+        if (ux.sets.isEmpty()) ux.sets.add(UiSet())
+        exercises[i] = ux
+        viewModelScope.launch {
+            ux.previous = repo.previousSets(newName)
+            val sug = repo.progressionFor(newName)
+            ux.suggestion = sug
+            if (sug != null) ux.sets.forEach { s ->
+                if (s.weight.isBlank()) s.suggestedWeight = kg(sug.weightKg)
+                if (s.reps.isBlank()) s.suggestedReps = sug.reps.toString()
+            }
+        }
+        persistSession()
+    }
 
     fun addExercise(name: String, targetSets: Int = 1) {
         val ux = UiExercise(name)
@@ -441,6 +478,21 @@ class StrengthViewModel @Inject constructor(
     private fun seedFromWorkout(w: com.workoutmaker.app.data.Workout) {
         w.sections.forEach { sec ->
             sec.exercises.forEach { e ->
+                // An AI-introduced exercise outside the catalog: register it as a
+                // custom entry with the AI's metadata so muscle grouping, stats
+                // and future pickers recognise it.
+                if (ExerciseCatalog.find(e.name) == null && e.name.isNotBlank()) {
+                    viewModelScope.launch {
+                        runCatching {
+                            repo.addCustomExercise(
+                                e.name,
+                                e.muscle ?: "Other",
+                                e.category ?: "Machine",
+                                e.compound ?: false,
+                            )
+                        }
+                    }
+                }
                 val ux = UiExercise(e.name)
                 repeat(e.sets.coerceAtLeast(1)) {
                     ux.sets.add(UiSet(

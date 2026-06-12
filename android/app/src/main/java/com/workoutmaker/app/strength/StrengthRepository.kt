@@ -120,17 +120,22 @@ class StrengthRepository @Inject constructor(
 
     // --- D1: custom exercises ---------------------------------------------
     suspend fun loadAndRegisterCustom() {
-        // Prefer local; pull from cloud if local empty (e.g. after reinstall).
-        var local = dao.customExercises()
-        if (local.isEmpty()) {
-            runCatching {
-                val cloud = supabase.postgrest.from("strength_custom_exercises").select().decodeList<CloudCustomExercise>()
-                if (cloud.isNotEmpty()) {
-                    dao.insertCustomExercises(cloud.map { CustomExerciseEntity(it.name, it.muscle, it.category, it.compound) })
-                    local = dao.customExercises()
+        // Merge cloud → local (best-effort) so customs created elsewhere — the
+        // web logger or the AI generator registering an off-catalog exercise —
+        // show up here too. Names with a pending local delete stay deleted.
+        runCatching {
+            val cloud = supabase.postgrest.from("strength_custom_exercises").select().decodeList<CloudCustomExercise>()
+            if (cloud.isNotEmpty()) {
+                val pendingDeletes = dao.tombstones()
+                    .filter { it.tbl == "custom" }.map { it.rowId }.toHashSet()
+                val known = dao.customExercises().map { it.name }.toHashSet()
+                val fresh = cloud.filter { it.name !in known && it.name !in pendingDeletes }
+                if (fresh.isNotEmpty()) {
+                    dao.insertCustomExercises(fresh.map { CustomExerciseEntity(it.name, it.muscle, it.category, it.compound) })
                 }
-            }.logFailure("loadAndRegisterCustom/cloud")
-        }
+            }
+        }.logFailure("loadAndRegisterCustom/cloud")
+        val local = dao.customExercises()
         ExerciseCatalog.registerCustom(local.map { Exercise(it.name, it.muscle, it.category, it.compound) })
     }
 

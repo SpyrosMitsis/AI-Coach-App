@@ -131,6 +131,8 @@ internal fun ExercisePickerView(vm: StrengthViewModel) {
     val favorites by vm.favorites.collectAsStateSafe()
     val recents by vm.recentExercises.collectAsStateSafe()
     val custom by vm.customExercises.collectAsStateSafe()
+    // Replace mode (hamburger → "Replace exercise"): tap once to swap, no multi-select.
+    val replacing by vm.replaceTarget.collectAsStateSafe()
     // Recompute when custom list or filters change.
     val results = remember(query, muscle, category, custom) { ExerciseCatalog.search(query, muscle, category) }
 
@@ -156,25 +158,27 @@ internal fun ExercisePickerView(vm: StrengthViewModel) {
         containerColor = MaterialTheme.colorScheme.background,
         topBar = {
             TopAppBar(
-                title = { Text("Add exercises") },
+                title = { Text(replacing?.let { "Replace “${it.name}”" } ?: "Add exercises") },
                 navigationIcon = { IconButton(onClick = { vm.backToActive() }) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "Back") } },
                 actions = { TextButton(onClick = { showCreate = true }) { Icon(Icons.Filled.Add, null); Text(" New") } },
             )
         },
         bottomBar = {
-            Button(
-                onClick = { vm.addExercises(selected.toList()) },
-                enabled = selected.isNotEmpty(),
-                modifier = Modifier.fillMaxWidth().padding(12.dp),
-            ) { Text("Add ${selected.size} exercise(s)") }
+            if (replacing == null) {
+                Button(
+                    onClick = { vm.addExercises(selected.toList()) },
+                    enabled = selected.isNotEmpty(),
+                    modifier = Modifier.fillMaxWidth().padding(12.dp),
+                ) { Text("Add ${selected.size} exercise(s)") }
+            }
         },
     ) { padding ->
         Column(Modifier.padding(padding).fillMaxWidth()) {
             OutlinedTextField(query, { query = it }, label = { Text("Search") },
                 modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp), singleLine = true)
 
-            // D5: quick-add favorites & recents
-            if (query.isBlank() && muscle == null && category == null) {
+            // D5: quick-add favorites & recents (hidden while replacing — one tap swaps)
+            if (replacing == null && query.isBlank() && muscle == null && category == null) {
                 QuickAddRow("★ Favorites", favorites, selected)
                 QuickAddRow("Recent", recents, selected)
             }
@@ -200,7 +204,8 @@ internal fun ExercisePickerView(vm: StrengthViewModel) {
                     val isFav = favorites.contains(ex.name)
                     Row(
                         Modifier.fillMaxWidth().clickable {
-                            if (isSel) selected.remove(ex.name) else selected.add(ex.name)
+                            if (replacing != null) vm.replaceExercise(ex.name)
+                            else if (isSel) selected.remove(ex.name) else selected.add(ex.name)
                         }.padding(start = 12.dp, end = 4.dp, top = 8.dp, bottom = 8.dp),
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
@@ -220,9 +225,11 @@ internal fun ExercisePickerView(vm: StrengthViewModel) {
                             Icon(if (isFav) Icons.Filled.Star else Icons.Filled.StarBorder, "Favorite",
                                 tint = if (isFav) Sage else MaterialTheme.colorScheme.onSurfaceVariant)
                         }
-                        Checkbox(checked = isSel, onCheckedChange = {
-                            if (isSel) selected.remove(ex.name) else selected.add(ex.name)
-                        })
+                        if (replacing == null) {
+                            Checkbox(checked = isSel, onCheckedChange = {
+                                if (isSel) selected.remove(ex.name) else selected.add(ex.name)
+                            })
+                        }
                     }
                 }
             }

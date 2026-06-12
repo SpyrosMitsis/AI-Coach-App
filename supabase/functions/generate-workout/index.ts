@@ -38,6 +38,7 @@ import {
 } from "../_shared/context.ts";
 import { computeRecovery } from "../_shared/recovery.ts";
 import { llmAccess } from "../_shared/llm_keys.ts";
+import { exerciseCatalogBlock, registerUnknownExercises } from "../_shared/exercise_catalog.ts";
 
 const DAY = 86_400_000;
 const daysBetween = (a: string, b: Date) => Math.floor((b.getTime() - new Date(a).getTime()) / DAY);
@@ -230,6 +231,8 @@ Deno.serve(async (req) => {
         mainLifts,
         durationNote,
       });
+      // Pin exercise names to the loggable catalog (+ the athlete's customs).
+      userPrompt += await exerciseCatalogBlock(admin, userId);
     } else if (type === "rest") {
       userPrompt = `Generate a REST day. Goal: ${goal}. Recent 3-day wellness energy ${wellness3d.energy.toFixed(1)}/5, soreness ${wellness3d.soreness.toFixed(1)}/5. Return JSON only.`;
     } else {
@@ -309,6 +312,9 @@ Deno.serve(async (req) => {
 
     // 6c. "adjust this workout" path — revise a base workout per instruction
     if (body.adjustment && body.base_workout) {
+      const catalogNote = (body.base_workout as { type?: string }).type === "strength"
+        ? await exerciseCatalogBlock(admin, userId)
+        : "";
       userPrompt =
         `Revise the following workout per the athlete's request, keeping it
 physiologically sound and honoring the same training science.
@@ -317,7 +323,7 @@ ATHLETE REQUEST: ${String(body.adjustment)}
 
 CURRENT WORKOUT (JSON):
 ${JSON.stringify(body.base_workout)}
-${knowledgeBlock(profile)}
+${knowledgeBlock(profile)}${catalogNote}
 Return the revised workout as JSON only, same schema.`;
     }
 
@@ -434,6 +440,10 @@ Return the revised workout as JSON only, same schema.`;
       .select()
       .single();
     if (insErr) return json({ error: `save failed: ${insErr.message}` }, 500);
+
+    // Any exercise the model introduced outside the catalog becomes a custom
+    // entry (with the AI's metadata) so the loggers recognise it by name.
+    await registerUnknownExercises(admin, userId, validated);
 
     await admin.from("generation_logs").insert({
       user_id: userId,

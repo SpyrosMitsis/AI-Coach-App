@@ -4,7 +4,7 @@ import { useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { createClient } from "@/lib/supabase-browser";
-import { api } from "@/lib/api";
+import { api, localDateIso } from "@/lib/api";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -31,7 +31,7 @@ function monthMatrix(year: number, month: number): (string | null)[] {
   const lead = (first.getDay() + 6) % 7; // Monday-first
   const cells: (string | null)[] = Array(lead).fill(null);
   for (let d = 1; d <= days; d++) {
-    cells.push(new Date(year, month, d).toISOString().slice(0, 10));
+    cells.push(localDateIso(new Date(year, month, d)));
   }
   while (cells.length % 7 !== 0) cells.push(null);
   return cells;
@@ -42,10 +42,10 @@ function mondayOf(date: string): string {
   const d = new Date(date + "T00:00:00");
   const back = (d.getDay() + 6) % 7;
   d.setDate(d.getDate() - back);
-  return d.toISOString().slice(0, 10);
+  return localDateIso(d);
 }
 
-const todayIso = () => new Date().toISOString().slice(0, 10);
+const todayIso = () => localDateIso();
 
 // "Primary session" ordering shared with Android Home/Calendar: still-pending
 // before done/skipped, non-rest before rest, newest created_at first.
@@ -83,8 +83,8 @@ export default function CalendarPage() {
   const year = cursor.getFullYear();
   const month = cursor.getMonth();
   const cells = useMemo(() => monthMatrix(year, month), [year, month]);
-  const monthStart = new Date(year, month, 1).toISOString().slice(0, 10);
-  const monthEnd = new Date(year, month + 1, 0).toISOString().slice(0, 10);
+  const monthStart = localDateIso(new Date(year, month, 1));
+  const monthEnd = localDateIso(new Date(year, month + 1, 0));
 
   const planned = useQuery({
     queryKey: ["planned", monthStart],

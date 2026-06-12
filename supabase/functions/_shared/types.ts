@@ -17,6 +17,11 @@ export interface WorkoutExercise {
   hr_zone: string | null; // "Z1".."Z5"
   rest_seconds: number | null;
   notes: string;
+  // Catalog metadata, present only on exercises the AI introduced that aren't
+  // in the bundled library (used to auto-register them as custom exercises).
+  muscle?: string | null;
+  category?: string | null;
+  compound?: boolean | null;
 }
 
 export interface WorkoutSection {

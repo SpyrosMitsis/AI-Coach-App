@@ -65,6 +65,23 @@ class AuthViewModel @Inject constructor(
     val info = MutableStateFlow<String?>(null)
     val busy = MutableStateFlow(false)
 
+    // Offline cold start: the SDK reports NetworkError when it can't refresh the
+    // stored session. If one IS stored locally, let the user into the app (the
+    // screens render their cached data); the SDK keeps retrying in the background
+    // and flips to Authenticated once the connection returns. Null = not checked.
+    val offlineWithSession = MutableStateFlow<Boolean?>(null)
+
+    init {
+        viewModelScope.launch {
+            sessionStatus.collectLatest { st ->
+                if (st is SessionStatus.NetworkError && offlineWithSession.value == null) {
+                    offlineWithSession.value =
+                        runCatching { repo.auth.sessionManager.loadSession() != null }.getOrDefault(false)
+                }
+            }
+        }
+    }
+
     fun signIn(email: String, pw: String) = viewModelScope.launch {
         busy.value = true
         error.value = null
@@ -107,15 +124,29 @@ class AuthViewModel @Inject constructor(
 @Composable
 fun AuthGate(vm: AuthViewModel = hiltViewModel(), content: @Composable () -> Unit) {
     val status by vm.sessionStatus.collectAsStateSafe()
+    val offlineWithSession by vm.offlineWithSession.collectAsStateSafe()
     when (status) {
         is SessionStatus.Authenticated -> OnboardingGate(content)
         is SessionStatus.NotAuthenticated -> LoginScreen(vm)
-        else -> Column(
-            Modifier.fillMaxSize(),
-            verticalArrangement = Arrangement.Center,
-            horizontalAlignment = Alignment.CenterHorizontally,
-        ) { CircularProgressIndicator() }
+        // Can't reach the server: with a locally-saved session, enter the app on
+        // cached data (the SDK keeps retrying and signs in when back online).
+        // Without one there's no account to show — fall back to the login form.
+        is SessionStatus.NetworkError -> when (offlineWithSession) {
+            true -> OnboardingGate(content)
+            false -> LoginScreen(vm)
+            null -> CenteredSpinner()
+        }
+        else -> CenteredSpinner()
     }
+}
+
+@Composable
+private fun CenteredSpinner() {
+    Column(
+        Modifier.fillMaxSize(),
+        verticalArrangement = Arrangement.Center,
+        horizontalAlignment = Alignment.CenterHorizontally,
+    ) { CircularProgressIndicator() }
 }
 
 @Composable

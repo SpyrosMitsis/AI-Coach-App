@@ -1,6 +1,7 @@
 package com.workoutmaker.app.ui.screens
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -183,7 +184,16 @@ fun HomeScreen(vm: HomeViewModel = hiltViewModel()) {
     val feedbackStatus by vm.feedbackStatus.collectAsStateSafe()
     val error by vm.error.collectAsStateSafe()
 
-    LaunchedEffect(Unit) { vm.load() }
+    // Reload on every resume (delivered once on first composition too) so a
+    // dashboard left open overnight doesn't keep showing yesterday's workout.
+    val lifecycleOwner = androidx.lifecycle.compose.LocalLifecycleOwner.current
+    androidx.compose.runtime.DisposableEffect(lifecycleOwner) {
+        val obs = androidx.lifecycle.LifecycleEventObserver { _, event ->
+            if (event == androidx.lifecycle.Lifecycle.Event.ON_RESUME) vm.load()
+        }
+        lifecycleOwner.lifecycle.addObserver(obs)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(obs) }
+    }
 
     // Ask for coarse location only when first generating (for weather); proceed
     // regardless of the answer.
@@ -365,11 +375,22 @@ fun HomeScreen(vm: HomeViewModel = hiltViewModel()) {
                                 GhostButton(onClick = { vm.skipToday() }) { Text("Skip") }
                             }
                         } else {
+                            // RPE first (increasing-bars histogram), then the
+                            // difficulty word — both feed the next generations.
+                            var rpe by remember(s.today_workout?.id) { mutableStateOf<Int?>(null) }
+                            SectionLabel("How hard was it? (RPE)", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            RpeBars(selected = rpe, onSelect = { rpe = it })
+                            Text(
+                                rpe?.let { "RPE $it — ${rpeWord(it)}" }
+                                    ?: "Tap a bar: 1 = very easy, 10 = max effort (optional)",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
                             SectionLabel("How did it go?", color = MaterialTheme.colorScheme.onSurfaceVariant)
                             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                                 listOf("too_easy" to "Too easy", "just_right" to "Just right", "too_hard" to "Too hard").forEach { (k, label) ->
                                     GhostButton(
-                                        onClick = { vm.submitFeedback(k, null) },
+                                        onClick = { vm.submitFeedback(k, rpe) },
                                         modifier = Modifier.weight(1f),
                                     ) { Text(label, style = MaterialTheme.typography.labelSmall) }
                                 }
@@ -596,6 +617,45 @@ private fun PhaseStrip(current: String) {
                 Text(p, style = MaterialTheme.typography.labelSmall,
                     color = if (active) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant)
             }
+        }
+    }
+}
+
+internal fun rpeWord(n: Int): String = when {
+    n <= 2 -> "very easy"
+    n <= 4 -> "easy"
+    n <= 6 -> "moderate"
+    n <= 8 -> "hard"
+    n == 9 -> "very hard"
+    else -> "max effort"
+}
+
+// Increasing-bars RPE picker: bars 1-10 grow in height; tapping bar n lights
+// bars 1..n (green → amber → red).
+@Composable
+internal fun RpeBars(selected: Int?, onSelect: (Int) -> Unit) {
+    fun barColor(n: Int) = when {
+        n <= 5 -> com.workoutmaker.app.ui.theme.BandGreen
+        n <= 8 -> com.workoutmaker.app.ui.theme.BandAmber
+        else -> com.workoutmaker.app.ui.theme.BandRed
+    }
+    Row(
+        Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.spacedBy(4.dp),
+        verticalAlignment = Alignment.Bottom,
+    ) {
+        (1..10).forEach { n ->
+            val active = selected != null && n <= selected
+            Box(
+                Modifier
+                    .weight(1f)
+                    .size(width = 0.dp, height = (10 + n * 3).dp)
+                    .background(
+                        if (active) barColor(n) else MaterialTheme.colorScheme.surfaceContainerHigh,
+                        androidx.compose.foundation.shape.RoundedCornerShape(3.dp),
+                    )
+                    .clickable { onSelect(n) },
+            )
         }
     }
 }

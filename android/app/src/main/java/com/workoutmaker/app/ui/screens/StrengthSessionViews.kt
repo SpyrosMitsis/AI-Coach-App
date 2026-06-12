@@ -189,13 +189,19 @@ internal fun WorkoutDetailView(vm: StrengthViewModel) {
 
 @Composable
 internal fun WorkoutDetailExercise(name: String, sets: List<com.workoutmaker.app.strength.SetEntity>, onStats: () -> Unit) {
+    val cardio = ExerciseCatalog.find(name)?.category == "Cardio"
     SectionCard {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Column(Modifier.weight(1f)) {
                 Text(name, style = MaterialTheme.typography.titleSmall, color = MaterialTheme.colorScheme.primary)
-                val vol = sets.filter { !it.isWarmup }.sumOf { it.weightKg * it.reps }
-                Text("${ExerciseCatalog.muscleOf(name)} · ${sets.size} sets · ${vol.toInt()} kg",
-                    style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                val meta = if (cardio) {
+                    val mins = sets.sumOf { it.reps }
+                    "Cardio · ${sets.size} interval(s) · $mins min"
+                } else {
+                    val vol = sets.filter { !it.isWarmup }.sumOf { it.weightKg * it.reps }
+                    "${ExerciseCatalog.muscleOf(name)} · ${sets.size} sets · ${vol.toInt()} kg"
+                }
+                Text(meta, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
             IconButton(onClick = onStats) { Icon(Icons.Filled.BarChart, "Exercise stats") }
         }
@@ -207,7 +213,8 @@ internal fun WorkoutDetailExercise(name: String, sets: List<com.workoutmaker.app
                             color = if (s.isWarmup) MaterialTheme.colorScheme.secondary else MaterialTheme.colorScheme.onSurface,
                             fontWeight = FontWeight.Bold, style = MaterialTheme.typography.bodySmall)
                     }
-                    Text("${trimKg(s.weightKg)} kg × ${s.reps}", style = MaterialTheme.typography.bodyMedium)
+                    Text(if (cardio) "${s.reps} min" else "${trimKg(s.weightKg)} kg × ${s.reps}",
+                        style = MaterialTheme.typography.bodyMedium)
                     Spacer(Modifier.weight(1f))
                     s.rpe?.let { Text("RPE $it", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant) }
                 }
@@ -351,6 +358,10 @@ internal fun ExerciseCard(vm: StrengthViewModel, ux: UiExercise) {
                 }
                 DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
                     DropdownMenuItem(
+                        text = { Text("Replace exercise") },
+                        onClick = { menu = false; vm.openPickerForReplace(ux) },
+                    )
+                    DropdownMenuItem(
                         text = { Text("Remove exercise", color = BandRed) },
                         onClick = { menu = false; vm.removeExercise(ux) },
                     )
@@ -362,9 +373,13 @@ internal fun ExerciseCard(vm: StrengthViewModel, ux: UiExercise) {
             Text("🎯 Target ${trimKg(s.weightKg)}kg × ${s.reps} · ${s.note}",
                 style = MaterialTheme.typography.labelSmall, color = Sage)
         }
-        // column headers
+        // column headers — cardio logs minutes only (no load, no rep count)
         Row(Modifier.fillMaxWidth().padding(top = 4.dp), verticalAlignment = Alignment.CenterVertically) {
-            HCell("SET", 34.dp); HCell("PREV", 72.dp); HCell("KG", 76.dp); HCell("REPS", 64.dp)
+            if (ux.isCardio) {
+                HCell("SET", 34.dp); HCell("PREV", 72.dp); HCell("MIN", 76.dp)
+            } else {
+                HCell("SET", 34.dp); HCell("PREV", 72.dp); HCell("KG", 76.dp); HCell("REPS", 64.dp)
+            }
             Spacer(Modifier.weight(1f)); HCell("✓", 40.dp)
         }
         // Working-set numbering: warm-ups show "W" and don't consume a number.
@@ -377,6 +392,7 @@ internal fun ExerciseCard(vm: StrengthViewModel, ux: UiExercise) {
             androidx.compose.runtime.key(System.identityHashCode(s)) {
                 SetRow(
                     label, s, ux.previous.getOrNull(i),
+                    cardio = ux.isCardio,
                     onToggle = { vm.toggleDone(ux, s) },
                     onRemove = { vm.removeSet(ux, s) },
                     onEdit = { vm.persistSession() },
@@ -399,6 +415,7 @@ internal fun SetRow(
     label: String,
     s: UiSet,
     prev: com.workoutmaker.app.strength.SetEntity?,
+    cardio: Boolean = false,
     onToggle: () -> Unit,
     onRemove: () -> Unit,
     onEdit: () -> Unit = {},
@@ -451,12 +468,17 @@ internal fun SetRow(
                 )
             }
             Text(
-                prev?.let { "${it.weightKg.toInt()}×${it.reps}" } ?: "—",
+                prev?.let { if (cardio) "${it.reps} min" else "${it.weightKg.toInt()}×${it.reps}" } ?: "—",
                 Modifier.width(64.dp), style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant, textAlign = TextAlign.Center,
             )
-            CompactField(s.weight, { s.weight = it; onEdit() }, 72.dp, decimal = true, placeholder = s.suggestedWeight)
-            CompactField(s.reps, { s.reps = it; onEdit() }, 60.dp, decimal = false, placeholder = s.suggestedReps)
+            if (cardio) {
+                // Minutes live in the reps slot; no load to enter.
+                CompactField(s.reps, { s.reps = it; onEdit() }, 72.dp, decimal = false, placeholder = s.suggestedReps)
+            } else {
+                CompactField(s.weight, { s.weight = it; onEdit() }, 72.dp, decimal = true, placeholder = s.suggestedWeight)
+                CompactField(s.reps, { s.reps = it; onEdit() }, 60.dp, decimal = false, placeholder = s.suggestedReps)
+            }
             Spacer(Modifier.weight(1f))
             IconButton(onClick = { showNote = !showNote }, modifier = Modifier.size(34.dp)) {
                 Icon(Icons.AutoMirrored.Filled.NoteAdd, "Note",

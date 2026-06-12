@@ -91,8 +91,15 @@ class WorkoutRepository @Inject constructor(
     // --- Edge functions ------------------------------------------------------
     // Write-through cached: a successful fetch is persisted so an offline cold
     // start can still show the last dashboard instead of a bare error.
+    // Sends the device's LOCAL date — the server's UTC clock is yesterday for
+    // tz-ahead users until mid-morning, which made Home show the wrong day.
     suspend fun dailySummary(): DailySummary {
-        val s: DailySummary = json.decodeFromString(supabase.functions.invoke("daily-summary").body())
+        val body = kotlinx.serialization.json.buildJsonObject {
+            put("date", JsonPrimitive(java.time.LocalDate.now().toString()))
+        }.toString()
+        val s: DailySummary = json.decodeFromString(
+            supabase.functions.invoke("daily-summary") { setBody(body) }.body(),
+        )
         runCatching {
             cache.upsertSummary(
                 CachedSummary(
@@ -620,10 +627,16 @@ class WorkoutRepository @Inject constructor(
         }
         // Re-plan today → +6: deletes non-completed/non-locked in range and
         // regenerates around what actually happened and your current fitness.
-        val r = runCatching { planWeek(PlanWeekRequest(start_date = today)) }.logFailure("adaptWeek/planWeek").getOrNull()
+        val attempt = runCatching { planWeek(PlanWeekRequest(start_date = today)) }.logFailure("adaptWeek/planWeek")
+        val r = attempt.getOrNull()
         if (r == null || r.error != null) {
+            // Surface the function's real error (it travels in the exception body)
+            // instead of a blind "re-plan failed".
+            val why = r?.error
+                ?: attempt.exceptionOrNull()?.let { fnErrorMessage(it) }
+                ?: "re-plan failed"
             return AdaptResult(reconciled, missed, false,
-                "Reconciled $reconciled · $missed missed", r?.error ?: "re-plan failed")
+                "Reconciled $reconciled · $missed missed", why)
         }
         val parts = buildList {
             if (reconciled > 0) add("✓ matched $reconciled to your actual sessions")
@@ -711,6 +724,14 @@ class WorkoutRepository @Inject constructor(
             }
         }
         return CoachStreamResult(convId, tools, error, gotReply)
+    }
+
+    // Edge-function failures throw with the JSON error body in the message —
+    // pull out the human-readable part ({"error": "..."} / {"detail": "..."}).
+    private fun fnErrorMessage(t: Throwable): String {
+        val m = t.message ?: return "request failed"
+        return Regex("\"(?:error|detail|message)\"\\s*:\\s*\"([^\"]+)\"")
+            .find(m)?.groupValues?.get(1) ?: m.take(200)
     }
 
     private fun uid(): String = supabase.auth.currentUserOrNull()?.id ?: ""

@@ -3,7 +3,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { createClient } from "@/lib/supabase-browser";
-import { api } from "@/lib/api";
+import { api, localDateIso } from "@/lib/api";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -31,8 +31,14 @@ interface CloudRoutineItem {
   target_sets: number; target_reps: string; rest_sec: number;
 }
 
-const dayOf = (millis: number) => new Date(millis).toISOString().slice(0, 10);
-const todayIso = () => new Date().toISOString().slice(0, 10);
+const dayOf = (millis: number) => localDateIso(new Date(millis));
+const todayIso = () => localDateIso();
+
+// Cardio entries are logged in minutes (the set's `reps` carries the minutes,
+// weight is 0) — matches the Android logger and the AI's catalog rules.
+const CARDIO_NAMES = new Set(["treadmill run", "rowing machine", "assault bike", "stair climber", "elliptical"]);
+const isCardioExercise = (name: string, muscle?: string | null) =>
+  (muscle ?? "").toLowerCase() === "cardio" || CARDIO_NAMES.has(name.trim().toLowerCase());
 
 export default function StrengthPage() {
   const qc = useQueryClient();
@@ -148,12 +154,13 @@ export default function StrengthPage() {
       for (const ex of sec.exercises) {
         const reps = parseInt((ex.reps.match(/\d+/) ?? ["8"])[0]);
         const n = Math.max(1, ex.sets || 1);
+        const cardio = isCardioExercise(ex.name, ex.muscle);
         next.push({
           name: ex.name,
-          muscle: muscleOf(ex.name),
-          sets: Array.from({ length: n }, () => ({
-            reps, weight_kg: ex.weight_kg ?? lastSetsByExercise.get(ex.name)?.[0]?.weight_kg ?? 20,
-          })),
+          muscle: cardio ? "cardio" : (ex.muscle?.toLowerCase() ?? muscleOf(ex.name)),
+          sets: Array.from({ length: n }, () => cardio
+            ? { reps, weight_kg: 0 } // reps = minutes for cardio
+            : { reps, weight_kg: ex.weight_kg ?? lastSetsByExercise.get(ex.name)?.[0]?.weight_kg ?? 20 }),
         });
       }
     }
@@ -394,7 +401,9 @@ export default function StrengthPage() {
               {exSets.sort((a, b) => a.idx - b.idx).map((s) => (
                 <div key={s.id} className="flex items-center gap-3 text-sm">
                   <span className="w-8 text-xs text-muted-foreground">#{s.idx}</span>
-                  <span className="font-medium tabular-nums">{s.weight_kg} kg × {s.reps}</span>
+                  <span className="font-medium tabular-nums">
+                    {isCardioExercise(s.exercise_name, s.muscle) ? `${s.reps} min` : `${s.weight_kg} kg × ${s.reps}`}
+                  </span>
                   {s.rpe != null && <span className="text-xs text-muted-foreground">RPE {s.rpe}</span>}
                   {s.is_warmup && <Badge variant="outline">warmup</Badge>}
                 </div>
@@ -469,26 +478,41 @@ export default function StrengthPage() {
                   Last time: {lastSetsByExercise.get(ex.name)!.map((s) => `${s.weight_kg}×${s.reps}`).join(", ")}
                 </p>
               )}
-              {ex.sets.map((s, si) => (
+              {ex.sets.map((s, si) => {
+                const cardio = isCardioExercise(ex.name, ex.muscle);
+                return (
                 <div key={si} className="flex items-center gap-2">
-                  <Input type="number" value={s.weight_kg} className="w-20"
-                    onChange={(e) => patchSet(ei, si, { weight_kg: +e.target.value })} />
-                  <span className="text-xs text-muted-foreground">kg ×</span>
-                  <Input type="number" value={s.reps} className="w-16"
-                    onChange={(e) => patchSet(ei, si, { reps: +e.target.value })} />
+                  {cardio ? (
+                    <>
+                      <Input type="number" value={s.reps} className="w-20"
+                        onChange={(e) => patchSet(ei, si, { reps: +e.target.value })} />
+                      <span className="text-xs text-muted-foreground">min</span>
+                    </>
+                  ) : (
+                    <>
+                      <Input type="number" value={s.weight_kg} className="w-20"
+                        onChange={(e) => patchSet(ei, si, { weight_kg: +e.target.value })} />
+                      <span className="text-xs text-muted-foreground">kg ×</span>
+                      <Input type="number" value={s.reps} className="w-16"
+                        onChange={(e) => patchSet(ei, si, { reps: +e.target.value })} />
+                    </>
+                  )}
                   <Input
                     type="number" placeholder="RPE" value={s.rpe ?? ""} className="w-16"
                     onChange={(e) => patchSet(ei, si, { rpe: e.target.value ? +e.target.value : null })}
                   />
-                  <label className="flex items-center gap-1 text-xs text-muted-foreground">
-                    <input type="checkbox" checked={!!s.is_warmup} onChange={(e) => patchSet(ei, si, { is_warmup: e.target.checked })} className="accent-primary" />
-                    warmup
-                  </label>
+                  {!cardio && (
+                    <label className="flex items-center gap-1 text-xs text-muted-foreground">
+                      <input type="checkbox" checked={!!s.is_warmup} onChange={(e) => patchSet(ei, si, { is_warmup: e.target.checked })} className="accent-primary" />
+                      warmup
+                    </label>
+                  )}
                   {ex.sets.length > 1 && (
                     <button onClick={() => removeSet(ei, si)} className="ml-auto text-muted-foreground hover:text-red-400"><X className="h-3.5 w-3.5" /></button>
                   )}
                 </div>
-              ))}
+                );
+              })}
               <Button size="sm" variant="ghost" onClick={() => addSet(ei)}><Plus className="h-3.5 w-3.5" /> Set</Button>
             </div>
           ))}

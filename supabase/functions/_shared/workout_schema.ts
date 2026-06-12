@@ -27,6 +27,9 @@ const DEFAULT_EXERCISE = {
   hr_zone: null as string | null,
   rest_seconds: null as number | null,
   notes: "",
+  muscle: null as string | null,
+  category: null as string | null,
+  compound: null as boolean | null,
 };
 
 const ExerciseSchema = z.object({
@@ -38,6 +41,11 @@ const ExerciseSchema = z.object({
   hr_zone: z.unknown().transform((v) => (typeof v === "string" ? v : null)),
   rest_seconds: z.unknown().transform((v) => (typeof v === "number" ? v : null)),
   notes: str(""),
+  // Metadata the model supplies only for exercises NOT in the bundled catalog —
+  // used to auto-register them as the athlete's custom exercises.
+  muscle: z.unknown().transform((v) => (typeof v === "string" ? v : null)),
+  category: z.unknown().transform((v) => (typeof v === "string" ? v : null)),
+  compound: z.unknown().transform((v) => (typeof v === "boolean" ? v : null)),
 }).catch(DEFAULT_EXERCISE);
 
 const SectionSchema = z.object({

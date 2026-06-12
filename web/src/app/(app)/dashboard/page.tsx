@@ -2,7 +2,7 @@
 
 import { useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { api } from "@/lib/api";
+import { api, localDateIso } from "@/lib/api";
 import { createClient } from "@/lib/supabase-browser";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -44,6 +44,7 @@ export default function DashboardPage() {
   const [showDetails, setShowDetails] = useState(false);
   const [instruction, setInstruction] = useState("");
   const [didIt, setDidIt] = useState(false);
+  const [rpe, setRpe] = useState<number | null>(null);
   const [feedbackStatus, setFeedbackStatus] = useState<string | null>(null);
   const [openActivity, setOpenActivity] = useState<CompletedActivity | null>(null);
 
@@ -76,26 +77,28 @@ export default function DashboardPage() {
     onSuccess: () => { setInstruction(""); reload(); },
   });
 
-  // #1 parity: done/skip + difficulty rating that adapts the next workout.
+  // #1 parity: done/skip + difficulty + RPE rating that adapts the next workout.
   const feedback = useMutation({
-    mutationFn: async (vars: { completed: boolean; difficulty: string | null }) => {
+    mutationFn: async (vars: { completed: boolean; difficulty: string | null; rpe?: number | null }) => {
       const today = summary.data?.today_workout;
-      const date = new Date().toISOString().slice(0, 10);
+      const date = localDateIso();
+      const row = {
+        date, completed: vars.completed, difficulty: vars.difficulty, actual_rpe: vars.rpe ?? null,
+      };
       if (today?.id) {
         const { error } = await supabase.from("planned_workouts")
           .update({ completed: vars.completed, skipped: !vars.completed }).eq("id", today.id);
         // Pre-migration-26 fallback: no `skipped` column yet.
         if (error) await supabase.from("planned_workouts").update({ completed: vars.completed }).eq("id", today.id);
-        await supabase.from("workout_feedback").insert({
-          planned_workout_id: today.id, date, completed: vars.completed, difficulty: vars.difficulty,
-        });
+        await supabase.from("workout_feedback").insert({ ...row, planned_workout_id: today.id });
       } else {
-        await supabase.from("workout_feedback").insert({ date, completed: vars.completed, difficulty: vars.difficulty });
+        await supabase.from("workout_feedback").insert(row);
       }
     },
     onSuccess: (_d, vars) => {
       setFeedbackStatus(vars.completed ? "✓ Marked done — your next workout will adapt." : null);
       setDidIt(false);
+      setRpe(null);
       reload();
     },
     onError: (e) => setFeedbackStatus((e as Error).message),
@@ -295,11 +298,16 @@ export default function DashboardPage() {
                 <Button variant="ghost" onClick={() => feedback.mutate({ completed: false, difficulty: null })}>Skip</Button>
               </div>
             ) : (
-              <div className="space-y-1.5">
+              <div className="space-y-2">
+                <p className="label-caps">How hard was it? (RPE)</p>
+                <RpeBars value={rpe} onSelect={setRpe} />
+                <p className="text-xs text-muted-foreground">
+                  {rpe ? `RPE ${rpe} — ${rpeWord(rpe)}` : "Tap a bar: 1 = very easy, 10 = max effort (optional)"}
+                </p>
                 <p className="label-caps">How did it go?</p>
                 <div className="flex gap-2">
                   {[["too_easy", "Too easy"], ["just_right", "Just right"], ["too_hard", "Too hard"]].map(([k, label]) => (
-                    <Button key={k} variant="outline" size="sm" className="flex-1" onClick={() => feedback.mutate({ completed: true, difficulty: k })}>
+                    <Button key={k} variant="outline" size="sm" className="flex-1" onClick={() => feedback.mutate({ completed: true, difficulty: k, rpe })}>
                       {label}
                     </Button>
                   ))}
@@ -368,6 +376,36 @@ export default function DashboardPage() {
           </CardContent>
         </Card>
       )}
+    </div>
+  );
+}
+
+function rpeWord(n: number): string {
+  if (n <= 2) return "very easy";
+  if (n <= 4) return "easy";
+  if (n <= 6) return "moderate";
+  if (n <= 8) return "hard";
+  return n === 9 ? "very hard" : "max effort";
+}
+
+// Increasing-bars RPE picker: bars 1-10 grow in height; tapping bar n lights
+// bars 1..n (green → amber → red).
+function RpeBars({ value, onSelect }: { value: number | null; onSelect: (n: number) => void }) {
+  const color = (n: number) => (n <= 5 ? "#4ade80" : n <= 8 ? "#fbbf24" : "#f87171");
+  return (
+    <div className="flex items-end gap-1">
+      {Array.from({ length: 10 }, (_, i) => i + 1).map((n) => (
+        <button
+          key={n}
+          aria-label={`RPE ${n}`}
+          onClick={() => onSelect(n)}
+          className="flex-1 rounded-sm transition-colors"
+          style={{
+            height: 10 + n * 3.2,
+            background: value != null && n <= value ? color(n) : "hsl(var(--secondary))",
+          }}
+        />
+      ))}
     </div>
   );
 }

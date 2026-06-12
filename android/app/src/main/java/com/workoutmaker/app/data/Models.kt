@@ -25,6 +25,11 @@ data class WorkoutExercise(
     val hr_zone: String? = null,
     val rest_seconds: Int? = null,
     val notes: String = "",
+    // Catalog metadata, present only on AI-introduced exercises that aren't in
+    // the bundled library (used to auto-register them as custom exercises).
+    val muscle: String? = null,
+    val category: String? = null,
+    val compound: Boolean? = null,
 )
 
 @Serializable

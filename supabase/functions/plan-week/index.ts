@@ -21,6 +21,7 @@ import {
 import { createEvent, deleteEvent, latestFitness } from "../_shared/intervals.ts";
 import { renderIntervalsWorkout } from "../_shared/intervals_workout.ts";
 import { adherenceBlock, executionBlock, goalBlock, intervalsPhysiology, knowledgeBlock, memoryBlock } from "../_shared/context.ts";
+import { exerciseCatalogBlock, registerUnknownExercises } from "../_shared/exercise_catalog.ts";
 import type { LlmProvider, Workout } from "../_shared/types.ts";
 import type { SupabaseClient } from "jsr:@supabase/supabase-js@2";
 
@@ -121,7 +122,8 @@ async function planForUser(admin: SupabaseClient, userId: string, start: string,
     knowledgeBlock(profile) + memoryBlock(profile) + phys.block +
     await adherenceBlock(admin, userId, since14, start, acts28) +
     await executionBlock(admin, userId, since14) +
-    goalBlock(onboarding, weeksToGoal, phase, acts28) + lockedBlock;
+    goalBlock(onboarding, weeksToGoal, phase, acts28) + lockedBlock +
+    await exerciseCatalogBlock(admin, userId);
 
   const dayList = dates.map((d) => ({
     date: d, weekday: weekdayOf(d),
@@ -139,20 +141,40 @@ async function planForUser(admin: SupabaseClient, userId: string, start: string,
   const { chain, resolveKey, resolveModel } = llmAccess(admin, userId, profile);
   if (chain.length === 0) throw new Error("No AI provider configured");
 
-  let outcome = await llmGenerateWithFallback(chain, { prompt: userPrompt, systemPrompt: WEEK_SYSTEM_PROMPT }, resolveKey, resolveModel);
+  // Failures are logged to generation_logs (like generate-workout does) so a
+  // "re-plan failed" in the app is diagnosable from the logs table.
+  const logFailure = async (provider: string | null, raw: string | null, error: string) => {
+    await admin.from("generation_logs").insert({
+      user_id: userId, provider, system_prompt: WEEK_SYSTEM_PROMPT,
+      user_prompt: userPrompt, raw_response: raw, parsed_ok: false, error,
+    }).then(() => {}, () => {});
+  };
+
+  let outcome;
+  try {
+    outcome = await llmGenerateWithFallback(chain, { prompt: userPrompt, systemPrompt: WEEK_SYSTEM_PROMPT }, resolveKey, resolveModel);
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    await logFailure(chain[0] ?? null, null, msg);
+    throw new Error(`AI generation failed: ${msg}`);
+  }
   let v = validateWeekPlan(safeJson(outcome.text));
   if (!v.ok) {
     const retry = await llmGenerateWithFallback(
       chain,
       { prompt: `${userPrompt}\n\nYOUR PREVIOUS RESPONSE was invalid (${v.error}). Return ONLY corrected JSON.`, systemPrompt: WEEK_SYSTEM_PROMPT },
       resolveKey,
+      resolveModel,
     ).catch(() => null);
     if (retry) {
       const v2 = validateWeekPlan(safeJson(retry.text));
       if (v2.ok) { v = v2; outcome = retry; }
     }
   }
-  if (!v.ok || !v.plan) throw new Error(`could not parse week plan: ${v.error}`);
+  if (!v.ok || !v.plan) {
+    await logFailure(outcome.provider, outcome.text, `could not parse week plan: ${v.error}`);
+    throw new Error(`could not parse week plan: ${v.error}`);
+  }
   const plan = v.plan;
 
   // Idempotent replace of the whole week (clean up old watch events) — but
@@ -178,6 +200,13 @@ async function planForUser(admin: SupabaseClient, userId: string, start: string,
   }).filter((row) => !lockedByDate.has(row.date));
   const { data: inserted, error: insErr } = await admin.from("planned_workouts").insert(rows).select("id, date");
   if (insErr) throw new Error(`save failed: ${insErr.message}`);
+
+  // Register any off-catalog exercises the model introduced in strength days.
+  for (const row of rows) {
+    if (row.type === "strength") {
+      await registerUnknownExercises(admin, userId, row.workout_json as Workout);
+    }
+  }
 
   // Persist the week's rationale for the "explain this week" view.
   await admin.from("week_plans").upsert(

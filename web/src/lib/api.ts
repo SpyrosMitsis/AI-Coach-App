@@ -40,6 +40,13 @@ export function humanizeError(raw: string): string {
   return raw;
 }
 
+// The browser's LOCAL calendar date (YYYY-MM-DD). new Date().toISOString() is
+// UTC — for timezones ahead of UTC that's still *yesterday* until mid-morning,
+// which made Home/strength show the wrong day's workout.
+export function localDateIso(d: Date = new Date()): string {
+  return new Date(d.getTime() - d.getTimezoneOffset() * 60_000).toISOString().slice(0, 10);
+}
+
 // Thin wrapper over supabase.functions.invoke that surfaces the JSON error
 // bodies our Edge Functions return.
 async function invoke<T>(name: string, body?: unknown): Promise<T> {
@@ -70,7 +77,9 @@ export interface IntervalsStats {
 }
 
 export const api = {
-  dailySummary: () => invoke<DailySummary>("daily-summary"),
+  // Send the browser's local date so "today's workout" matches the calendar
+  // the athlete lives in, not the server's UTC clock.
+  dailySummary: () => invoke<DailySummary>("daily-summary", { date: localDateIso() }),
 
   intervalsStats: () => invoke<IntervalsStats>("intervals-stats"),
 
