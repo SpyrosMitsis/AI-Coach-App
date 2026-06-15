@@ -277,6 +277,13 @@ internal fun ConnectionsSection(vm: SettingsViewModel) {
                 style = MaterialTheme.typography.bodySmall,
                 color = Sage,
             )
+            // Sync uses the saved credentials server-side — no need to re-enter
+            // the key/id. (Also runs automatically every 30 min via the backend.)
+            Button(
+                onClick = { vm.syncIntervalsNow() },
+                enabled = !busy,
+                modifier = Modifier.fillMaxWidth(),
+            ) { Text(if (busy) "Syncing…" else "Sync now") }
         }
         Text("Pushes structured workouts to your Amazfit watch (via Zepp → Intervals.icu). Find the athlete ID + API key in Intervals.icu → Settings → Developer.",
             style = MaterialTheme.typography.bodySmall)

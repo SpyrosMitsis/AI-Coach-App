@@ -329,6 +329,17 @@ class SettingsViewModel @Inject constructor(
         busy.value = false
     }
 
+    /** Pull fresh Intervals.icu data using the already-saved credentials — no
+     *  need to re-enter the key/id just to sync. */
+    fun syncIntervalsNow() = viewModelScope.launch {
+        busy.value = true
+        intervalsStatus.value = "Syncing…"
+        runCatching { repo.syncIntervals() }
+            .onSuccess { intervalsStatus.value = "✓ Synced from Intervals.icu" }
+            .onFailure { intervalsStatus.value = "Sync failed: ${it.message}" }
+        busy.value = false
+    }
+
     fun selectProvider(p: LlmProvider) {
         active = p
         viewModelScope.launch { runCatching { repo.setActiveProvider(p) } }
