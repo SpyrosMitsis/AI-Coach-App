@@ -149,6 +149,16 @@ interface StrengthDao {
     @Query("DELETE FROM strength_set WHERE workoutId = :id")
     suspend fun deleteSetsForWorkout(id: String)
 
+    // --- one-time custom-name cleanup -------------------------------------
+    @Query("SELECT DISTINCT workoutId FROM strength_set WHERE exerciseName = :name")
+    suspend fun workoutIdsForExercise(name: String): List<String>
+
+    @Query("UPDATE strength_set SET exerciseName = :newName, muscle = :newMuscle WHERE exerciseName = :oldName")
+    suspend fun renameSetExercise(oldName: String, newName: String, newMuscle: String)
+
+    @Query("UPDATE strength_workout SET synced = 0 WHERE id = :id")
+    suspend fun markWorkoutUnsynced(id: String)
+
     // The most recent prior workout that included this exercise (for "previous").
     @Query(
         """SELECT s.* FROM strength_set s

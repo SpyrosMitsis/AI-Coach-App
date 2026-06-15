@@ -151,6 +151,28 @@ class StrengthRepository @Inject constructor(
         loadAndRegisterCustom()
     }
 
+    /**
+     * One-off cleanup: any custom exercise that's really a reworded duplicate of
+     * a bundled catalog exercise (e.g. "Machine Lat Pulldown" → "Lat Pulldown")
+     * is renamed across every logged set — fixing the stored muscle too — and
+     * dropped from the custom registry. Affected workouts are marked unsynced so
+     * the next sync re-pushes their sets and rebuilds strength_logs with the
+     * canonical names. Returns the number of customs collapsed.
+     */
+    suspend fun cleanupMislabeledCustoms(): Int {
+        var collapsed = 0
+        for (c in dao.customExercises()) {
+            val canon = ExerciseCatalog.canonicalFor(c.name) ?: continue
+            if (canon.name == c.name) continue
+            dao.workoutIdsForExercise(c.name).forEach { dao.markWorkoutUnsynced(it) }
+            dao.renameSetExercise(c.name, canon.name, canon.muscle)
+            deleteCustomExercise(c.name) // local delete + cloud tombstone
+            collapsed++
+        }
+        if (collapsed > 0) loadAndRegisterCustom()
+        return collapsed
+    }
+
     // --- D5: favorites + recents ------------------------------------------
     suspend fun favorites(): List<String> = dao.favorites()
     suspend fun recentExercises(limit: Int = 12): List<String> = dao.recentExercises(limit)

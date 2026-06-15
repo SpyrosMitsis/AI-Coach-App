@@ -10,6 +10,9 @@
     <uses-permission android:name="android.permission.VIBRATE" />
     <uses-permission android:name="android.permission.USE_EXACT_ALARM" />
     <uses-permission android:name="android.permission.SCHEDULE_EXACT_ALARM" />
+    <!-- Keep the workout session alive (live timer) while the app is backgrounded. -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_HEALTH" />
 
     <!-- Health Connect read permissions -->
     <uses-permission android:name="android.permission.health.READ_HEART_RATE" />
@@ -65,6 +68,12 @@
 
         <!-- Rest-timer alarm receiver — alerts when a rest period ends. -->
         <receiver android:name=".notify.RestAlarmReceiver" android:exported="false" />
+
+        <!-- Keeps a strength session alive with a live-timer notification. -->
+        <service
+            android:name=".work.WorkoutForegroundService"
+            android:exported="false"
+            android:foregroundServiceType="health" />
 
         <!-- Hilt provides the WorkManager factory; disable default initializer. -->
         <provider

@@ -140,6 +140,28 @@ object ExerciseCatalog {
     /** Built-ins plus any registered custom exercises. */
     fun combined(): List<Exercise> = all + customByName.values
 
+    // Fuzzy snap (mirrors the server-side canonicaliser): drop equipment/grip
+    // qualifier words so a reworded name like "Machine Lat Pulldown" maps onto
+    // "Lat Pulldown". Equipment words DO distinguish real entries (Barbell Row
+    // vs Dumbbell Row), so a fuzzy key is only usable when exactly ONE bundled
+    // entry maps to it — ambiguous keys are dropped.
+    private val qualifier = Regex(
+        "\\b(machine|cable|barbell|dumbbell|db|smith|seated|standing|bench|lying|" +
+            "kneeling|assisted|weighted|wide|close|narrow|neutral|grip|single|onearm|one|alternating|alt)\\b",
+    )
+    private fun norm(s: String) = s.lowercase().replace(Regex("[^a-z0-9]"), "")
+    private fun fuzz(s: String) = norm(s.lowercase().replace(Regex("[-_]"), " ").replace(qualifier, " "))
+    private val byFuzz: Map<String, Exercise> = run {
+        val count = all.groupingBy { fuzz(it.name) }.eachCount()
+        all.filter { count[fuzz(it.name)] == 1 }.associateBy { fuzz(it.name) }
+    }
+
+    /** The bundled entry this off-catalog name is clearly a reworded duplicate
+     *  of — e.g. "Machine Lat Pulldown" → "Lat Pulldown". Null if it's already a
+     *  catalog name or has no unambiguous match. */
+    fun canonicalFor(name: String): Exercise? =
+        if (byName.containsKey(name)) null else byFuzz[fuzz(name)]
+
     fun find(name: String): Exercise? = customByName[name] ?: byName[name]
     fun muscleOf(name: String): String = find(name)?.muscle ?: "Other"
     fun restOf(name: String): Int = find(name)?.defaultRestSec ?: 120

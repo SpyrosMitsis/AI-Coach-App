@@ -249,6 +249,13 @@ class StrengthViewModel @Inject constructor(
         loading.value = true
         runCatching {
             repo.loadAndRegisterCustom()
+            // One-time: collapse reworded AI/custom exercises onto their bundled
+            // catalog twin so stats/muscle-grouping use the canonical entry.
+            if (!prefs.customsCleanupV1Done()) {
+                val tidied = runCatching { repo.cleanupMislabeledCustoms() }.getOrDefault(0)
+                prefs.setCustomsCleanupV1Done()
+                if (tidied > 0) status.value = "Tidied $tidied exercise name(s) to match the catalog"
+            }
             val restored = repo.restoreIfEmpty()
             if (restored > 0) status.value = "Restored $restored workouts from the cloud"
             // Two-way sync: pull in sessions logged elsewhere (e.g. the web app).
@@ -699,6 +706,9 @@ class StrengthViewModel @Inject constructor(
             elapsedSec.value = ((editingEndedAt - startedAt) / 1000).coerceAtLeast(0)
             return
         }
+        // Keep the live session alive across backgrounding/swipe with a
+        // foreground-service timer notification (like a watch workout).
+        com.workoutmaker.app.work.WorkoutForegroundService.start(context, workoutName, startedAt)
         tickJob = viewModelScope.launch {
             while (true) {
                 elapsedSec.value = (System.currentTimeMillis() - startedAt) / 1000
@@ -706,7 +716,10 @@ class StrengthViewModel @Inject constructor(
             }
         }
     }
-    private fun stopTick() { tickJob?.cancel(); tickJob = null }
+    private fun stopTick() {
+        tickJob?.cancel(); tickJob = null
+        com.workoutmaker.app.work.WorkoutForegroundService.stop(context)
+    }
 
     /** Manually start/restart a rest timer (the bottom "Rest" button). */
     fun startManualRest() = startRest(if (cfg.defaultRestSec > 0) cfg.defaultRestSec else 120)

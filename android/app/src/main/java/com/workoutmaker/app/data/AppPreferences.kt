@@ -64,7 +64,14 @@ class AppPreferences @Inject constructor(
         val keepScreenOn = booleanPreferencesKey("keep_screen_on")
         val themeMode = stringPreferencesKey("theme_mode")
         val onboardingComplete = booleanPreferencesKey("onboarding_complete")
+        val customsCleanupV1 = booleanPreferencesKey("customs_cleanup_v1")
     }
+
+    // One-time migration guard: collapse reworded custom exercises onto their
+    // bundled-catalog twin (e.g. "Machine Lat Pulldown" → "Lat Pulldown").
+    suspend fun customsCleanupV1Done(): Boolean =
+        context.dataStore.data.firstOrNull()?.get(Keys.customsCleanupV1) ?: false
+    suspend fun setCustomsCleanupV1Done() = edit { it[Keys.customsCleanupV1] = true }
 
     // Last KNOWN onboarding state — consulted only when the network check fails,
     // so an offline cold start doesn't dump an onboarded user back into the

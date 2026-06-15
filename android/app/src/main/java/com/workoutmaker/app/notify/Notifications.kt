@@ -16,6 +16,7 @@ import androidx.core.app.NotificationCompat
 object Notifications {
     const val CH_TIMER = "rest_timer"
     const val CH_REMINDERS = "reminders"
+    const val CH_WORKOUT = "active_workout"
     const val ID_REST_OVER = 2001
 
     fun ensureChannels(ctx: Context) {
@@ -37,6 +38,14 @@ object Notifications {
         nm.createNotificationChannel(
             NotificationChannel(CH_REMINDERS, "Reminders", NotificationManager.IMPORTANCE_DEFAULT).apply {
                 description = "Daily check-in and workout reminders"
+            },
+        )
+        // Silent, ongoing channel for the live "workout in progress" notification.
+        nm.createNotificationChannel(
+            NotificationChannel(CH_WORKOUT, "Active workout", NotificationManager.IMPORTANCE_LOW).apply {
+                description = "Keeps your session alive with a live timer while you train"
+                setSound(null, null)
+                enableVibration(false)
             },
         )
     }
