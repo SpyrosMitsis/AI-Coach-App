@@ -572,13 +572,19 @@ class StrengthViewModel @Inject constructor(
     fun setRest(ux: UiExercise, sec: Int) { ux.restSec = sec.coerceAtLeast(0); persistSession() }
 
     fun toggleDone(ux: UiExercise, s: UiSet) {
-        s.done = !s.done
-        if (s.done) {
-            // One-tap accept: bake in any suggestion the user didn't override.
-            if (s.weight.isBlank() && s.suggestedWeight.isNotBlank()) s.weight = s.suggestedWeight
-            if (s.reps.isBlank() && s.suggestedReps.isNotBlank()) s.reps = s.suggestedReps
+        if (!s.done) {
+            // A greyed suggestion is NOT a logged value: require real entered
+            // weight & reps (typed, or tapped in from "PREV") before a set can
+            // count as done — otherwise it'd save as 0×0.
+            val needsWeight = !ux.isCardio && !s.warmup
+            if (s.reps.isBlank() || (needsWeight && s.weight.isBlank())) {
+                status.value = if (ux.isCardio) "Enter minutes before ticking the set"
+                    else "Enter weight and reps before ticking the set"
+                return
+            }
             if (!s.warmup && ux.restSec > 0) startRest(ux.restSec)
         }
+        s.done = !s.done
         persistSession()
     }
 

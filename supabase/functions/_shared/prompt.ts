@@ -274,13 +274,22 @@ interface StrengthContext {
   goal: string;
   soreness: number;
   phase: string;
-  mainLifts: { exercise: string; estimated1rm: number; lastWeight: number }[];
+  mainLifts: {
+    exercise: string;
+    estimated1rm: number;
+    lastWeight: number;
+    lastReps?: number;
+    lastSets?: number;
+  }[];
   durationNote: string;
 }
 
 export function buildStrengthPrompt(c: StrengthContext): string {
   const lifts = c.mainLifts.length
-    ? c.mainLifts.map((l) => `${l.exercise}: last ${l.lastWeight}kg, est 1RM ${l.estimated1rm.toFixed(0)}kg`).join("; ")
+    ? c.mainLifts.map((l) =>
+      `${l.exercise}: last top set ${l.lastWeight}kg×${l.lastReps ?? "?"}` +
+      `${l.lastSets ? ` (${l.lastSets} sets)` : ""}, est 1RM ${l.estimated1rm.toFixed(0)}kg`
+    ).join("; ")
     : "no recent logs (use experience-appropriate starting loads, conservative)";
   const vol = Object.entries(c.weeklySetsByMuscle).map(([m, s]) => `${m} ${s}`).join(", ") || "none logged";
   const repGuide = /strength|power/i.test(c.goal)
@@ -299,8 +308,15 @@ ATHLETE CONTEXT
 - Muscle groups trained in last 48h (DO NOT load these hard — recovery): ${c.muscleGroupsLast48h.length ? c.muscleGroupsLast48h.join(", ") : "none"}
 - Weekly hard sets per muscle so far: ${vol} (target ~10-20/muscle/week; back off if a muscle is already high or soreness is high)
 - Current soreness (1-5): ${c.soreness}
-- Working weights / main lifts: ${lifts}
+- Working weights / main lifts (the athlete's most recent TOP set per exercise): ${lifts}
 - Session length: ${c.durationNote}
+
+PROGRESSIVE OVERLOAD (critical): for any exercise the athlete has logged above,
+prescribe a load and rep target that meets OR beats their last top set — never
+program below it unless soreness is high or that muscle was trained in the last
+48h. Default progression is a small load bump (~2.5kg) at the same reps, or +1-2
+reps at the same load. Prescribe the actual working weight in "weight_kg" (kg),
+not a back-off or warm-up load.
 
 Program loads as %1RM where known, compounds first, with explicit target RIR in
 each exercise's notes. Respect 48h muscle recovery and weekly volume landmarks.

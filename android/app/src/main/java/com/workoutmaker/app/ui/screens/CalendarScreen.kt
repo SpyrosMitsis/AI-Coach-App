@@ -320,7 +320,11 @@ fun CalendarScreen(vm: CalendarViewModel = hiltViewModel(), onOpenStrength: () -
                             }
                         }
                         WorkoutDetail(w.workout_json)
-                        if (w.type != "rest") {
+                        if (w.type == "rest") {
+                            // A rest day needs no action — show it as already
+                            // handled so the day reads as "done" at a glance.
+                            Text("✓ Rest day — recovery is the plan", style = MaterialTheme.typography.labelMedium, color = Sage)
+                        } else {
                             if (w.completed) {
                                 Row(verticalAlignment = Alignment.CenterVertically) {
                                     Text("✓ Completed", style = MaterialTheme.typography.labelMedium, color = Sage)

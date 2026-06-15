@@ -38,7 +38,12 @@ import {
 } from "../_shared/context.ts";
 import { computeRecovery } from "../_shared/recovery.ts";
 import { llmAccess } from "../_shared/llm_keys.ts";
-import { exerciseCatalogBlock, registerUnknownExercises } from "../_shared/exercise_catalog.ts";
+import {
+  canonicalizeStrengthExercises,
+  customExercises,
+  exerciseCatalogBlock,
+  registerUnknownExercises,
+} from "../_shared/exercise_catalog.ts";
 
 const DAY = 86_400_000;
 const daysBetween = (a: string, b: Date) => Math.floor((b.getTime() - new Date(a).getTime()) / DAY);
@@ -212,11 +217,21 @@ Deno.serve(async (req) => {
         .slice(0, 5)
         .map((r) => {
           const sets = Array.isArray(r.sets) ? r.sets : [];
-          const lastWeight = sets.length ? Number(sets[sets.length - 1]?.weight_kg ?? 0) : 0;
+          // The athlete's TOP working set last time (heaviest), so the model
+          // progresses from real performance instead of a back-off set.
+          const top = sets.reduce(
+            (best: { w: number; reps: number }, s: { weight_kg?: number; reps?: number }) => {
+              const w = Number(s?.weight_kg ?? 0);
+              return w > best.w ? { w, reps: Number(s?.reps ?? 0) } : best;
+            },
+            { w: 0, reps: 0 },
+          );
           return {
             exercise: r.exercise_name,
-            estimated1rm: r.estimated_1rm ?? lastWeight,
-            lastWeight,
+            estimated1rm: r.estimated_1rm ?? top.w,
+            lastWeight: top.w,
+            lastReps: top.reps,
+            lastSets: sets.length,
           };
         });
 
@@ -403,6 +418,13 @@ Return the revised workout as JSON only, same schema.`;
         error: parseError,
       });
       return json({ error: "could not parse workout", detail: parseError, raw: outcome.text }, 422);
+    }
+
+    // 8c. snap reworded strength names onto the loggable catalog (e.g. "Machine
+    // Lat Pulldown" → "Lat Pulldown") BEFORE saving, so the client gets catalog-
+    // exact names and only truly-new exercises become customs.
+    if (validated.type === "strength") {
+      canonicalizeStrengthExercises(validated, await customExercises(admin, userId));
     }
 
     // 9. persist planned workout + log -------------------------------------

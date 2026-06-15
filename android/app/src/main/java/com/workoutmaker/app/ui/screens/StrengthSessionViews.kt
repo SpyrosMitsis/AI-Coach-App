@@ -467,10 +467,20 @@ internal fun SetRow(
                     fontWeight = FontWeight.Bold,
                 )
             }
+            // Tap a previous result to copy it straight into this set's fields.
             Text(
                 prev?.let { if (cardio) "${it.reps} min" else "${it.weightKg.toInt()}×${it.reps}" } ?: "—",
-                Modifier.width(64.dp), style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant, textAlign = TextAlign.Center,
+                Modifier.width(64.dp)
+                    .then(
+                        if (prev != null) Modifier.clickable {
+                            if (!cardio) s.weight = trimKg(prev.weightKg)
+                            s.reps = prev.reps.toString()
+                            onEdit()
+                        } else Modifier,
+                    ),
+                style = MaterialTheme.typography.bodySmall,
+                color = if (prev != null) Sage else MaterialTheme.colorScheme.onSurfaceVariant,
+                textAlign = TextAlign.Center,
             )
             if (cardio) {
                 // Minutes live in the reps slot; no load to enter.

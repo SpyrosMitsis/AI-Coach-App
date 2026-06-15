@@ -139,6 +139,52 @@ export const CATEGORIES = [
 const normName = (s: string) => s.toLowerCase().replace(/[^a-z0-9]/g, "");
 const catalogByNorm = new Map(EXERCISE_CATALOG.map((e) => [normName(e.name), e]));
 
+// Fuzzy form: drop equipment/grip qualifier words so an invented name like
+// "Machine Lat Pulldown" / "Cable Lat Pulldown" collapses onto the catalog's
+// "Lat Pulldown". Equipment words DO distinguish real catalog entries (Barbell
+// Row vs Dumbbell Row), so a fuzzy key is only usable for snapping when exactly
+// ONE catalog entry maps to it — ambiguous keys are dropped below.
+const QUALIFIER = /\b(machine|cable|barbell|dumbbell|db|smith|seated|standing|bench|lying|kneeling|assisted|weighted|wide|close|narrow|neutral|grip|single|onearm|one|alternating|alt)\b/g;
+const fuzzName = (s: string) =>
+  normName(s.toLowerCase().replace(/[-_]/g, " ").replace(QUALIFIER, " "));
+const fuzzCount = new Map<string, number>();
+for (const e of EXERCISE_CATALOG) fuzzCount.set(fuzzName(e.name), (fuzzCount.get(fuzzName(e.name)) ?? 0) + 1);
+const catalogByFuzz = new Map<string, CatalogExercise>();
+for (const e of EXERCISE_CATALOG) {
+  const f = fuzzName(e.name);
+  if (f && fuzzCount.get(f) === 1) catalogByFuzz.set(f, e);
+}
+
+/**
+ * Snap each strength exercise the model named to a loggable catalog entry when
+ * it's clearly a re-worded duplicate (e.g. "Machine Lat Pulldown" → "Lat
+ * Pulldown"), copying the catalog's correct metadata. Genuinely new exercises
+ * are left as-is for registerUnknownExercises to record as deletable customs.
+ * Mutates the workout in place. Best-effort.
+ */
+export function canonicalizeStrengthExercises(
+  workout: Workout,
+  custom: CatalogExercise[],
+): void {
+  if (workout.type !== "strength") return;
+  const customNorms = new Set(custom.map((c) => normName(c.name)));
+  for (const sec of workout.sections ?? []) {
+    for (const ex of sec.exercises ?? []) {
+      const n = normName(ex.name);
+      if (!n || catalogByNorm.has(n) || customNorms.has(n)) continue; // already loggable
+      const match = catalogByFuzz.get(fuzzName(ex.name));
+      if (match) {
+        ex.name = match.name;
+        // Replace any stray AI metadata with the catalog's canonical values.
+        const m = ex as { muscle?: string; category?: string; compound?: boolean };
+        m.muscle = match.muscle;
+        m.category = match.category;
+        m.compound = match.compound;
+      }
+    }
+  }
+}
+
 /** The athlete's custom exercises (best-effort; empty on any failure). */
 export async function customExercises(
   admin: SupabaseClient,
