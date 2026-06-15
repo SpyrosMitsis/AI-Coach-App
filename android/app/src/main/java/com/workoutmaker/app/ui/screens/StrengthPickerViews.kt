@@ -104,6 +104,8 @@ import com.workoutmaker.app.strength.StrengthProgram
 import com.workoutmaker.app.strength.WeeklyReport
 import com.workoutmaker.app.ui.collectAsStateSafe
 import com.workoutmaker.app.ui.components.ChipRow
+import com.workoutmaker.app.ui.components.chartLabel
+import com.workoutmaker.app.ui.components.hGridLine
 import com.workoutmaker.app.ui.components.EmptyState
 import com.workoutmaker.app.ui.components.GhostButton
 import com.workoutmaker.app.ui.components.InsetStat
@@ -297,7 +299,7 @@ internal fun ExerciseStatsView(vm: StrengthViewModel, exercise: String) {
                         else -> it.e1rm
                     }
                 }
-                MetricChart(series)
+                MetricChart(series, unit = if (metric == "Volume") "kg vol" else "kg")
                 Text(
                     "${s.points.size} sessions · latest ${series.lastOrNull()?.toInt() ?: 0}" +
                         if (metric == "Volume") " kg vol" else " kg",
@@ -339,7 +341,7 @@ internal fun Pr(label: String, value: String) {
 }
 
 @Composable
-internal fun MetricChart(values: List<Double>) {
+internal fun MetricChart(values: List<Double>, unit: String = "kg") {
     if (values.isEmpty()) {
         Text("Not enough data yet.", style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant)
@@ -352,9 +354,13 @@ internal fun MetricChart(values: List<Double>) {
         val pad = 8f
         val h = size.height - pad * 2
         fun yOf(v: Double) = pad + (h - ((v - minV) / span * h)).toFloat()
-        // baseline
+        // Value scale: top/mid/bottom with the unit so the line means something.
+        hGridLine(yOf(minV + span / 2))
         drawLine(Sage.copy(alpha = 0.25f), androidx.compose.ui.geometry.Offset(0f, size.height - pad),
             androidx.compose.ui.geometry.Offset(size.width, size.height - pad), strokeWidth = 2f)
+        chartLabel("${maxV.toInt()} $unit", 4f, yOf(maxV) + 12.sp.toPx())
+        chartLabel("${(minV + span / 2).toInt()}", 4f, yOf(minV + span / 2) - 4f)
+        chartLabel("${minV.toInt()}", 4f, size.height - pad - 4f)
         if (values.size < 2) {
             drawCircle(Sage, radius = 7f, center = androidx.compose.ui.geometry.Offset(size.width / 2, yOf(values.first())))
             return@Canvas
@@ -368,5 +374,9 @@ internal fun MetricChart(values: List<Double>) {
         }
         drawPath(path, Sage, style = androidx.compose.ui.graphics.drawscope.Stroke(width = 5f))
         values.forEachIndexed { i, v -> drawCircle(Sage, radius = 4f, center = androidx.compose.ui.geometry.Offset(stepX * i, yOf(v))) }
+        // Latest value tagged at the line's end.
+        chartLabel(
+            "${values.last().toInt()}", size.width - 8f, yOf(values.last()) - 8f, alignRight = true, color = Sage,
+        )
     }
 }

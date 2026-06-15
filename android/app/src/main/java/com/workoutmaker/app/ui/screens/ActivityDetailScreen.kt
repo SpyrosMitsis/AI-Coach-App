@@ -55,6 +55,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
@@ -65,6 +66,8 @@ import com.workoutmaker.app.data.WorkoutTemplate
 import com.workoutmaker.app.ui.collectAsStateSafe
 import com.workoutmaker.app.data.CompletedActivity
 import com.workoutmaker.app.ui.components.ChipRow
+import com.workoutmaker.app.ui.components.chartLabel
+import com.workoutmaker.app.ui.components.hGridLine
 import com.workoutmaker.app.ui.components.GhostButton
 import com.workoutmaker.app.ui.components.InsetStat
 import com.workoutmaker.app.ui.components.ScreenScaffold
@@ -385,9 +388,15 @@ private fun PaceChart(
                 size = androidx.compose.ui.geometry.Size(w, (bottom - top).coerceAtLeast(2f)),
             )
         }
+        // Pace scale (min/km): fastest at the top, slowest at the bottom.
+        chartLabel(
+            "${com.workoutmaker.app.data.Zones.formatPace(lo.toInt().coerceAtLeast(0))} /km", 4f, 13.sp.toPx())
+        chartLabel(
+            "${com.workoutmaker.app.data.Zones.formatPace(hi.toInt())} /km", 4f, h - 4f)
         val n = series.t.size
         if (n < 2) return@Canvas
         val tMax = series.t.last().coerceAtLeast(1.0)
+        chartLabel("${(tMax / 60).toInt()} min", w - 4f, h - 4f, alignRight = true)
         var pen: androidx.compose.ui.geometry.Offset? = null
         for (i in 0 until n) {
             val p = series.pace.getOrNull(i)
@@ -424,9 +433,13 @@ private fun HrChart(
                 size = androidx.compose.ui.geometry.Size(w, (bottom - top).coerceAtLeast(2f)),
             )
         }
+        // HR scale (bpm), highest at the top.
+        chartLabel("${hi.toInt()} bpm", 4f, 13.sp.toPx())
+        chartLabel("${lo.toInt()}", 4f, h - 4f)
         val n = series.t.size
         if (n < 2) return@Canvas
         val tMax = series.t.last().coerceAtLeast(1.0)
+        chartLabel("${(tMax / 60).toInt()} min", w - 4f, h - 4f, alignRight = true)
         var pen: androidx.compose.ui.geometry.Offset? = null
         for (i in 0 until n) {
             val v = series.hr.getOrNull(i)

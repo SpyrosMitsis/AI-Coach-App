@@ -233,6 +233,14 @@ class WorkoutRepository @Inject constructor(
         supabase.postgrest.from("wellness_checkins").upsert(checkin, onConflict = "user_id,date")
     }
 
+    // Today's subjective check-in (energy/soreness/sleep quality), if answered.
+    // The row may exist with only Health Connect metrics — energy == null means
+    // the morning questions haven't been answered yet.
+    suspend fun wellnessCheckin(date: String): WellnessCheckin? =
+        supabase.postgrest.from("wellness_checkins").select {
+            filter { eq("date", date) }
+        }.decodeList<WellnessCheckin>().firstOrNull()
+
     // Persist a Health Connect snapshot onto today's wellness row.
     suspend fun submitHealthSnapshot(snap: com.workoutmaker.app.health.HealthSnapshot) {
         submitHealthSnapshots(listOf(snap))

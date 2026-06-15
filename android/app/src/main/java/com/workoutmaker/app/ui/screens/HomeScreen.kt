@@ -42,6 +42,8 @@ import com.workoutmaker.app.data.Workout
 import com.workoutmaker.app.data.WorkoutRepository
 import com.workoutmaker.app.ui.collectAsStateSafe
 import com.workoutmaker.app.ui.components.ChipRow
+import com.workoutmaker.app.ui.components.chartLabel
+import com.workoutmaker.app.ui.components.hGridLine
 import com.workoutmaker.app.ui.components.GhostButton
 import com.workoutmaker.app.ui.components.InfoIcon
 import com.workoutmaker.app.ui.components.InsetStat
@@ -72,6 +74,11 @@ class HomeViewModel @Inject constructor(
     val lastSyncAt = MutableStateFlow<Long?>(null)
     val offline = MutableStateFlow(false)
 
+    // Today's wellness check-in (null until loaded; energy == null → unanswered).
+    val wellnessToday = MutableStateFlow<com.workoutmaker.app.data.WellnessCheckin?>(null)
+    val wellnessLoaded = MutableStateFlow(false)
+    val wellnessBusy = MutableStateFlow(false)
+
     fun load() = viewModelScope.launch {
         loading.value = true
         runCatching { repo.dailySummary() }
@@ -92,8 +99,22 @@ class HomeViewModel @Inject constructor(
                 }
                 offline.value = summary.value != null
             }
+        runCatching { repo.wellnessCheckin(java.time.LocalDate.now().toString()) }
+            .onSuccess { wellnessToday.value = it; wellnessLoaded.value = true }
         runCatching { repo.intervalsStats() }.onSuccess { fitness.value = it }
         loading.value = false
+    }
+
+    fun saveWellness(energy: Int, soreness: Int, sleepQuality: Int) = viewModelScope.launch {
+        wellnessBusy.value = true
+        val checkin = com.workoutmaker.app.data.WellnessCheckin(
+            date = java.time.LocalDate.now().toString(),
+            energy = energy, soreness = soreness, sleep_quality = sleepQuality,
+        )
+        runCatching { repo.upsertWellness(checkin) }
+            .onSuccess { wellnessToday.value = checkin; load() } // readiness uses it
+            .onFailure { error.value = it.message }
+        wellnessBusy.value = false
     }
 
     val adjusting = MutableStateFlow(false)
@@ -183,6 +204,9 @@ fun HomeScreen(vm: HomeViewModel = hiltViewModel()) {
     val adjusting by vm.adjusting.collectAsStateSafe()
     val feedbackStatus by vm.feedbackStatus.collectAsStateSafe()
     val error by vm.error.collectAsStateSafe()
+    val wellnessToday by vm.wellnessToday.collectAsStateSafe()
+    val wellnessLoaded by vm.wellnessLoaded.collectAsStateSafe()
+    val wellnessBusy by vm.wellnessBusy.collectAsStateSafe()
 
     // Reload on every resume (delivered once on first composition too) so a
     // dashboard left open overnight doesn't keep showing yesterday's workout.
@@ -193,6 +217,22 @@ fun HomeScreen(vm: HomeViewModel = hiltViewModel()) {
         }
         lifecycleOwner.lifecycle.addObserver(obs)
         onDispose { lifecycleOwner.lifecycle.removeObserver(obs) }
+    }
+
+    // Ask once for notification permission (Android 13+) — without it the
+    // morning check-in and evening feedback reminders can never appear.
+    val context = androidx.compose.ui.platform.LocalContext.current
+    val notifLauncher = androidx.activity.compose.rememberLauncherForActivityResult(
+        androidx.activity.result.contract.ActivityResultContracts.RequestPermission(),
+    ) { /* reminders simply stay silent if denied */ }
+    LaunchedEffect(Unit) {
+        if (android.os.Build.VERSION.SDK_INT >= 33 &&
+            androidx.core.content.ContextCompat.checkSelfPermission(
+                context, android.Manifest.permission.POST_NOTIFICATIONS,
+            ) != android.content.pm.PackageManager.PERMISSION_GRANTED
+        ) {
+            notifLauncher.launch(android.Manifest.permission.POST_NOTIFICATIONS)
+        }
     }
 
     // Ask for coarse location only when first generating (for weather); proceed
@@ -314,6 +354,13 @@ fun HomeScreen(vm: HomeViewModel = hiltViewModel()) {
             SectionLabel("AI · ${s.active_llm_provider}", color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
 
+        // Daily wellness check-in — shown only once today's is still unanswered
+        // (energy == null). The morning reminder fires after Health Connect sees
+        // you woke up; this is where you actually log it.
+        if (wellnessLoaded && wellnessToday?.energy == null) {
+            WellnessCheckinCard(mod, busy = wellnessBusy) { e, sore, sleep -> vm.saveWellness(e, sore, sleep) }
+        }
+
         s.goal?.let { g -> GoalCard(mod, g) }
 
         SectionCard(mod, title = "Today's Workout") {
@@ -403,6 +450,64 @@ fun HomeScreen(vm: HomeViewModel = hiltViewModel()) {
         }
 
         fitness?.let { f -> FitnessSection(mod, f) }
+    }
+}
+
+// Morning wellness check-in: three 1–5 scales (energy, soreness, sleep quality)
+// that feed today's readiness score. Appears only when today is unanswered.
+@Composable
+private fun WellnessCheckinCard(mod: Modifier, busy: Boolean, onSave: (Int, Int, Int) -> Unit) {
+    var energy by remember { mutableStateOf<Int?>(null) }
+    var soreness by remember { mutableStateOf<Int?>(null) }
+    var sleep by remember { mutableStateOf<Int?>(null) }
+    SectionCard(mod, title = "How do you feel today?") {
+        Text(
+            "A quick morning check tunes today's readiness and training.",
+            style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        WellnessScale("Energy", "drained", "fresh", energy) { energy = it }
+        WellnessScale("Soreness", "none", "very sore", soreness) { soreness = it }
+        WellnessScale("Sleep quality", "poor", "great", sleep) { sleep = it }
+        Button(
+            onClick = { onSave(energy ?: 3, soreness ?: 3, sleep ?: 3) },
+            enabled = !busy && (energy != null || soreness != null || sleep != null),
+            modifier = Modifier.fillMaxWidth(),
+        ) { Text(if (busy) "Saving…" else "Save check-in") }
+    }
+}
+
+// One 1–5 row: label, low/high anchor words, and five tap targets.
+@Composable
+private fun WellnessScale(label: String, low: String, high: String, selected: Int?, onSelect: (Int) -> Unit) {
+    Column(Modifier.padding(top = 8.dp)) {
+        Text(label, style = MaterialTheme.typography.labelLarge)
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+            (1..5).forEach { n ->
+                val active = selected == n
+                Box(
+                    Modifier
+                        .weight(1f)
+                        .size(width = 0.dp, height = 40.dp)
+                        .background(
+                            if (active) MaterialTheme.colorScheme.primary
+                            else MaterialTheme.colorScheme.surfaceContainerHigh,
+                            androidx.compose.foundation.shape.RoundedCornerShape(8.dp),
+                        )
+                        .clickable { onSelect(n) },
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Text(
+                        "$n",
+                        color = if (active) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurface,
+                        fontSize = 15.sp,
+                    )
+                }
+            }
+        }
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+            Text(low, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Text(high, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        }
     }
 }
 
@@ -542,15 +647,24 @@ private fun FitnessChart(points: List<com.workoutmaker.app.data.FitnessPoint>, m
     val ctlColor = com.workoutmaker.app.ui.theme.Sage
     val atlColor = com.workoutmaker.app.ui.theme.Sand
     val grid = Color(0xFF333535)
-    androidx.compose.foundation.Canvas(modifier.size(width = 0.dp, height = 140.dp).fillMaxWidth()) {
+    val last = points.last()
+    androidx.compose.foundation.Canvas(modifier.size(width = 0.dp, height = 150.dp).fillMaxWidth()) {
         val maxV = (points.maxOf { maxOf(it.ctl, it.atl) }).coerceAtLeast(1.0)
         val w = size.width
-        val h = size.height
+        val labelPad = 14.sp.toPx() // reserved at the bottom for the date axis
+        val h = size.height - labelPad
         val stepX = if (points.size > 1) w / (points.size - 1) else w
         fun y(v: Double) = h - (v / maxV * h).toFloat()
 
-        // baseline grid
+        // Value scale: gridlines + numbers at max / half / 0 (TSS/day load).
+        hGridLine(y(maxV / 2))
         drawLine(grid, androidx.compose.ui.geometry.Offset(0f, h), androidx.compose.ui.geometry.Offset(w, h), strokeWidth = 2f)
+        chartLabel("${maxV.toInt()} TSS/d", 4f, y(maxV) + 11.sp.toPx())
+        chartLabel("${(maxV / 2).toInt()}", 4f, y(maxV / 2) - 4f)
+        chartLabel("0", 4f, h - 4f)
+        // Date range on the x axis (MM-DD).
+        chartLabel(points.first().date.takeLast(5), 0f, size.height - 2f)
+        chartLabel(last.date.takeLast(5), w, size.height - 2f, alignRight = true)
 
         fun line(sel: (com.workoutmaker.app.data.FitnessPoint) -> Double, color: Color) {
             val path = androidx.compose.ui.graphics.Path()
@@ -563,6 +677,9 @@ private fun FitnessChart(points: List<com.workoutmaker.app.data.FitnessPoint>, m
         }
         line({ it.atl }, atlColor)
         line({ it.ctl }, ctlColor)
+        // Current values at the line ends, in their own colors.
+        chartLabel("%.0f".format(last.ctl), w, y(last.ctl) - 6f, alignRight = true, color = ctlColor)
+        chartLabel("%.0f".format(last.atl), w, y(last.atl) + 13.sp.toPx(), alignRight = true, color = atlColor)
     }
 }
 

@@ -152,6 +152,11 @@ private fun MainScaffold() {
             composable("history") {
                 WorkoutHistoryScreen(
                     onBack = { nav.popBackStack() },
+                    // Use the SAME navigation as the (working) Calendar "Log this
+                    // session" handoff: tab-navigate to Strength and pop anything
+                    // above it. A bare popBackStack() surfaced a stale Strength
+                    // composition that never reflected the VM's edit state, so the
+                    // logger appeared to "bounce back" until an app restart.
                     onEditInLogger = openStrengthLogger,
                 )
             }

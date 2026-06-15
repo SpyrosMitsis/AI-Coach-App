@@ -1,65 +1,114 @@
 package com.workoutmaker.app.work
 
 import android.Manifest
-import android.app.NotificationChannel
-import android.app.NotificationManager
 import android.content.Context
+import android.content.Intent
 import android.content.pm.PackageManager
 import androidx.core.app.ActivityCompat
 import androidx.core.app.NotificationCompat
 import androidx.core.app.NotificationManagerCompat
 import androidx.hilt.work.HiltWorker
+import androidx.work.BackoffPolicy
 import androidx.work.CoroutineWorker
 import androidx.work.ExistingPeriodicWorkPolicy
 import androidx.work.PeriodicWorkRequestBuilder
 import androidx.work.WorkManager
 import androidx.work.WorkerParameters
+import com.workoutmaker.app.data.WorkoutRepository
+import com.workoutmaker.app.health.HealthConnectManager
+import com.workoutmaker.app.notify.Notifications
 import dagger.assisted.Assisted
 import dagger.assisted.AssistedInject
+import java.time.LocalDate
+import java.time.LocalTime
+import java.time.ZoneId
 import java.util.Calendar
 import java.util.concurrent.TimeUnit
 
-private const val CHANNEL_ID = "checkin"
-
-// Daily morning prompt to complete the wellness check-in.
+// Daily wellness check-in prompt, timed to the athlete's actual WAKE-UP:
+// the worker starts at 06:00 and keeps retrying (30-min backoff) until last
+// night's sleep session (Health Connect) shows the user is awake — falling
+// back to a fixed time when there's no sleep data/permission. Skipped
+// entirely once today's check-in is answered.
 @HiltWorker
 class CheckinReminderWorker @AssistedInject constructor(
     @Assisted appContext: Context,
     @Assisted params: WorkerParameters,
+    private val repo: WorkoutRepository,
+    private val health: HealthConnectManager,
 ) : CoroutineWorker(appContext, params) {
 
     override suspend fun doWork(): Result {
-        val nm = applicationContext.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
-        nm.createNotificationChannel(
-            NotificationChannel(CHANNEL_ID, "Check-in reminders", NotificationManager.IMPORTANCE_DEFAULT),
-        )
-        val notification = NotificationCompat.Builder(applicationContext, CHANNEL_ID)
+        // Not signed in → nothing to ask.
+        if (repo.auth.currentUserOrNull() == null) return Result.success()
+
+        val today = LocalDate.now()
+        // Already answered today (energy is the subjective marker) → stay quiet.
+        val answered = runCatching {
+            repo.wellnessCheckin(today.toString())?.energy != null
+        }.getOrDefault(false)
+        if (answered) return Result.success()
+
+        val now = LocalTime.now()
+        // Sleep-based timing: wait until last night's sleep session has ENDED
+        // today (i.e. the user is up). Background reads can be restricted, so
+        // any failure falls back to the fixed-time path.
+        val sleepEnd = health.lastSleepEnd()
+        val wokeToday = sleepEnd != null &&
+            sleepEnd.atZone(ZoneId.systemDefault()).toLocalDate() == today
+
+        val fireNow = when {
+            wokeToday -> true
+            // No wake recorded yet: still asleep, or the watch hasn't synced.
+            // Retry every ~30 min until the 9:30 fallback.
+            sleepEnd != null || health.isAvailable -> now >= LocalTime.of(9, 30)
+            // No Health Connect at all: plain 7:30 reminder.
+            else -> now >= LocalTime.of(7, 30)
+        }
+        if (!fireNow) return Result.retry()
+
+        showReminder()
+        return Result.success()
+    }
+
+    private fun showReminder() {
+        if (ActivityCompat.checkSelfPermission(applicationContext, Manifest.permission.POST_NOTIFICATIONS)
+            != PackageManager.PERMISSION_GRANTED
+        ) return
+        val launch = applicationContext.packageManager
+            .getLaunchIntentForPackage(applicationContext.packageName)
+            ?.apply { addFlags(Intent.FLAG_ACTIVITY_NEW_TASK) }
+        val pi = launch?.let {
+            android.app.PendingIntent.getActivity(
+                applicationContext, 1, it,
+                android.app.PendingIntent.FLAG_IMMUTABLE or android.app.PendingIntent.FLAG_UPDATE_CURRENT,
+            )
+        }
+        val n = NotificationCompat.Builder(applicationContext, Notifications.CH_REMINDERS)
             .setContentTitle("Good morning ☀️")
-            .setContentText("How do you feel today? Tap to log energy, soreness & sleep.")
+            .setContentText("How do you feel today? Tap to log energy, soreness & sleep — it tunes today's training.")
             .setSmallIcon(android.R.drawable.ic_dialog_info)
+            .setContentIntent(pi)
             .setAutoCancel(true)
             .build()
-        if (ActivityCompat.checkSelfPermission(applicationContext, Manifest.permission.POST_NOTIFICATIONS)
-            == PackageManager.PERMISSION_GRANTED
-        ) {
-            NotificationManagerCompat.from(applicationContext).notify(1001, notification)
-        }
-        return Result.success()
+        NotificationManagerCompat.from(applicationContext).notify(1001, n)
     }
 }
 
 object CheckinReminderScheduler {
     fun schedule(context: Context) {
-        // Fire at the next 7:00 local time, then daily.
+        // Start checking at the next 06:00 local; the worker retries itself
+        // (30-min linear backoff) until the user is actually awake.
         val now = Calendar.getInstance()
         val target = Calendar.getInstance().apply {
-            set(Calendar.HOUR_OF_DAY, 7); set(Calendar.MINUTE, 0); set(Calendar.SECOND, 0)
+            set(Calendar.HOUR_OF_DAY, 6); set(Calendar.MINUTE, 0); set(Calendar.SECOND, 0)
             if (before(now)) add(Calendar.DAY_OF_MONTH, 1)
         }
         val initialDelay = target.timeInMillis - now.timeInMillis
 
         val request = PeriodicWorkRequestBuilder<CheckinReminderWorker>(1, TimeUnit.DAYS)
             .setInitialDelay(initialDelay, TimeUnit.MILLISECONDS)
+            .setBackoffCriteria(BackoffPolicy.LINEAR, 30, TimeUnit.MINUTES)
             .build()
 
         WorkManager.getInstance(context).enqueueUniquePeriodicWork(

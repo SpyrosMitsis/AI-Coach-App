@@ -66,6 +66,15 @@ class HealthConnectManager @Inject constructor(
         runCatching { client.permissionController.getGrantedPermissions().intersect(permissions) }
             .getOrDefault(emptySet())
 
+    /** When the most recent sleep session (last ~36h) ended — i.e. when the
+     *  user woke up. Null when there's no data or no permission. */
+    suspend fun lastSleepEnd(): Instant? = runCatching {
+        val now = Instant.now()
+        val window = TimeRangeFilter.between(now.minus(Duration.ofHours(36)), now)
+        client.readRecords(ReadRecordsRequest(SleepSessionRecord::class, window))
+            .records.maxByOrNull { it.endTime }?.endTime
+    }.getOrNull()
+
     /**
      * Read the most recent ~36h of metrics and reduce to today's snapshot:
      * latest HRV rmssd & resting HR, last night's sleep duration, today's steps.
