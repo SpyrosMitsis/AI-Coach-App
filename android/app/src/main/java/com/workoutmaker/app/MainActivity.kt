@@ -152,12 +152,16 @@ private fun MainScaffold() {
             composable("history") {
                 WorkoutHistoryScreen(
                     onBack = { nav.popBackStack() },
-                    // Use the SAME navigation as the (working) Calendar "Log this
-                    // session" handoff: tab-navigate to Strength and pop anything
-                    // above it. A bare popBackStack() surfaced a stale Strength
-                    // composition that never reflected the VM's edit state, so the
-                    // logger appeared to "bounce back" until an app restart.
-                    onEditInLogger = openStrengthLogger,
+                    // History sits directly ON TOP of the Strength tab, so the live
+                    // StrengthViewModel — which the edit handoff has just switched
+                    // into edit mode (nav = Active) — is still on the back stack.
+                    // Pop straight back to it. Do NOT reuse the cross-tab
+                    // openStrengthLogger here: its popUpTo(saveState)+restoreState
+                    // recreates the StrengthViewModel, discarding that in-memory
+                    // edit state, so the app bounced back to the Home tab and the
+                    // edit only reappeared after a force-close (from the persisted
+                    // active_session.json).
+                    onEditInLogger = { nav.popBackStack("strength", false) },
                 )
             }
             composable("settings") { SettingsScreen() }
