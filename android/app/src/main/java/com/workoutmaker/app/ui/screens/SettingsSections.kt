@@ -628,12 +628,14 @@ internal fun ProviderCard(mod: Modifier, provider: LlmProvider, vm: SettingsView
             visualTransformation = PasswordVisualTransformation(), singleLine = true, modifier = Modifier.fillMaxWidth(),
         )
         // Custom needs a base URL + model id too; others just need the key.
-        val canTest = key.isNotBlank() && (!isCustom || (baseUrl.isNotBlank() && modelId.isNotBlank()))
+        val testing by vm.testing.collectAsStateSafe()
+        val busy = testing == provider.key
+        val canTest = !busy && key.isNotBlank() && (!isCustom || (baseUrl.isNotBlank() && modelId.isNotBlank()))
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             Button(
                 onClick = { vm.testKey(provider, key, false, baseUrl.takeIf { isCustom }, modelId.takeIf { isCustom }) },
                 enabled = canTest,
-            ) { Text("Save & Test") }
+            ) { Text(if (busy) "Testing…" else "Save & Test") }
             OutlinedButton(
                 onClick = { vm.testKey(provider, key, true, baseUrl.takeIf { isCustom }, modelId.takeIf { isCustom }) },
                 enabled = canTest,

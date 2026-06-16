@@ -345,6 +345,9 @@ class SettingsViewModel @Inject constructor(
         viewModelScope.launch { runCatching { repo.setActiveProvider(p) } }
     }
 
+    // Which provider key is currently being tested (drives the button spinner).
+    val testing = MutableStateFlow<String?>(null)
+
     fun testKey(
         p: LlmProvider,
         key: String,
@@ -352,11 +355,21 @@ class SettingsViewModel @Inject constructor(
         baseUrl: String? = null,
         model: String? = null,
     ) = viewModelScope.launch {
+        testing.value = p.key
         runCatching {
             repo.testLlmKey(
                 TestKeyRequest(p.key, key, sample, baseUrl = baseUrl?.trim()?.ifBlank { null }, model = model?.trim()?.ifBlank { null }),
             )
         }
+            .onFailure {
+                // Surface the failure instead of silently doing nothing — most
+                // commonly the function returned an error (e.g. endpoint
+                // unreachable from the server, or DB migration not yet applied).
+                results[p.key] = com.workoutmaker.app.data.TestKeyResponse(
+                    provider = p.key, model = model ?: p.model, is_valid = false,
+                    error = it.message ?: "request failed",
+                )
+            }
             .onSuccess {
                 results[p.key] = it
                 // For the custom provider the model id lives in the per-provider
@@ -370,6 +383,7 @@ class SettingsViewModel @Inject constructor(
                 // Refresh the saved-key rows so the masked hint + base URL appear.
                 runCatching { repo.llmKeyRows() }.onSuccess { rows -> llmKeys.value = rows.associateBy { r -> r.provider } }
             }
+        testing.value = null
     }
 
     fun signOut() = viewModelScope.launch { repo.signOut() }
