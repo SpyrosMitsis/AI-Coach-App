@@ -66,12 +66,22 @@ Deno.serve(async (req) => {
     let hcHrv: number[] = [];
     let hcRhr: number[] = [];
     {
+      // sleep_score (migration 28) selected here best-effort so a pre-migration
+      // DB never breaks the dashboard; merged onto wells for full-res recovery.
       const { data, error } = await admin.from("wellness_checkins")
-        .select("date, hrv_rmssd, resting_hr")
+        .select("date, hrv_rmssd, resting_hr, sleep_score")
         .eq("user_id", userId).gte("date", since14).order("date", { ascending: true });
       if (!error && data) {
         hcHrv = data.map((w) => (w as { hrv_rmssd?: number }).hrv_rmssd).filter(isNum);
         hcRhr = data.map((w) => (w as { resting_hr?: number }).resting_hr).filter(isNum);
+        const scoreByDate = new Map<string, number>();
+        for (const r of data as { date: string; sleep_score?: number }[]) {
+          if (isNum(r.sleep_score)) scoreByDate.set(r.date, r.sleep_score);
+        }
+        for (const w of wells) {
+          const s = w.date ? scoreByDate.get(w.date) : undefined;
+          if (s !== undefined) (w as { sleep_score?: number }).sleep_score = s;
+        }
       }
     }
     const ivHrv = acts.map((a) => (a.data_json as { hrv?: number })?.hrv).filter(isNum);

@@ -8,6 +8,7 @@ export interface WellnessRow {
   energy?: number | null;
   soreness?: number | null;
   sleep_quality?: number | null;
+  sleep_score?: number | null; // Intervals.icu device sleep score, 0..100
   zepp_sleep_minutes?: number | null;
   hrv_rmssd?: number | null;
   resting_hr?: number | null;
@@ -54,10 +55,14 @@ export function computeRecovery(
   rhrSeries: number[],
 ): Recovery {
   const recent3 = wells.slice(0, 3);
+  // Sleep on the 1..5 scale: prefer the full-resolution device score (0..100 →
+  // /20, continuous, e.g. 75 → 3.75) over the lossy 1..5 sleep_quality bucket.
+  const sleepFive = (w: WellnessRow) =>
+    isNum(w.sleep_score) ? clamp(w.sleep_score / 20, 1, 5) : (w.sleep_quality ?? 3);
   const wellnessScore = avg([
     avg(recent3.map((w) => w.energy ?? 3)),
     avg(recent3.map((w) => 6 - (w.soreness ?? 3))), // invert soreness (low = good)
-    avg(recent3.map((w) => w.sleep_quality ?? 3)),
+    avg(recent3.map((w) => sleepFive(w))),
   ]) || 3; // 1..5
 
   const hrv = trend(hrvSeries);

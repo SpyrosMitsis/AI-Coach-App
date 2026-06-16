@@ -94,6 +94,7 @@ async function syncUser(admin: SupabaseClient, userId: string): Promise<SyncResu
       const row: Record<string, unknown> = { user_id: userId, date: w.id };
       let has = false;
       if (typeof w.sleepSecs === "number") { row.zepp_sleep_minutes = Math.round(w.sleepSecs / 60); has = true; }
+      if (typeof w.sleepScore === "number") { row.sleep_score = Math.round(w.sleepScore); has = true; }
       const q = qualityFor(w);
       if (q !== undefined) { row.sleep_quality = q; has = true; }
       if (typeof w.hrv === "number") { row.hrv_rmssd = w.hrv; has = true; }
@@ -103,10 +104,14 @@ async function syncUser(admin: SupabaseClient, userId: string): Promise<SyncResu
     })
     .filter((r): r is Record<string, unknown> => r !== null);
   if (wellnessRows.length) {
-    const { error: wErr } = await admin
-      .from("wellness_checkins")
-      .upsert(wellnessRows, { onConflict: "user_id,date", ignoreDuplicates: false });
-    if (wErr) throw new Error(`wellness mirror: ${wErr.message}`);
+    const opts = { onConflict: "user_id,date", ignoreDuplicates: false } as const;
+    const { error: wErr } = await admin.from("wellness_checkins").upsert(wellnessRows, opts);
+    if (wErr) {
+      // sleep_score column may not be migrated yet (migration 28) — retry without it.
+      const stripped = wellnessRows.map(({ sleep_score: _s, ...rest }) => rest);
+      const { error: w2 } = await admin.from("wellness_checkins").upsert(stripped, opts);
+      if (w2) throw new Error(`wellness mirror: ${w2.message}`);
+    }
   }
 
   const fitness = latestFitness(wellness);
