@@ -76,7 +76,7 @@ data class Readiness(val score: Int, val band: String, val components: Readiness
 data class RecoveryTrend(val latest: Double, val baseline: Double, val deltaPct: Double)
 
 @Serializable
-data class RecoverySleep(val hours: Double, val avgHours: Double? = null)
+data class RecoverySleep(val hours: Double, val avgHours: Double? = null, val score: Double? = null)
 
 @Serializable
 data class Recovery(

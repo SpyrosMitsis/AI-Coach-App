@@ -334,6 +334,15 @@ fun HomeScreen(vm: HomeViewModel = hiltViewModel()) {
                         val avg = sl.avgHours?.let { " · avg ${hoursToHm(it)}" } ?: ""
                         MetricRow("Sleep", "${hoursToHm(sl.hours)}$avg")
                     }
+                    rec?.sleep?.score?.let { sc ->
+                        MetricRow("Sleep score", "${sc.toInt()} / 100") {
+                            Text(
+                                sleepScoreLabel(sc),
+                                style = MaterialTheme.typography.labelMedium,
+                                color = readinessColor(sleepScoreBand(sc)),
+                            )
+                        }
+                    }
                     MetricRow("Wellness", "${"%.1f".format(wellnessVal)} / 5") { InfoIcon("Wellness", Metrics.WELLNESS) }
                     MetricRow("Weekly load", "${s.weekly_load.tss} / ${s.weekly_load.target} TSS") {
                         InfoIcon("Training Stress Score (TSS)", Metrics.TSS)
@@ -510,6 +519,7 @@ private fun WellnessScale(label: String, low: String, high: String, selected: In
     }
 }
 
+@OptIn(androidx.compose.foundation.layout.ExperimentalLayoutApi::class)
 @Composable
 private fun FitnessSection(mod: Modifier, f: com.workoutmaker.app.data.IntervalsStats) {
     if (!f.connected) {
@@ -546,6 +556,13 @@ private fun FitnessSection(mod: Modifier, f: com.workoutmaker.app.data.Intervals
             Row(horizontalArrangement = Arrangement.spacedBy(14.dp)) {
                 LegendDot("Fitness (CTL)", com.workoutmaker.app.ui.theme.Sage)
                 LegendDot("Fatigue (ATL)", com.workoutmaker.app.ui.theme.Sand)
+            }
+
+            // Form (TSB) over time on the Intervals.icu zone backdrop.
+            SectionLabel("Form (TSB)", color = MaterialTheme.colorScheme.onSurfaceVariant)
+            FormChart(f.fitness, Modifier.fillMaxWidth())
+            androidx.compose.foundation.layout.FlowRow(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                FORM_ZONES.forEach { z -> LegendDot(z.label, z.color) }
             }
         }
     }
@@ -639,6 +656,83 @@ private fun tsbLabel(tsb: Double): String = when {
     tsb < -20 -> "high fatigue"
     tsb < -10 -> "building"
     else -> "neutral"
+}
+
+// Device sleep score (0..100) → short word + readiness band colour.
+private fun sleepScoreLabel(score: Double): String = when {
+    score >= 85 -> "excellent"
+    score >= 70 -> "good"
+    score >= 50 -> "fair"
+    else -> "poor"
+}
+private fun sleepScoreBand(score: Double): String = when {
+    score >= 70 -> "green"
+    score >= 50 -> "amber"
+    else -> "red"
+}
+
+// Intervals.icu "Form" (TSB) zones, top→bottom. Each is (lower bound, label,
+// colour); a band fills from its bound up to the next one.
+private data class FormZone(val min: Double, val label: String, val color: Color)
+private val FORM_ZONES = listOf(
+    FormZone(25.0, "Transition", Color(0xFF8D6E4A)),
+    FormZone(5.0, "Fresh", Color(0xFF4A6D8D)),
+    FormZone(-10.0, "Grey zone", Color(0xFF55585A)),
+    FormZone(-30.0, "Optimal", Color(0xFF3E6B4E)),
+    FormZone(-100.0, "High risk", Color(0xFF8D4A4A)),
+)
+
+// Form chart: the TSB line over time on a fixed zone backdrop (mirrors the
+// bottom panel of Intervals.icu's fitness page). Bands are translucent so the
+// line reads clearly on top.
+@Composable
+private fun FormChart(points: List<com.workoutmaker.app.data.FitnessPoint>, modifier: Modifier) {
+    val grid = Color(0xFF333535)
+    val lineColor = MaterialTheme.colorScheme.onSurface
+    val last = points.last()
+    androidx.compose.foundation.Canvas(modifier.size(width = 0.dp, height = 130.dp).fillMaxWidth()) {
+        val dataMax = points.maxOf { it.tsb }
+        val dataMin = points.minOf { it.tsb }
+        val top = maxOf(30.0, dataMax + 4)
+        val bottom = minOf(-40.0, dataMin - 4)
+        val span = (top - bottom).coerceAtLeast(1.0)
+        val w = size.width
+        val labelPad = 14.sp.toPx()
+        val h = size.height - labelPad
+        fun y(v: Double) = (h * (top - v) / span).toFloat().coerceIn(0f, h)
+        val stepX = if (points.size > 1) w / (points.size - 1) else w
+
+        // Zone bands: each fills from the zone above (or the top) down to its min.
+        FORM_ZONES.forEachIndexed { i, z ->
+            val upper = if (i == 0) top else FORM_ZONES[i - 1].min
+            val yU = y(upper.coerceIn(bottom, top))
+            val yL = y(z.min.coerceIn(bottom, top))
+            if (yL > yU) {
+                drawRect(
+                    z.color.copy(alpha = 0.22f),
+                    topLeft = androidx.compose.ui.geometry.Offset(0f, yU),
+                    size = androidx.compose.ui.geometry.Size(w, yL - yU),
+                )
+            }
+        }
+        // Zero baseline + axis numbers.
+        drawLine(grid, androidx.compose.ui.geometry.Offset(0f, y(0.0)), androidx.compose.ui.geometry.Offset(w, y(0.0)), strokeWidth = 2f)
+        chartLabel("${top.toInt()}", 4f, y(top) + 11.sp.toPx())
+        chartLabel("0", 4f, y(0.0) - 4f)
+        chartLabel("${bottom.toInt()}", 4f, h - 4f)
+        chartLabel(points.first().date.takeLast(5), 0f, size.height - 2f)
+        chartLabel(last.date.takeLast(5), w, size.height - 2f, alignRight = true)
+
+        // TSB line.
+        val path = androidx.compose.ui.graphics.Path()
+        points.forEachIndexed { i, p ->
+            val px = stepX * i
+            val py = y(p.tsb)
+            if (i == 0) path.moveTo(px, py) else path.lineTo(px, py)
+        }
+        drawPath(path, lineColor, style = androidx.compose.ui.graphics.drawscope.Stroke(width = 4f))
+        chartLabel("%+.0f".format(last.tsb), w, y(last.tsb) - 6f, alignRight = true, color = lineColor)
+    }
 }
 
 @Composable

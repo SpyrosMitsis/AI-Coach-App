@@ -25,7 +25,7 @@ export interface Recovery {
   wellness: number; // 1..5 composite (energy, inverted soreness, sleep quality)
   hrv: Trend | null;
   rhr: Trend | null;
-  sleep: { hours: number; avgHours: number | null } | null;
+  sleep: { hours: number; avgHours: number | null; score: number | null } | null;
   summary: string; // one-line human note for prompts / UI
 }
 
@@ -67,10 +67,12 @@ export function computeRecovery(
   const hrv = trend(hrvSeries);
   const rhr = trend(rhrSeries);
 
-  // Sleep duration from the most recent night with data, plus a personal average.
+  // Sleep duration from the most recent night with data, plus a personal average
+  // and the raw device sleep score (0..100) from that latest night.
   const sleepMins = wells.map((w) => w.zepp_sleep_minutes).filter(isNum);
+  const sleepScore = wells.map((w) => w.sleep_score).filter(isNum)[0] ?? null;
   const sleep = sleepMins.length
-    ? { hours: +(sleepMins[0] / 60).toFixed(1), avgHours: +(avg(sleepMins) / 60).toFixed(1) }
+    ? { hours: +(sleepMins[0] / 60).toFixed(1), avgHours: +(avg(sleepMins) / 60).toFixed(1), score: sleepScore }
     : null;
 
   // Composite. Wellness dominates; HRV up is good, RHR up is bad, short sleep hurts.
