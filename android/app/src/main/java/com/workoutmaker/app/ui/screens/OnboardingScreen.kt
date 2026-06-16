@@ -180,7 +180,9 @@ private fun StepKey(vm: OnboardingViewModel) {
 @Composable
 private fun FlowRowProviders(vm: OnboardingViewModel) {
     FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-        LlmProvider.entries.forEach { p ->
+        // Custom (bring-your-own endpoint) needs extra base-URL/model fields, so
+        // it's configured later in Settings — not during quick onboarding.
+        LlmProvider.entries.filter { it != LlmProvider.CUSTOM }.forEach { p ->
             FilterChip(selected = vm.provider == p, onClick = { vm.provider = p },
                 label = { Text(if (p.freeTier) "${p.label} ✦" else p.label) })
         }

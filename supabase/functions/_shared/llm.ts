@@ -57,6 +57,15 @@ export const PROVIDERS: Record<LlmProvider, ProviderSpec> = {
     outputPer1M: 0.79,
     getFreeKeyUrl: "https://console.groq.com/keys",
   },
+  custom: {
+    // User-supplied OpenAI-compatible endpoint. No fixed model (the user types
+    // it) and no pricing (self-hosted/unknown → cost shows ~$0).
+    label: "Custom (OpenAI-compatible)",
+    model: "",
+    inputPer1M: 0,
+    outputPer1M: 0,
+    getFreeKeyUrl: "",
+  },
 };
 
 export function estimateCostUsd(
@@ -91,6 +100,9 @@ interface GenArgs {
   // JSON-object response mode. Defaults to true (workout generation); pass
   // false for free-form coach chat.
   jsonMode?: boolean;
+  // OpenAI-compatible base URL for the "custom" provider (e.g.
+  // http://host:11434/v1). Ignored by the built-in providers.
+  baseUrl?: string;
 }
 
 function turns(args: GenArgs): ChatMessage[] {
@@ -266,9 +278,11 @@ export async function llmStream(
   const model = args.model ?? PROVIDERS[provider].model;
   let full = "";
 
-  if (provider === "openai" || provider === "deepseek" || provider === "groq") {
+  if (provider === "openai" || provider === "deepseek" || provider === "groq" || provider === "custom") {
+    if (provider === "custom" && !args.baseUrl) throw new Error("custom provider: base URL not configured");
     const base = provider === "openai" ? "https://api.openai.com/v1"
       : provider === "deepseek" ? "https://api.deepseek.com/v1"
+      : provider === "custom" ? args.baseUrl!
       : "https://api.groq.com/openai/v1";
     const body: Record<string, unknown> = {
       model,
@@ -358,6 +372,10 @@ export async function llmGenerate(
       return anthropic(args);
     case "gemini":
       return gemini(args);
+    case "custom":
+      if (!args.baseUrl) throw new Error("custom provider: base URL not configured");
+      if (!args.model) throw new Error("custom provider: model id not configured");
+      return openAiCompatible("custom", args.baseUrl, args);
     default:
       throw new Error(`unknown provider: ${provider}`);
   }
@@ -377,6 +395,12 @@ export interface ModelResolver {
   (provider: LlmProvider): string | undefined;
 }
 
+// Per-provider base URL — only meaningful for the "custom" provider, which has
+// no fixed endpoint. undefined → not configured.
+export interface BaseUrlResolver {
+  (provider: LlmProvider): Promise<string | null>;
+}
+
 // Walk [active, ...fallback] in order, skipping providers with no key, until
 // one succeeds. Throws with the full attempt log if all fail.
 export async function llmGenerateWithFallback(
@@ -384,6 +408,7 @@ export async function llmGenerateWithFallback(
   args: Omit<GenArgs, "apiKey">,
   resolveKey: FallbackKeyResolver,
   resolveModel?: ModelResolver,
+  resolveBaseUrl?: BaseUrlResolver,
 ): Promise<FallbackOutcome> {
   const attempts: { provider: LlmProvider; error?: string }[] = [];
   const seen = new Set<LlmProvider>();
@@ -399,7 +424,9 @@ export async function llmGenerateWithFallback(
     }
     try {
       const model = args.model ?? resolveModel?.(provider);
-      const result = await llmGenerate(provider, { ...args, apiKey, model });
+      const baseUrl = args.baseUrl ??
+        (provider === "custom" ? (await resolveBaseUrl?.(provider)) ?? undefined : undefined);
+      const result = await llmGenerate(provider, { ...args, apiKey, model, baseUrl });
       return { ...result, attempts };
     } catch (e) {
       attempts.push({ provider, error: String(e instanceof Error ? e.message : e) });

@@ -343,7 +343,7 @@ Return the revised workout as JSON only, same schema.`;
     }
 
     // 7. resolve fallback chain + keys, then generate ----------------------
-    const { chain, resolveKey, resolveModel } = llmAccess(admin, userId, profile);
+    const { chain, resolveKey, resolveModel, resolveBaseUrl } = llmAccess(admin, userId, profile);
     if (chain.length === 0) {
       return json({ error: "No AI provider configured. Add an API key in Settings." }, 400);
     }
@@ -355,6 +355,7 @@ Return the revised workout as JSON only, same schema.`;
         { prompt: userPrompt, systemPrompt: SYSTEM_PROMPT },
         resolveKey,
         resolveModel,
+        resolveBaseUrl,
       );
     } catch (e) {
       await admin.from("generation_logs").insert({
@@ -388,7 +389,7 @@ Return the revised workout as JSON only, same schema.`;
         const repairPrompt =
           `${userPrompt}\n\nYOUR PREVIOUS RESPONSE could not be parsed/validated (${parseError}). ` +
           `Return ONLY a corrected JSON object that exactly matches the schema — no prose, no code fences.`;
-        const retry = await llmGenerateWithFallback(chain, { prompt: repairPrompt, systemPrompt: SYSTEM_PROMPT }, resolveKey, resolveModel);
+        const retry = await llmGenerateWithFallback(chain, { prompt: repairPrompt, systemPrompt: SYSTEM_PROMPT }, resolveKey, resolveModel, resolveBaseUrl);
         const v2 = validateWorkout(extractJson(retry.text));
         if (v2.ok && v2.workout) {
           validated = v2.workout;

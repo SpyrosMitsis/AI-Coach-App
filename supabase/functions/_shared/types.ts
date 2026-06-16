@@ -6,7 +6,10 @@ export type LlmProvider =
   | "deepseek"
   | "openai"
   | "gemini"
-  | "groq";
+  | "groq"
+  // User-supplied OpenAI-compatible endpoint (base URL + model + key). Its base
+  // URL lives on the llm_api_keys row, not in the hardcoded provider registry.
+  | "custom";
 
 export interface WorkoutExercise {
   name: string;

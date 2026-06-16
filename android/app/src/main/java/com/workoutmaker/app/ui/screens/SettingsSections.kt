@@ -565,22 +565,46 @@ internal fun ProviderCard(mod: Modifier, provider: LlmProvider, vm: SettingsView
     val llmKeys by vm.llmKeys.collectAsStateSafe()
     val saved = llmKeys[provider.key]
     val activeModel = overrides[provider.key] ?: provider.model
+    val isCustom = provider == LlmProvider.CUSTOM
     var showModelPicker by remember { mutableStateOf(false) }
+
+    // Custom-provider config: base URL + free-text model id (no fixed defaults).
+    var baseUrl by remember(saved?.base_url) { mutableStateOf(saved?.base_url ?: "") }
+    var modelId by remember(overrides[provider.key]) { mutableStateOf(overrides[provider.key] ?: "") }
 
     if (showModelPicker) {
         ModelPickerDialog(provider, vm) { showModelPicker = false }
     }
 
     SectionCard(mod, title = "${provider.label}${if (provider.freeTier) "  · free tier" else ""}") {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Column(Modifier.weight(1f)) {
-                Text(activeModel, style = MaterialTheme.typography.bodySmall)
-                if (overrides[provider.key] != null) {
-                    Text("custom — default is ${provider.model}", style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant)
+        if (isCustom) {
+            Text(
+                "Point at any OpenAI-compatible endpoint — Ollama, LM Studio, vLLM, OpenRouter, a LiteLLM proxy. The phone must be able to reach the URL.",
+                style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            OutlinedTextField(
+                baseUrl, { baseUrl = it },
+                label = { Text("Base URL") },
+                placeholder = { Text("http://192.168.1.10:11434/v1") },
+                singleLine = true, modifier = Modifier.fillMaxWidth(),
+            )
+            OutlinedTextField(
+                modelId, { modelId = it },
+                label = { Text("Model id") },
+                placeholder = { Text("llama3.1:8b") },
+                singleLine = true, modifier = Modifier.fillMaxWidth(),
+            )
+        } else {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Column(Modifier.weight(1f)) {
+                    Text(activeModel, style = MaterialTheme.typography.bodySmall)
+                    if (overrides[provider.key] != null) {
+                        Text("custom — default is ${provider.model}", style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
                 }
+                TextButton(onClick = { showModelPicker = true }) { Text("Change model") }
             }
-            TextButton(onClick = { showModelPicker = true }) { Text("Change model") }
         }
         // What's already configured, masked — so you know which key is in use.
         saved?.let { s ->
@@ -593,15 +617,27 @@ internal fun ProviderCard(mod: Modifier, provider: LlmProvider, vm: SettingsView
                 style = MaterialTheme.typography.bodySmall,
                 color = if (s.is_valid == false) MaterialTheme.colorScheme.error else Sage,
             )
+            if (isCustom && !s.base_url.isNullOrBlank()) {
+                Text("Endpoint: ${s.base_url}", style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
         }
         OutlinedTextField(
             key, { key = it },
-            label = { Text(if (saved != null) "API key (replace)" else "API key") },
-            visualTransformation = PasswordVisualTransformation(), modifier = Modifier.fillMaxWidth(),
+            label = { Text(if (saved != null) "API key (replace)" else if (isCustom) "API key (any value if none)" else "API key") },
+            visualTransformation = PasswordVisualTransformation(), singleLine = true, modifier = Modifier.fillMaxWidth(),
         )
+        // Custom needs a base URL + model id too; others just need the key.
+        val canTest = key.isNotBlank() && (!isCustom || (baseUrl.isNotBlank() && modelId.isNotBlank()))
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            Button(onClick = { vm.testKey(provider, key, false) }, enabled = key.isNotBlank()) { Text("Save & Test") }
-            OutlinedButton(onClick = { vm.testKey(provider, key, true) }, enabled = key.isNotBlank()) { Text("Test Gen") }
+            Button(
+                onClick = { vm.testKey(provider, key, false, baseUrl.takeIf { isCustom }, modelId.takeIf { isCustom }) },
+                enabled = canTest,
+            ) { Text("Save & Test") }
+            OutlinedButton(
+                onClick = { vm.testKey(provider, key, true, baseUrl.takeIf { isCustom }, modelId.takeIf { isCustom }) },
+                enabled = canTest,
+            ) { Text("Test Gen") }
         }
         result?.let {
             Text(

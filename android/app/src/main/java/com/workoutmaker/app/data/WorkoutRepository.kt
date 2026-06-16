@@ -416,12 +416,19 @@ class WorkoutRepository @Inject constructor(
     // key_hint may not exist before migration 27 — fall back to a hint-less select.
     suspend fun llmKeyRows(): List<LlmKeyRow> = runCatching {
         supabase.postgrest.from("llm_api_keys").select(
-            columns = io.github.jan.supabase.postgrest.query.Columns.list("provider", "is_valid", "last_tested_at", "key_hint"),
+            columns = io.github.jan.supabase.postgrest.query.Columns.list("provider", "is_valid", "last_tested_at", "key_hint", "base_url"),
         ).decodeList<LlmKeyRow>()
     }.getOrElse {
-        supabase.postgrest.from("llm_api_keys").select(
-            columns = io.github.jan.supabase.postgrest.query.Columns.list("provider", "is_valid", "last_tested_at"),
-        ).decodeList()
+        // Pre-migration fallback (no key_hint / base_url columns yet).
+        runCatching {
+            supabase.postgrest.from("llm_api_keys").select(
+                columns = io.github.jan.supabase.postgrest.query.Columns.list("provider", "is_valid", "last_tested_at", "key_hint"),
+            ).decodeList<LlmKeyRow>()
+        }.getOrElse {
+            supabase.postgrest.from("llm_api_keys").select(
+                columns = io.github.jan.supabase.postgrest.query.Columns.list("provider", "is_valid", "last_tested_at"),
+            ).decodeList()
+        }
     }
 
     suspend fun templates(): List<WorkoutTemplate> =

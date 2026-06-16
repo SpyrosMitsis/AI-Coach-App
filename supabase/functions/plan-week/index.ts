@@ -139,7 +139,7 @@ async function planForUser(admin: SupabaseClient, userId: string, start: string,
     wellness3d, weeklyKm, weeklyTssTarget, hrZones, contextBlocks,
   });
 
-  const { chain, resolveKey, resolveModel } = llmAccess(admin, userId, profile);
+  const { chain, resolveKey, resolveModel, resolveBaseUrl } = llmAccess(admin, userId, profile);
   if (chain.length === 0) throw new Error("No AI provider configured");
 
   // Failures are logged to generation_logs (like generate-workout does) so a
@@ -153,7 +153,7 @@ async function planForUser(admin: SupabaseClient, userId: string, start: string,
 
   let outcome;
   try {
-    outcome = await llmGenerateWithFallback(chain, { prompt: userPrompt, systemPrompt: WEEK_SYSTEM_PROMPT }, resolveKey, resolveModel);
+    outcome = await llmGenerateWithFallback(chain, { prompt: userPrompt, systemPrompt: WEEK_SYSTEM_PROMPT }, resolveKey, resolveModel, resolveBaseUrl);
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
     await logFailure(chain[0] ?? null, null, msg);
@@ -166,6 +166,7 @@ async function planForUser(admin: SupabaseClient, userId: string, start: string,
       { prompt: `${userPrompt}\n\nYOUR PREVIOUS RESPONSE was invalid (${v.error}). Return ONLY corrected JSON.`, systemPrompt: WEEK_SYSTEM_PROMPT },
       resolveKey,
       resolveModel,
+      resolveBaseUrl,
     ).catch(() => null);
     if (retry) {
       const v2 = validateWeekPlan(safeJson(retry.text));

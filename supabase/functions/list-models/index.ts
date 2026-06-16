@@ -16,7 +16,7 @@ import type { LlmProvider } from "../_shared/types.ts";
 // only offers ids that will actually work for generation.
 const NON_CHAT = /embed|whisper|audio|tts|dall-e|image|moderation|realtime|transcribe|guard|aqa|imagen|veo/i;
 
-async function fetchModels(provider: LlmProvider, apiKey: string): Promise<string[]> {
+async function fetchModels(provider: LlmProvider, apiKey: string, baseUrl?: string | null): Promise<string[]> {
   switch (provider) {
     case "anthropic": {
       const res = await fetch("https://api.anthropic.com/v1/models?limit=100", {
@@ -45,7 +45,10 @@ async function fetchModels(provider: LlmProvider, apiKey: string): Promise<strin
         ? "https://api.openai.com/v1"
         : provider === "deepseek"
         ? "https://api.deepseek.com/v1"
+        : provider === "custom"
+        ? (baseUrl ?? "")
         : "https://api.groq.com/openai/v1";
+      if (provider === "custom" && !base) return [];
       const res = await fetch(`${base}/models`, {
         headers: { Authorization: `Bearer ${apiKey}` },
       });
@@ -83,7 +86,7 @@ Deno.serve(async (req) => {
       .eq("id", userId)
       .single();
 
-    const { resolveKey, resolveModel } = llmAccess(admin, userId, profile);
+    const { resolveKey, resolveModel, resolveBaseUrl } = llmAccess(admin, userId, profile);
     const apiKey = await resolveKey(provider);
     if (!apiKey) {
       return json({
@@ -95,7 +98,8 @@ Deno.serve(async (req) => {
       });
     }
 
-    const models = (await fetchModels(provider, apiKey)).sort();
+    const baseUrl = provider === "custom" ? await resolveBaseUrl(provider) : null;
+    const models = (await fetchModels(provider, apiKey, baseUrl)).sort();
     return json({
       provider,
       default_model: PROVIDERS[provider].model,

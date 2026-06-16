@@ -167,7 +167,7 @@ export async function runActivityAnalysis(
   let feedback: string | null = null;
   let feedbackProvider: string | null = null;
   try {
-    const { chain, resolveKey, resolveModel } = llmAccess(admin, userId, profile ?? {});
+    const { chain, resolveKey, resolveModel, resolveBaseUrl } = llmAccess(admin, userId, profile ?? {});
     if (chain.length) {
       const actualBits = [
         act.type && `type ${act.type}`,
@@ -199,6 +199,7 @@ Write 3-5 sentences of specific coach feedback: what was executed well, where pa
         },
         resolveKey,
         resolveModel,
+        resolveBaseUrl,
       );
       feedback = out.text.trim() || null;
       feedbackProvider = out.provider;
@@ -351,7 +352,7 @@ export async function runStrengthAnalysis(
   let feedback: string | null = null;
   let feedbackProvider: string | null = null;
   try {
-    const { chain, resolveKey, resolveModel } = llmAccess(admin, userId, profile ?? {});
+    const { chain, resolveKey, resolveModel, resolveBaseUrl } = llmAccess(admin, userId, profile ?? {});
     if (chain.length) {
       const actualText = exercises.map((e) =>
         `${e.name}: ${e.actual_sets} sets${e.top_weight_kg ? `, top ${e.top_weight_kg}kg` : ""}, ${e.volume_kg}kg volume${e.planned ? ` (planned ${e.planned})` : ""}`
@@ -381,6 +382,7 @@ Write 3-5 sentences of specific coach feedback: completion vs the plan, load sel
         },
         resolveKey,
         resolveModel,
+        resolveBaseUrl,
       );
       feedback = out.text.trim() || null;
       feedbackProvider = out.provider;

@@ -236,7 +236,7 @@ Deno.serve(async (req) => {
     const systemPrompt = `${COACH_SYSTEM_PROMPT}\n\n${context}`;
 
     // --- resolve provider keys (fallback chain) ----------------------------
-    const { chain, resolveKey, resolveModel } = llmAccess(admin, userId, profile);
+    const { chain, resolveKey, resolveModel, resolveBaseUrl } = llmAccess(admin, userId, profile);
 
     // --- build the turn list -----------------------------------------------
     const turns: ChatMessage[] = trimThread(messages);
@@ -293,7 +293,7 @@ Deno.serve(async (req) => {
 
         for (let step = 0; !replyText.trim() && step < 6; step++) {
           const step_out = await llmGenerateWithFallback(
-            chain, { messages: work, systemPrompt: chatSystem, jsonMode: true }, resolveKey, resolveModel,
+            chain, { messages: work, systemPrompt: chatSystem, jsonMode: true }, resolveKey, resolveModel, resolveBaseUrl,
           );
           provider = step_out.provider;
           let parsed: Record<string, unknown> | null = null;
@@ -380,6 +380,7 @@ Deno.serve(async (req) => {
       { messages: turns, systemPrompt, jsonMode: mode === "finalize" },
       resolveKey,
       resolveModel,
+      resolveBaseUrl,
     );
     const cost = estimateCostUsd(outcome.provider, outcome.promptTokens, outcome.completionTokens);
 

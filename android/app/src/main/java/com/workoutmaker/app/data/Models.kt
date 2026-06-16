@@ -10,7 +10,11 @@ enum class LlmProvider(val label: String, val model: String, val freeKeyUrl: Str
     @SerialName("deepseek")  DEEPSEEK("DeepSeek", "deepseek-chat", "https://platform.deepseek.com/api_keys", false),
     @SerialName("openai")    OPENAI("OpenAI", "gpt-5-mini", "https://platform.openai.com/api-keys", false),
     @SerialName("gemini")    GEMINI("Google Gemini", "gemini-2.5-flash", "https://aistudio.google.com/app/apikey", true),
-    @SerialName("groq")      GROQ("Groq", "llama-3.3-70b-versatile", "https://console.groq.com/keys", true);
+    @SerialName("groq")      GROQ("Groq", "llama-3.3-70b-versatile", "https://console.groq.com/keys", true),
+    // Bring-your-own OpenAI-compatible endpoint (Ollama / LM Studio / vLLM /
+    // OpenRouter…). No fixed model or free-key link — the user supplies a base
+    // URL, model id, and key in Settings.
+    @SerialName("custom")    CUSTOM("Custom (OpenAI-compatible)", "", "", false);
 
     val key: String get() = name.lowercase()
 }
@@ -292,6 +296,8 @@ data class LlmKeyRow(
     val is_valid: Boolean? = null,
     val last_tested_at: String? = null,
     val key_hint: String? = null,
+    // Only set for the custom provider (its OpenAI-compatible endpoint).
+    val base_url: String? = null,
 )
 
 @Serializable
@@ -433,7 +439,14 @@ data class ModelListResponse(
 )
 
 @Serializable
-data class TestKeyRequest(val provider: String, val apiKey: String, val sampleGeneration: Boolean = false)
+data class TestKeyRequest(
+    val provider: String,
+    val apiKey: String,
+    val sampleGeneration: Boolean = false,
+    // Custom provider only: OpenAI-compatible base URL + model id.
+    val baseUrl: String? = null,
+    val model: String? = null,
+)
 
 @Serializable
 data class TestKeyResponse(

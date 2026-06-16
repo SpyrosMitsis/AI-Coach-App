@@ -345,11 +345,29 @@ class SettingsViewModel @Inject constructor(
         viewModelScope.launch { runCatching { repo.setActiveProvider(p) } }
     }
 
-    fun testKey(p: LlmProvider, key: String, sample: Boolean) = viewModelScope.launch {
-        runCatching { repo.testLlmKey(TestKeyRequest(p.key, key, sample)) }
+    fun testKey(
+        p: LlmProvider,
+        key: String,
+        sample: Boolean,
+        baseUrl: String? = null,
+        model: String? = null,
+    ) = viewModelScope.launch {
+        runCatching {
+            repo.testLlmKey(
+                TestKeyRequest(p.key, key, sample, baseUrl = baseUrl?.trim()?.ifBlank { null }, model = model?.trim()?.ifBlank { null }),
+            )
+        }
             .onSuccess {
                 results[p.key] = it
-                // Refresh the saved-key rows so the masked hint appears.
+                // For the custom provider the model id lives in the per-provider
+                // override (llm_models), so persist it alongside the key.
+                if (p == LlmProvider.CUSTOM && it.is_valid && !model.isNullOrBlank()) {
+                    runCatching {
+                        repo.setModelOverride(p, model.trim())
+                        modelOverrides.value = repo.modelOverrides()
+                    }
+                }
+                // Refresh the saved-key rows so the masked hint + base URL appear.
                 runCatching { repo.llmKeyRows() }.onSuccess { rows -> llmKeys.value = rows.associateBy { r -> r.provider } }
             }
     }
