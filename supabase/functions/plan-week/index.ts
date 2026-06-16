@@ -79,14 +79,15 @@ async function planForUser(admin: SupabaseClient, userId: string, start: string,
   const fitness = latestFitness([{ id: start, ctl: fitnessRow.ctl ?? 0, atl: fitnessRow.atl ?? 0 }]);
 
   const { data: wellness } = await admin
-    .from("wellness_checkins").select("date, energy, soreness, sleep_quality")
+    .from("wellness_checkins").select("date, energy, soreness, sleep_score")
     .eq("user_id", userId).gte("date", since7).order("date", { ascending: false });
   const wells = wellness ?? [];
+  const isNum = (v: unknown): v is number => typeof v === "number";
   const avg = (v: number[]) => v.length ? v.reduce((a, b) => a + b, 0) / v.length : 3;
   const wellness3d = {
     energy: avg(wells.slice(0, 3).map((w) => w.energy ?? 3)),
     soreness: avg(wells.slice(0, 3).map((w) => w.soreness ?? 3)),
-    sleep: avg(wells.slice(0, 3).map((w) => w.sleep_quality ?? 3)),
+    sleep: avg(wells.slice(0, 3).map((w) => isNum(w.sleep_score) ? w.sleep_score / 20 : 3)),
   };
 
   let weeksToGoal: number | null = null;

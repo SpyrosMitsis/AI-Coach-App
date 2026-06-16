@@ -13,8 +13,8 @@ Deno.test("recovery: neutral inputs land mid-scale amber/green boundary-ish", ()
 
 Deno.test("recovery: great wellness + rising HRV + low RHR is green", () => {
   const wells = [
-    { date: "2026-06-10", energy: 5, soreness: 1, sleep_quality: 5, zepp_sleep_minutes: 480 },
-    { date: "2026-06-09", energy: 5, soreness: 1, sleep_quality: 5, zepp_sleep_minutes: 470 },
+    { date: "2026-06-10", energy: 5, soreness: 1, sleep_score: 100, zepp_sleep_minutes: 480 },
+    { date: "2026-06-09", energy: 5, soreness: 1, sleep_score: 100, zepp_sleep_minutes: 470 },
   ];
   const r = computeRecovery(wells, [60, 62, 70], [52, 52, 49]);
   assertEquals(r.band, "green");
@@ -26,7 +26,7 @@ Deno.test("recovery: great wellness + rising HRV + low RHR is green", () => {
 
 Deno.test("recovery: poor wellness + crashed HRV + spiked RHR is red", () => {
   const wells = [
-    { date: "2026-06-10", energy: 1, soreness: 5, sleep_quality: 1, zepp_sleep_minutes: 300 },
+    { date: "2026-06-10", energy: 1, soreness: 5, sleep_score: 0, zepp_sleep_minutes: 300 },
   ];
   const r = computeRecovery(wells, [70, 70, 45], [50, 50, 62]);
   assertEquals(r.band, "red");

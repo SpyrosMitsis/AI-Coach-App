@@ -33,7 +33,7 @@ Deno.serve(async (req) => {
     const [{ data: profile }, { data: wellness }, { data: activities }, { data: planned }] =
       await Promise.all([
         admin.from("user_profiles").select("onboarding, active_llm_provider").eq("id", userId).single(),
-        admin.from("wellness_checkins").select("date, energy, soreness, sleep_quality, zepp_sleep_minutes")
+        admin.from("wellness_checkins").select("date, energy, soreness, zepp_sleep_minutes")
           .eq("user_id", userId).gte("date", since14).order("date", { ascending: false }),
         admin.from("completed_activities").select("date, distance_m, tss, ctl, atl, data_json")
           .eq("user_id", userId).gte("date", since14).order("date", { ascending: true }),

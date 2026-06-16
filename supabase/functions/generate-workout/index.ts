@@ -107,7 +107,7 @@ Deno.serve(async (req) => {
     const since7 = new Date(Date.now() - 7 * DAY).toISOString().slice(0, 10);
     const { data: wellness } = await admin
       .from("wellness_checkins")
-      .select("date, energy, soreness, sleep_quality, hrv_rmssd, resting_hr, zepp_sleep_minutes")
+      .select("date, energy, soreness, sleep_score, hrv_rmssd, resting_hr, zepp_sleep_minutes")
       .eq("user_id", userId)
       .gte("date", since7)
       .order("date", { ascending: false });
@@ -124,7 +124,7 @@ Deno.serve(async (req) => {
     const wellness3d = {
       energy: avg(wells.slice(0, 3).map((w) => w.energy ?? 3)),
       soreness: avg(wells.slice(0, 3).map((w) => w.soreness ?? 3)),
-      sleep: avg(wells.slice(0, 3).map((w) => w.sleep_quality ?? 3)),
+      sleep: avg(wells.slice(0, 3).map((w) => isNumR(w.sleep_score) ? w.sleep_score / 20 : 3)),
     };
 
     // 4. CTL/ATL/TSB — prefer the freshest cached activity row -------------

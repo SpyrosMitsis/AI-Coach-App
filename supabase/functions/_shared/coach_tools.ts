@@ -219,7 +219,7 @@ export async function executeTool(
       case "get_readiness": {
         const since = iso(Date.now() - 7 * DAY);
         const { data } = await admin.from("wellness_checkins")
-          .select("date, energy, soreness, sleep_quality, hrv_rmssd, resting_hr, zepp_sleep_minutes")
+          .select("date, energy, soreness, sleep_score, hrv_rmssd, resting_hr, zepp_sleep_minutes")
           .eq("user_id", userId).gte("date", since).order("date", { ascending: false });
         const wells = data ?? [];
         const isNum = (v: unknown): v is number => typeof v === "number";

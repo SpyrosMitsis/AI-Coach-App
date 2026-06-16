@@ -80,23 +80,15 @@ async function syncUser(admin: SupabaseClient, userId: string): Promise<SyncResu
   // dashboard + recovery model read everything from one table. We only write
   // objective columns, so the user's subjective energy/soreness check-in is
   // left untouched (PostgREST upsert updates only the columns present per row).
-  // The 1..5 sleep_quality the recovery composite expects is derived from the
-  // device sleep score (0..100) when Intervals exposes one; otherwise it falls
-  // back to sleep DURATION (always present, and it varies night to night), so
-  // sleep_quality can never go stale on a manual value the user once entered.
-  const clamp5 = (v: number) => Math.max(1, Math.min(5, Math.round(v)));
-  const qualityFor = (w: { sleepScore?: number; sleepSecs?: number }) =>
-    typeof w.sleepScore === "number" ? clamp5(w.sleepScore / 20)
-      : typeof w.sleepSecs === "number" ? clamp5(w.sleepSecs / 3600 - 3) // <4h→1 .. 8h+→5
-      : undefined;
+  // Everything is sourced from objective device data — no subjective sleep
+  // rating. The raw 0..100 sleep score is mirrored as-is; recovery turns it
+  // into its 1..5 sleep contribution at full resolution.
   const wellnessRows = wellness
     .map((w) => {
       const row: Record<string, unknown> = { user_id: userId, date: w.id };
       let has = false;
       if (typeof w.sleepSecs === "number") { row.zepp_sleep_minutes = Math.round(w.sleepSecs / 60); has = true; }
       if (typeof w.sleepScore === "number") { row.sleep_score = Math.round(w.sleepScore); has = true; }
-      const q = qualityFor(w);
-      if (q !== undefined) { row.sleep_quality = q; has = true; }
       if (typeof w.hrv === "number") { row.hrv_rmssd = w.hrv; has = true; }
       if (typeof w.restingHR === "number") { row.resting_hr = Math.round(w.restingHR); has = true; }
       if (typeof w.vo2max === "number") { row.vo2max = w.vo2max; has = true; }

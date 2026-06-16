@@ -173,7 +173,7 @@ Deno.serve(async (req) => {
         .select("type, completed, workout_json, created_at")
         .eq("user_id", userId).eq("date", today),
       admin.from("wellness_checkins")
-        .select("date, energy, soreness, sleep_quality, hrv_rmssd, resting_hr, zepp_sleep_minutes")
+        .select("date, energy, soreness, sleep_score, hrv_rmssd, resting_hr, zepp_sleep_minutes")
         .eq("user_id", userId).gte("date", since7).order("date", { ascending: false }),
     ]);
     const a = acts ?? [];

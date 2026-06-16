@@ -5,10 +5,11 @@ import { createClient } from "@/lib/supabase-browser";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { cn } from "@/lib/utils";
 
+// Sleep is sourced objectively from Intervals.icu (sleep_score), so the manual
+// check-in only asks the two subjective signals that can't be measured.
 const QUESTIONS = [
   { key: "energy", label: "Energy" },
   { key: "soreness", label: "Soreness" },
-  { key: "sleep_quality", label: "Sleep quality" },
 ] as const;
 
 type Key = (typeof QUESTIONS)[number]["key"];
