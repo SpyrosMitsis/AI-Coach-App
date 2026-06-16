@@ -24,6 +24,7 @@ export interface WellnessRow {
   hrv?: number;
   vo2max?: number;
   sleepSecs?: number;
+  sleepScore?: number; // device sleep score, 0..100
   // Subjective fields the athlete logs in Intervals.icu (1=good .. 4=bad scale).
   fatigue?: number;
   soreness?: number;

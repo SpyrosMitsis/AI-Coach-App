@@ -57,9 +57,11 @@ Deno.serve(async (req) => {
     const acts = activities ?? [];
 
     // --- recovery: HRV/RHR/sleep trends → 0-100 score (shared module) --------
-    // Prefer device Health Connect values on wellness_checkins; fall back to
-    // Intervals.icu wellness mirrored in completed_activities.data_json. Queried
-    // best-effort so this works whether or not migration 8 has been applied yet.
+    // wellness_checkins is the single source of truth: sync-intervals mirrors
+    // Intervals.icu's objective series (sleep/HRV/RHR/VO2max) into it, and any
+    // Health Connect snapshot can override the same columns. Fall back to the
+    // raw Intervals wellness in completed_activities.data_json only if the
+    // mirror hasn't run yet. Queried best-effort (works pre-migration-8).
     const isNum = (v: unknown): v is number => typeof v === "number";
     let hcHrv: number[] = [];
     let hcRhr: number[] = [];
@@ -81,7 +83,8 @@ Deno.serve(async (req) => {
     const readiness = recovery.score;
     const band = recovery.band;
 
-    // VO2 max (from Zepp via Health Connect): current value + change over ~90d.
+    // VO2 max (from Intervals.icu mirror, or Zepp via Health Connect): current
+    // value + change over ~90d.
     // Best-effort — works whether or not the vo2max column migration is applied.
     let vo2max: { value: number; change: number | null } | null = null;
     try {

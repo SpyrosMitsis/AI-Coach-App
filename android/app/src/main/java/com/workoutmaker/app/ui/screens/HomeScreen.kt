@@ -105,11 +105,11 @@ class HomeViewModel @Inject constructor(
         loading.value = false
     }
 
-    fun saveWellness(energy: Int, soreness: Int, sleepQuality: Int) = viewModelScope.launch {
+    fun saveWellness(energy: Int, soreness: Int) = viewModelScope.launch {
         wellnessBusy.value = true
         val checkin = com.workoutmaker.app.data.WellnessCheckin(
             date = java.time.LocalDate.now().toString(),
-            energy = energy, soreness = soreness, sleep_quality = sleepQuality,
+            energy = energy, soreness = soreness,
         )
         runCatching { repo.upsertWellness(checkin) }
             .onSuccess { wellnessToday.value = checkin; load() } // readiness uses it
@@ -358,7 +358,7 @@ fun HomeScreen(vm: HomeViewModel = hiltViewModel()) {
         // (energy == null). The morning reminder fires after Health Connect sees
         // you woke up; this is where you actually log it.
         if (wellnessLoaded && wellnessToday?.energy == null) {
-            WellnessCheckinCard(mod, busy = wellnessBusy) { e, sore, sleep -> vm.saveWellness(e, sore, sleep) }
+            WellnessCheckinCard(mod, busy = wellnessBusy) { e, sore -> vm.saveWellness(e, sore) }
         }
 
         s.goal?.let { g -> GoalCard(mod, g) }
@@ -453,24 +453,23 @@ fun HomeScreen(vm: HomeViewModel = hiltViewModel()) {
     }
 }
 
-// Morning wellness check-in: three 1–5 scales (energy, soreness, sleep quality)
-// that feed today's readiness score. Appears only when today is unanswered.
+// Morning wellness check-in: two 1–5 scales (energy, soreness) that feed today's
+// readiness score. Sleep is pulled automatically from Intervals.icu, so it's no
+// longer asked here. Appears only when today is unanswered.
 @Composable
-private fun WellnessCheckinCard(mod: Modifier, busy: Boolean, onSave: (Int, Int, Int) -> Unit) {
+private fun WellnessCheckinCard(mod: Modifier, busy: Boolean, onSave: (Int, Int) -> Unit) {
     var energy by remember { mutableStateOf<Int?>(null) }
     var soreness by remember { mutableStateOf<Int?>(null) }
-    var sleep by remember { mutableStateOf<Int?>(null) }
     SectionCard(mod, title = "How do you feel today?") {
         Text(
-            "A quick morning check tunes today's readiness and training.",
+            "A quick morning check tunes today's readiness and training. Sleep is pulled from Intervals.icu automatically.",
             style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
         WellnessScale("Energy", "drained", "fresh", energy) { energy = it }
         WellnessScale("Soreness", "none", "very sore", soreness) { soreness = it }
-        WellnessScale("Sleep quality", "poor", "great", sleep) { sleep = it }
         Button(
-            onClick = { onSave(energy ?: 3, soreness ?: 3, sleep ?: 3) },
-            enabled = !busy && (energy != null || soreness != null || sleep != null),
+            onClick = { onSave(energy ?: 3, soreness ?: 3) },
+            enabled = !busy && (energy != null || soreness != null),
             modifier = Modifier.fillMaxWidth(),
         ) { Text(if (busy) "Saving…" else "Save check-in") }
     }

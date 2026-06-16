@@ -450,7 +450,9 @@ data class WellnessCheckin(
     val date: String,
     val energy: Int? = null,
     val soreness: Int? = null,
-    val sleep_quality: Int? = null,
+    // sleep_quality is no longer collected manually — it's derived server-side
+    // from the Intervals.icu sleep score (see sync-intervals). Intentionally
+    // omitted here so the subjective upsert never clobbers that value.
 )
 
 // Health Connect metrics upserted onto the day's wellness row.

@@ -76,18 +76,32 @@ async function syncUser(admin: SupabaseClient, userId: string): Promise<SyncResu
     if (upErr) throw new Error(`cache upsert: ${upErr.message}`);
   }
 
-  // Mirror today's sleep into wellness_checkins pre-fill if present.
-  const today = new Date().toISOString().slice(0, 10);
-  const todayWellness = wellness.find((w) => w.id === today);
-  if (todayWellness?.sleepSecs) {
-    await admin.from("wellness_checkins").upsert(
-      {
-        user_id: userId,
-        date: today,
-        zepp_sleep_minutes: Math.round(todayWellness.sleepSecs / 60),
-      },
-      { onConflict: "user_id,date", ignoreDuplicates: false },
-    );
+  // Mirror Intervals' OBJECTIVE daily metrics into wellness_checkins so the
+  // dashboard + recovery model read everything from one table. We only write
+  // objective columns, so the user's subjective energy/soreness check-in is
+  // left untouched (PostgREST upsert updates only the columns present per row).
+  // The device sleep score (0..100) becomes the 1..5 sleep_quality the recovery
+  // composite expects — no manual sleep slider needed.
+  const toQuality = (score?: number) =>
+    typeof score === "number" ? Math.max(1, Math.min(5, Math.round(score / 20))) : undefined;
+  const wellnessRows = wellness
+    .map((w) => {
+      const row: Record<string, unknown> = { user_id: userId, date: w.id };
+      let has = false;
+      if (typeof w.sleepSecs === "number") { row.zepp_sleep_minutes = Math.round(w.sleepSecs / 60); has = true; }
+      const q = toQuality(w.sleepScore);
+      if (q !== undefined) { row.sleep_quality = q; has = true; }
+      if (typeof w.hrv === "number") { row.hrv_rmssd = w.hrv; has = true; }
+      if (typeof w.restingHR === "number") { row.resting_hr = Math.round(w.restingHR); has = true; }
+      if (typeof w.vo2max === "number") { row.vo2max = w.vo2max; has = true; }
+      return has ? row : null;
+    })
+    .filter((r): r is Record<string, unknown> => r !== null);
+  if (wellnessRows.length) {
+    const { error: wErr } = await admin
+      .from("wellness_checkins")
+      .upsert(wellnessRows, { onConflict: "user_id,date", ignoreDuplicates: false });
+    if (wErr) throw new Error(`wellness mirror: ${wErr.message}`);
   }
 
   const fitness = latestFitness(wellness);
