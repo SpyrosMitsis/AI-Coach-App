@@ -22,6 +22,13 @@ import {
   llmGenerateWithFallback,
 } from "../_shared/llm.ts";
 import { computeRecovery } from "../_shared/recovery.ts";
+import {
+  compressThread,
+  memoryDocsBlock,
+  memoryFromProfile,
+  summarizeDropped,
+  updateUserDoc,
+} from "../_shared/agent_memory.ts";
 import { corsHeaders } from "../_shared/cors.ts";
 import { COACH_SYSTEM_PROMPT, finalizeInstruction, trainingPhase } from "../_shared/prompt.ts";
 import type { LlmProvider } from "../_shared/types.ts";
@@ -36,10 +43,12 @@ const TOOL_RULES = `
 RULES:
 - Before giving training advice or a plan, READ the relevant data first (get_fitness, get_planned_week, get_recent_activities, get_strength_summary, get_readiness, get_execution_analysis, get_profile). Ground every claim in what you read.
 - NEVER ask the athlete to describe past workouts, sessions, or numbers you can look up yourself. Questions like "how did my last workouts go?" mean: call get_recent_activities and get_execution_analysis (plus get_strength_summary for lifting), then answer from the data.
-- Take ACTIONS (plan_week, generate_workout, move_workout, set_goal_race) ONLY after the athlete clearly agrees, then confirm what you did and why in your final message.
+- DRIVE the task to completion in this turn. When the athlete's message already asks for or agrees to an action (e.g. "plan my week and put it on my calendar", "make me today's workout", "apply that"), TAKE the action (plan_week, generate_workout, move_workout, set_goal_race) now — don't stop to ask "shall I?" again. Then confirm what you did and why.
+- Only pause to ask first when the action is ambiguous or destructive (overwriting an existing planned week, changing a goal race date) AND the athlete hasn't already signalled they want it. When you do ask, ask once and propose a specific default.
+- Don't end a turn by handing trivial work back ("want me to schedule it?") when the request already implied yes — just do it and report.
 - Call remember when the athlete shares a durable preference, constraint, or injury.
-- Be efficient: a few targeted reads, then answer. You have at most 6 tool calls per turn.
-- Final messages are warm but concise — reference the actual numbers, and give one clear next step.`;
+- Be efficient: a few targeted reads, then act/answer. You have at most 6 tool calls per turn.
+- Final messages are warm but concise — reference the actual numbers, and end with what you did or one clear next step.`;
 
 // System prompt suffix when the provider has native tool calling.
 const NATIVE_TOOL_PREAMBLE = `
@@ -88,56 +97,16 @@ function waitUntil(p: Promise<unknown>) {
   } catch { /* local dev runtime without EdgeRuntime */ }
 }
 
-// Cap what we send to the model on long threads: keep the opening message
-// (it anchors the thread's purpose) plus the most recent turns, within a rough
-// character budget. The FULL thread is still persisted — only the model input
-// is trimmed, so token cost stops growing linearly with conversation length.
-function trimThread(msgs: ChatMessage[], maxTurns = 24, maxChars = 24_000): ChatMessage[] {
-  const kept = msgs.length <= maxTurns
-    ? [...msgs]
-    : [msgs[0], ...msgs.slice(-(maxTurns - 1))];
-  let total = kept.reduce((s, m) => s + m.content.length, 0);
-  while (kept.length > 2 && total > maxChars) {
-    total -= kept.splice(1, 1)[0].content.length; // drop oldest after the anchor
-  }
-  return kept;
-}
+// Active window sent to the model on long threads: the opening message (anchors
+// the thread's purpose) plus the most recent turns within a budget. The FULL
+// thread is still persisted, and the dropped turns are folded into a running
+// summary (see persistThread), so old context is COMPRESSED, not lost.
+const trimThread = (msgs: ChatMessage[]): ChatMessage[] => compressThread(msgs).kept;
 
 // Durable facts worth remembering tend to mention these. We only spend a token
 // budget on knowledge-extraction when the latest user turn plausibly carries one.
 const KNOWLEDGE_HINTS =
   /\b(injur|hurt|pain|sore|tendin|strain|sprain|knee|shoulder|back|hip|ankle|wrist|elbow|equipment|dumbbell|barbell|kettlebell|machine|rack|gym|home|treadmill|don'?t have|no access|only have|prefer|hate|dislike|avoid|can'?t|cannot|unable|allerg|vegan|schedule|mornings?|evenings?|nights?|work|travel|busy|recover)/i;
-
-// Maintain user_profiles.coach_knowledge from the conversation. Best-effort:
-// returns the new knowledge text (or null if unchanged / on failure).
-async function updateKnowledge(
-  admin: ReturnType<typeof adminClient>,
-  userId: string,
-  existing: string,
-  recent: ChatMessage[],
-  chain: LlmProvider[],
-  resolveKey: (p: LlmProvider) => Promise<string | null>,
-): Promise<void> {
-  const transcript = recent
-    .slice(-6)
-    .map((m) => `${m.role === "user" ? "Athlete" : "Coach"}: ${m.content}`)
-    .join("\n");
-  const prompt =
-    `You maintain an athlete's durable COACHING KNOWLEDGE — a short bullet list of facts a coach must always honor: injuries/limitations, equipment they have or lack, scheduling constraints, exercise preferences and dislikes, dietary/other constraints.\n\n` +
-    `EXISTING KNOWLEDGE:\n${existing.trim() || "(empty)"}\n\n` +
-    `RECENT CONVERSATION:\n${transcript}\n\n` +
-    `Return the UPDATED knowledge as a concise markdown bullet list (max ~12 bullets). Merge new durable facts, drop anything the athlete has retracted, keep it terse. If nothing durable changed, return the existing list unchanged. Output ONLY the bullet list, no preamble.`;
-  try {
-    const out = await llmGenerateWithFallback(chain, { prompt, systemPrompt: "You extract and maintain durable athlete facts. Output only a bullet list." }, resolveKey);
-    const next = out.text.trim();
-    // Sanity: keep only plausible bullet output, cap length.
-    if (next && next.length <= 2000 && /[-*•]/.test(next) && next !== existing.trim()) {
-      await admin.from("user_profiles").update({ coach_knowledge: next }).eq("id", userId);
-    }
-  } catch (_e) {
-    // best-effort — never block the chat on this
-  }
-}
 
 Deno.serve(async (req) => {
   const pre = handleOptions(req);
@@ -156,11 +125,28 @@ Deno.serve(async (req) => {
     // --- athlete context so the coach grounds advice in real data ----------
     const { data: profile } = await admin
       .from("user_profiles")
-      .select("display_name, onboarding, active_llm_provider, llm_fallback_chain, coach_knowledge")
+      .select("display_name, onboarding, active_llm_provider, llm_fallback_chain, coach_knowledge, training_memory, coach_soul, coach_soul_updated_at")
       .eq("id", userId)
       .single();
     const onboarding = (profile?.onboarding ?? {}) as Record<string, unknown>;
     const existingKnowledge = (profile?.coach_knowledge ?? "") as string;
+    const agentMemory = memoryFromProfile(profile);
+
+    // Running summary of earlier turns archived out of the active window — lets
+    // long threads stay coherent without resending every token.
+    let convSummary = "";
+    if (body.conversationId) {
+      const { data: conv } = await admin
+        .from("coach_conversations")
+        .select("summary")
+        .eq("id", body.conversationId)
+        .eq("user_id", userId)
+        .single();
+      convSummary = ((conv?.summary ?? "") as string).trim();
+    }
+    const summaryBlock = convSummary
+      ? `\n\nCONVERSATION SO FAR (summary of earlier turns archived from context — rely on it; don't re-ask what it already covers):\n${convSummary}`
+      : "";
 
     const since28 = new Date(Date.now() - 28 * DAY).toISOString().slice(0, 10);
     const since7 = new Date(Date.now() - 7 * DAY).toISOString().slice(0, 10);
@@ -229,9 +215,8 @@ Deno.serve(async (req) => {
 - Today's plan: ${todayLine}
 - Last completed sessions (newest first): ${recentLines.join(" | ") || "none recorded in the last 28 days"}
 - ~${weeklyKm.toFixed(0)} km/week recently; training phase: ${trainingPhase(weeksToGoal)}` +
-      (existingKnowledge.trim()
-        ? `\n\nKNOWN CONSTRAINTS & PREFERENCES (already on file — honor these, ask before changing them):\n${existingKnowledge.trim()}`
-        : "");
+      memoryDocsBlock(agentMemory) +
+      summaryBlock;
 
     const systemPrompt = `${COACH_SYSTEM_PROMPT}\n\n${context}`;
 
@@ -334,10 +319,20 @@ Deno.serve(async (req) => {
             convId = conv?.id ?? null;
           }
         } catch { /* best effort */ }
+        const bundle = { chain, resolveKey, resolveModel, resolveBaseUrl };
         const lastUser = [...messages].reverse().find((m) => m.role === "user")?.content ?? "";
         if (KNOWLEDGE_HINTS.test(lastUser)) {
           // Slow secondary LLM call — never block the response on it.
-          waitUntil(updateKnowledge(admin, userId, existingKnowledge, fullThread as ChatMessage[], chain, resolveKey));
+          waitUntil(updateUserDoc(admin, userId, existingKnowledge, fullThread as ChatMessage[], bundle));
+        }
+        // Fold any turns now archived out of the active window into the running
+        // summary — background, so the next turn stays coherent for free.
+        const { dropped } = compressThread(fullThread as ChatMessage[]);
+        if (dropped.length && convId) {
+          waitUntil((async () => {
+            const s = await summarizeDropped(dropped, bundle);
+            if (s) await admin.from("coach_conversations").update({ summary: s }).eq("id", convId).eq("user_id", userId);
+          })());
         }
         return convId;
       };
@@ -408,7 +403,7 @@ Deno.serve(async (req) => {
       const lastUser = [...messages].reverse().find((m) => m.role === "user")?.content ?? "";
       if (KNOWLEDGE_HINTS.test(lastUser)) {
         // Slow secondary LLM call — don't block the reply on it.
-        waitUntil(updateKnowledge(admin, userId, existingKnowledge, fullThread as ChatMessage[], chain, resolveKey));
+        waitUntil(updateUserDoc(admin, userId, existingKnowledge, fullThread as ChatMessage[], { chain, resolveKey, resolveModel, resolveBaseUrl }));
       }
       return json({ reply: outcome.text, conversation_id: conversationId, provider: outcome.provider, estimated_cost_usd: cost });
     }

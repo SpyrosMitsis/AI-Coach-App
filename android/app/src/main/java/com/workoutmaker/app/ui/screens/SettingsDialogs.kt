@@ -121,7 +121,7 @@ internal fun AddRaceDialog(onClose: () -> Unit, onAdd: (com.workoutmaker.app.dat
                         date = java.time.Instant.ofEpochMilli(it).atZone(java.time.ZoneOffset.UTC).toLocalDate()
                     }
                     showPicker = false
-                }) { Text("OK") }
+                }) { Text("Set date") }
             },
             dismissButton = { TextButton(onClick = { showPicker = false }) { Text("Cancel") } },
         ) { DatePicker(state = state) }
@@ -193,7 +193,6 @@ internal fun ZonesSection(vm: SettingsViewModel) {
     val profile by vm.profile.collectAsStateSafe()
     val tests by vm.thresholdTests.collectAsStateSafe()
     val busy by vm.busy.collectAsStateSafe()
-    val saveStatus by vm.saveStatus.collectAsStateSafe()
 
     var lthr by remember(profile.lthr) { mutableStateOf(profile.lthr?.toString() ?: "") }
     var pace by remember(profile.threshold_pace_per_km) { mutableStateOf(profile.threshold_pace_per_km ?: "") }
@@ -214,23 +213,9 @@ internal fun ZonesSection(vm: SettingsViewModel) {
             modifier = Modifier.fillMaxWidth())
         Button(onClick = { vm.saveThresholds(lthr.toIntOrNull(), ftp.toIntOrNull(), pace.ifBlank { null }) },
             enabled = !busy, modifier = Modifier.fillMaxWidth()) { Text("Save thresholds") }
-        saveStatus?.let { Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.primary) }
     }
 
-    val hrZones = profile.lthr?.let { com.workoutmaker.app.data.Zones.hrZonesFromLthr(it) }.orEmpty()
-    val paceZones = profile.threshold_pace_per_km?.let { com.workoutmaker.app.data.Zones.parsePace(it) }
-        ?.let { com.workoutmaker.app.data.Zones.paceZonesFromThreshold(it) }.orEmpty()
-    val powerZones = profile.ftp?.let { com.workoutmaker.app.data.Zones.powerZonesFromFtp(it) }.orEmpty()
-
-    if (hrZones.isNotEmpty()) SectionCard(title = "Heart-rate zones") {
-        hrZones.forEach { z -> ZoneRow(z.name, "${z.min}–${z.max} bpm") }
-    }
-    if (paceZones.isNotEmpty()) SectionCard(title = "Pace zones") {
-        paceZones.forEach { z -> ZoneRow(z.name, z.range) }
-    }
-    if (powerZones.isNotEmpty()) SectionCard(title = "Power zones") {
-        powerZones.forEach { z -> ZoneRow(z.name, z.range) }
-    }
+    ZoneTables(profile.lthr, profile.threshold_pace_per_km, profile.ftp)
 
     SectionCard(title = "Threshold tests") {
         Text("Log a test result and your threshold (and zones) update automatically.",
@@ -248,6 +233,25 @@ internal fun ZonesSection(vm: SettingsViewModel) {
             }
         }
         OutlinedButton(onClick = { showTest = true }, modifier = Modifier.fillMaxWidth()) { Text("Log a test") }
+    }
+}
+
+// Shared pace/HR/power zone tables, reused by Settings and the cardio plan peek.
+@Composable
+internal fun ZoneTables(lthr: Int?, thresholdPace: String?, ftp: Int?) {
+    val hrZones = lthr?.let { com.workoutmaker.app.data.Zones.hrZonesFromLthr(it) }.orEmpty()
+    val paceZones = thresholdPace?.let { com.workoutmaker.app.data.Zones.parsePace(it) }
+        ?.let { com.workoutmaker.app.data.Zones.paceZonesFromThreshold(it) }.orEmpty()
+    val powerZones = ftp?.let { com.workoutmaker.app.data.Zones.powerZonesFromFtp(it) }.orEmpty()
+
+    if (hrZones.isNotEmpty()) SectionCard(title = "Heart-rate zones") {
+        hrZones.forEach { z -> ZoneRow(z.name, "${z.min}–${z.max} bpm") }
+    }
+    if (paceZones.isNotEmpty()) SectionCard(title = "Pace zones") {
+        paceZones.forEach { z -> ZoneRow(z.name, z.range) }
+    }
+    if (powerZones.isNotEmpty()) SectionCard(title = "Power zones") {
+        powerZones.forEach { z -> ZoneRow(z.name, z.range) }
     }
 }
 

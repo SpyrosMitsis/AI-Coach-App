@@ -20,8 +20,10 @@ import {
 } from "../_shared/prompt.ts";
 import { createEvent, deleteEvent, latestFitness } from "../_shared/intervals.ts";
 import { renderIntervalsWorkout } from "../_shared/intervals_workout.ts";
-import { adherenceBlock, executionBlock, goalBlock, intervalsPhysiology, knowledgeBlock, memoryBlock } from "../_shared/context.ts";
+import { adherenceBlock, executionBlock, goalBlock, intervalsPhysiology } from "../_shared/context.ts";
+import { memoryDocsBlock, memoryFromProfile } from "../_shared/agent_memory.ts";
 import { exerciseCatalogBlock, registerUnknownExercises } from "../_shared/exercise_catalog.ts";
+import { reviewWorkout } from "../_shared/workout_review.ts";
 import type { LlmProvider, Workout } from "../_shared/types.ts";
 import type { SupabaseClient } from "jsr:@supabase/supabase-js@2";
 
@@ -120,7 +122,7 @@ async function planForUser(admin: SupabaseClient, userId: string, start: string,
       `- ${d} (${weekdayOf(d)}): ${(r.workout_json as Workout)?.title ?? r.type} [${r.type}]`).join("\n");
 
   const contextBlocks =
-    knowledgeBlock(profile) + memoryBlock(profile) + phys.block +
+    memoryDocsBlock(memoryFromProfile(profile)) + phys.block +
     await adherenceBlock(admin, userId, since14, start, acts28) +
     await executionBlock(admin, userId, since14) +
     goalBlock(onboarding, weeksToGoal, phase, acts28) + lockedBlock +
@@ -194,10 +196,32 @@ async function planForUser(admin: SupabaseClient, userId: string, start: string,
   await admin.from("planned_workouts").delete()
     .eq("user_id", userId).gte("date", planFrom).lte("date", end).eq("completed", false).eq("locked", false);
 
+  // Content review per day — same engine as generate-workout: strip
+  // contraindicated movements, clamp unsafe loads, recompute endurance TSS, and
+  // fall back to recovery if a day is left unsafe/empty. (mainLifts/volume/48h
+  // aren't tracked at week scope, so those checks are no-ops here; safety + TSS
+  // + readiness still apply.)
+  const injuries = [onboarding.injury_history, profile.coach_knowledge].filter(Boolean).join("; ");
+  const weekViolations: string[] = [];
+
   // Don't insert on dates that already hold a locked session.
   const rows = dates.map((date, i) => {
-    const session = plan.days[i]?.session ??
+    let session = plan.days[i]?.session ??
       { type: "rest", title: "Rest day", duration_minutes: 0, tss_estimate: 0, rpe_target: 0, sections: [], coach_note: "Recovery." } as Workout;
+    const rev = reviewWorkout(session, {
+      mainLifts: [], weeklySetsByMuscle: {}, muscleGroupsLast48h: [],
+      tsb: fitness.tsb, daysSinceLastHard: 99, // back-to-back is enforced by the week prompt
+      experience: onboarding.experience ?? "Intermediate", injuries,
+    });
+    session = rev.corrected;
+    if (session.type !== "rest" && session.sections.every((s) => s.exercises.length === 0)) {
+      session = {
+        type: "rest", title: "Recovery / mobility", duration_minutes: 30,
+        tss_estimate: 10, rpe_target: 2, sections: [],
+        coach_note: "Held back: this day conflicted with an injury/constraint on file.",
+      } as Workout;
+    }
+    if (rev.violations.length) weekViolations.push(`${date}: ${rev.violations.join("; ")}`);
     return { user_id: userId, date, type: session.type, workout_json: session, llm_provider: outcome.provider, llm_model: outcome.model };
   }).filter((row) => !lockedByDate.has(row.date));
   const { data: inserted, error: insErr } = await admin.from("planned_workouts").insert(rows).select("id, date");
@@ -239,6 +263,7 @@ async function planForUser(admin: SupabaseClient, userId: string, start: string,
     prompt_tokens: outcome.promptTokens, completion_tokens: outcome.completionTokens,
     estimated_cost_usd: cost, system_prompt: WEEK_SYSTEM_PROMPT, user_prompt: userPrompt,
     raw_response: outcome.text, parsed_ok: true,
+    error: weekViolations.length ? JSON.stringify(weekViolations) : null,
   });
 
   return {

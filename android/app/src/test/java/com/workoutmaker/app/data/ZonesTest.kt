@@ -37,4 +37,40 @@ class ZonesTest {
         // Z4 threshold band brackets FTP.
         assertTrue(z[3].min <= 250 && z[3].max >= 250)
     }
+
+    @Test fun parseDurationSecHandlesTimeNotDistance() {
+        assertEquals(180, Zones.parseDurationSec("3min"))
+        assertEquals(600, Zones.parseDurationSec("10 min"))
+        assertEquals(600, Zones.parseDurationSec("10m"))
+        assertEquals(90, Zones.parseDurationSec("90s"))
+        assertEquals(300, Zones.parseDurationSec("5:00"))
+        assertEquals(3600, Zones.parseDurationSec("1h"))
+        assertNull(Zones.parseDurationSec("1km"))   // distance, not time
+        assertNull(Zones.parseDurationSec("8-10"))   // rep count
+        assertNull(Zones.parseDurationSec(""))
+    }
+
+    @Test fun zoneNumExtractsOneToFive() {
+        assertEquals(4, Zones.zoneNum("Z4"))
+        assertEquals(2, Zones.zoneNum("Zone 2 - aerobic"))
+        assertNull(Zones.zoneNum("warmup"))
+    }
+
+    @Test fun targetRangePrefersPaceThenHr() {
+        // 4:00/km threshold → Z4 pace band is a real /km range.
+        val pace = Zones.targetRange("Z4", "Z4", thresholdSecPerKm = 240, lthr = 170)
+        assertTrue(pace!!.contains("/km"))
+        // No pace threshold → falls back to HR band.
+        val hr = Zones.targetRange("Z4", "Z4", thresholdSecPerKm = null, lthr = 170)
+        assertTrue(hr!!.contains("bpm"))
+        // Neither threshold → null.
+        assertNull(Zones.targetRange("Z4", "Z4", thresholdSecPerKm = null, lthr = null))
+    }
+
+    @Test fun fmtDurationShortReadsCleanly() {
+        assertEquals("3 min", Zones.fmtDurationShort(180))
+        assertEquals("45s", Zones.fmtDurationShort(45))
+        assertEquals("1:30", Zones.fmtDurationShort(90))
+        assertEquals("", Zones.fmtDurationShort(0))
+    }
 }

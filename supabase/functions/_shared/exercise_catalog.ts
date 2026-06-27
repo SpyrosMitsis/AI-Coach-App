@@ -155,6 +155,22 @@ for (const e of EXERCISE_CATALOG) {
   if (f && fuzzCount.get(f) === 1) catalogByFuzz.set(f, e);
 }
 
+const catalogMuscleByNorm = new Map(EXERCISE_CATALOG.map((e) => [normName(e.name), e.muscle]));
+
+/**
+ * Resolve the primary muscle for an exercise name: the athlete's customs first,
+ * then the catalog by exact normalised name, then the fuzzy (equipment-stripped)
+ * key. Returns null when nothing maps — callers treat that as "unknown muscle".
+ */
+export function muscleForName(name: string, custom: CatalogExercise[] = []): string | null {
+  const n = normName(name);
+  if (!n) return null;
+  for (const c of custom) if (normName(c.name) === n) return c.muscle || null;
+  const direct = catalogMuscleByNorm.get(n);
+  if (direct) return direct;
+  return catalogByFuzz.get(fuzzName(name))?.muscle ?? null;
+}
+
 /**
  * Snap each strength exercise the model named to a loggable catalog entry when
  * it's clearly a re-worded duplicate (e.g. "Machine Lat Pulldown" → "Lat
@@ -222,7 +238,10 @@ export async function exerciseCatalogBlock(
     `- Every strength exercise "name" MUST be copied character-for-character from the library above.\n` +
     `- Only if something essential is truly missing may you introduce a new exercise; in that case you MUST also set ` +
     `"muscle" (one of: ${MUSCLES.join(", ")}) and "category" (one of: ${CATEGORIES.join(", ")}) and "compound" (true/false) on that exercise object.\n` +
-    `- Cardio-category entries (e.g. Rowing Machine) are logged in MINUTES: set "reps" to the duration like "10 min", sets to the number of intervals, and "weight_kg" to null.`;
+    `- For any cardio / conditioning / warm-up cardio block you MUST pick one of the Cardio library entries by exact name (${
+      EXERCISE_CATALOG.filter((e) => e.muscle === "Cardio").map((e) => e.name).join(", ")
+    }). NEVER invent a generic name like "Light Cardio", "Cardio", "Conditioning" or "HIIT".\n` +
+    `- Cardio entries are logged in MINUTES: set "reps" to the duration like "10 min", sets to the number of intervals, and "weight_kg" to null.`;
 }
 
 /**

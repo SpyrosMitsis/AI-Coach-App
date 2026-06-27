@@ -98,7 +98,14 @@ private fun MainScaffold() {
         if (java.io.File(context.filesDir, "active_session.json").exists()) "strength" else "home"
     }
 
+    val snackHost = androidx.compose.runtime.remember { androidx.compose.material3.SnackbarHostState() }
+    val snackScope = androidx.compose.runtime.rememberCoroutineScope()
+    val appSnackbar = androidx.compose.runtime.remember(snackHost, snackScope) {
+        com.workoutmaker.app.ui.components.AppSnackbar(snackHost, snackScope)
+    }
+
     Scaffold(
+        snackbarHost = { androidx.compose.material3.SnackbarHost(snackHost) },
         bottomBar = {
             NavigationBar {
                 val current by nav.currentBackStackEntryAsState()
@@ -132,6 +139,9 @@ private fun MainScaffold() {
             }
             nav.popBackStack("strength", false)
         }
+        androidx.compose.runtime.CompositionLocalProvider(
+            com.workoutmaker.app.ui.components.LocalAppSnackbar provides appSnackbar,
+        ) {
         NavHost(nav, startDestination = startDestination, modifier = Modifier.padding(padding)) {
             composable("home") { HomeScreen() }
             composable("coach") {
@@ -165,6 +175,7 @@ private fun MainScaffold() {
                 )
             }
             composable("settings") { SettingsScreen() }
+        }
         }
     }
 }

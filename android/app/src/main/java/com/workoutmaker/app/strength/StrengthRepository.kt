@@ -94,6 +94,8 @@ class StrengthRepository @Inject constructor(
 
     // --- B1: next-session suggestion for an exercise -----------------------
     suspend fun progressionFor(exercise: String): ProgressionSuggestion? {
+        // Cardio is logged in minutes, not load — no strength progression target.
+        if (ExerciseCatalog.isCardio(exercise)) return null
         val last = previousSets(exercise).map { it.toLog() }
         if (last.isEmpty()) return null
         val compound = ExerciseCatalog.find(exercise)?.compound ?: false

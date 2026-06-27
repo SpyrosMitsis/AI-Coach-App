@@ -6,6 +6,7 @@ import androidx.compose.material3.darkColorScheme
 import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.luminance
 
 // ============================================================================
 // "Serene Vanguard" — grounded, restorative wellness palette.
@@ -60,7 +61,51 @@ private val DarkColors = darkColorScheme(
     onErrorContainer = Color(0xFFFFDAD6),
 )
 
-private val LightColors = lightColorScheme(primary = SageDim)
+// Light "Serene Vanguard": the same sage identity on warm sage-tinted paper.
+// Depth is tonal (cards lift lighter off the page; inset rows recess darker),
+// mirroring the dark theme's logic rather than relying on shadows. The accent is
+// a DEEPER sage than the dark-mode pastel so it stays legible on a light surface.
+private val LightColors = lightColorScheme(
+    primary = Color(0xFF40624A),
+    onPrimary = Color(0xFFFFFFFF),
+    primaryContainer = Color(0xFFC2E8C7),
+    onPrimaryContainer = Color(0xFF00210D),
+    secondary = Color(0xFF6A5D4E),          // warm taupe — the light-mode "Sand"
+    onSecondary = Color(0xFFFFFFFF),
+    secondaryContainer = Color(0xFFF2E3CE),
+    onSecondaryContainer = Color(0xFF241A0C),
+    tertiary = Color(0xFF4A635A),
+    onTertiary = Color(0xFFFFFFFF),
+    tertiaryContainer = Color(0xFFCCE9DC),
+    onTertiaryContainer = Color(0xFF06201A),
+    background = Color(0xFFF1F4EC),          // soft sage paper
+    onBackground = Color(0xFF1A1C19),
+    surface = Color(0xFFFAFCF4),             // card — lifts lighter off the paper
+    onSurface = Color(0xFF1A1C19),
+    surfaceVariant = Color(0xFFDDE5D8),
+    onSurfaceVariant = Color(0xFF424A40),
+    // Lowest is intentionally DARKER than the card so inset stats/quote blocks
+    // read as recessed (same trick as the dark theme, inverted).
+    surfaceContainerLowest = Color(0xFFE7ECE0),
+    surfaceContainerLow = Color(0xFFF3F6EC),
+    surfaceContainer = Color(0xFFFAFCF4),
+    surfaceContainerHigh = Color(0xFFEFF2E8),
+    surfaceContainerHighest = Color(0xFFE9EDE2),
+    outline = Color(0xFF72796D),
+    outlineVariant = Color(0xFFC2C9BB),
+    error = Color(0xFFB3261E),
+    onError = Color(0xFFFFFFFF),
+    errorContainer = Color(0xFFF9DEDC),
+    onErrorContainer = Color(0xFF410E0B),
+)
+
+// The one brand accent with no Material colorScheme slot: caution/amber. Sage →
+// colorScheme.primary, Sand → secondary, red → error already adapt; amber needs
+// this. Reads the live scheme's luminance so it tracks whichever theme is active
+// (system or forced). Dark returns the exact original BandAmber → no dark change.
+@Composable
+fun amberAccent(): Color =
+    if (MaterialTheme.colorScheme.background.luminance() > 0.5) Color(0xFF8A5A12) else BandAmber
 
 @Composable
 fun WorkoutMakerTheme(

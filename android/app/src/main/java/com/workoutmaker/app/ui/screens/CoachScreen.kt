@@ -37,6 +37,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.ui.draw.clip
+import com.workoutmaker.app.ui.components.EmptyState
 import com.workoutmaker.app.ui.components.GhostButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -71,6 +72,35 @@ private const val GREETING =
         "“how's my fitness looking?”, “plan my week”, “am I overtraining?”, or " +
         "“set my goal race to the Berlin marathon on 2026-09-27”. I'll check your " +
         "numbers, then plan, generate, or adjust your training for you."
+
+// A conversation starter: the short text shown on the chip, plus the richer,
+// directive prompt actually sent to the coach. The chip stays terse; the prompt
+// under the hood tells the coach to read the data and drive to a concrete
+// outcome in one turn — so the user doesn't have to keep nudging "go on".
+data class CoachStarter(val label: String, val prompt: String)
+
+// The directive prompts behind the starter chips. Each one tells the coach to
+// pull the relevant data itself and finish the job in a single turn — give the
+// answer, take the action, and end with a clear next step — instead of asking a
+// question and waiting. This is what removes the "I have to keep saying go on".
+private const val STARTER_FITNESS =
+    "Give me a full read on my fitness right now. Pull my CTL/ATL/TSB, this week's " +
+        "load and my readiness, then tell me what shape I'm in, what's trending up or " +
+        "down, and the one thing I should focus on this week. Use the real numbers."
+private const val STARTER_PLAN_WEEK =
+    "Plan my full training week. Check my fitness, readiness, recent sessions and goal " +
+        "first, then build the complete week and put it on my calendar — don't ask me to " +
+        "confirm each day. When it's scheduled, summarize the week and why it's built that way."
+private const val STARTER_EXPLAIN_TODAY =
+    "Look at today's planned workout and explain exactly why it's the right session for me " +
+        "today — how it fits my current fitness, fatigue and goal. If it doesn't match how " +
+        "I'm likely feeling, propose a specific adjustment and offer to apply it."
+private const val STARTER_MAKE_TODAY =
+    "Make me today's workout. Check my readiness, recent training and goal, pick the right " +
+        "type and intensity yourself, generate it and put it on my calendar, then tell me the plan."
+private const val STARTER_RECENT =
+    "Review how my recent training has actually gone — how I executed the sessions versus the " +
+        "plan. Tell me what's going well, what's lagging, and the most useful change to make next."
 
 // Live progress line while the agentic loop runs ("checking your fitness…").
 internal fun friendlyToolProgress(tool: String): String = when (tool) {
@@ -121,24 +151,37 @@ class CoachViewModel @Inject constructor(private val repo: WorkoutRepository) : 
     // After the coach changes the calendar: this week's sessions for the result card.
     val actionWeek = MutableStateFlow<List<com.workoutmaker.app.data.PlannedWorkout>?>(null)
     // Contextual conversation starters, built from the cached dashboard.
-    val suggestions = MutableStateFlow(listOf("How's my fitness looking?", "Plan my week"))
+    val suggestions = MutableStateFlow(
+        listOf(
+            CoachStarter("How's my fitness?", STARTER_FITNESS),
+            CoachStarter("Plan my week", STARTER_PLAN_WEEK),
+        ),
+    )
     private var conversationId: String? = null
 
     init {
         viewModelScope.launch {
             val cached = runCatching { repo.cachedDailySummary() }.getOrNull()?.first
-            val chips = mutableListOf("How's my fitness looking?")
+            val chips = mutableListOf(CoachStarter("How's my fitness?", STARTER_FITNESS))
             val today = cached?.today_workout
             if (today?.workout_json != null && !today.completed) {
-                chips += "Explain today's workout"
+                chips += CoachStarter("Explain today's workout", STARTER_EXPLAIN_TODAY)
             } else if (today == null) {
-                chips += "Make me a workout for today"
+                chips += CoachStarter("Workout for today", STARTER_MAKE_TODAY)
             }
-            chips += "Plan my week"
+            chips += CoachStarter("Plan my week", STARTER_PLAN_WEEK)
             cached?.goal?.let { g ->
-                g.weeks_to_goal?.let { w -> chips += "Am I on track for ${g.goal} ($w weeks out)?" }
+                g.weeks_to_goal?.let { w ->
+                    chips += CoachStarter(
+                        "On track for ${g.goal}?",
+                        "Am I on track for my goal of ${g.goal}, $w weeks out? Read my fitness " +
+                            "trend (CTL/ATL/TSB), recent volume and how I've been executing, then tell " +
+                            "me honestly if I'm ahead, on pace, or behind, and the single most important " +
+                            "thing to adjust over the next two weeks.",
+                    )
+                }
             }
-            chips += "How did my last workouts go?"
+            chips += CoachStarter("How did my training go?", STARTER_RECENT)
             suggestions.value = chips.take(5)
         }
     }
@@ -320,11 +363,10 @@ fun CoachScreen(vm: CoachViewModel = hiltViewModel(), onOpenCalendar: () -> Unit
                 modifier = Modifier.padding(horizontal = 20.dp, vertical = 8.dp),
             )
             if (conversations.isEmpty()) {
-                Text(
-                    "No past conversations yet.",
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.padding(horizontal = 20.dp, vertical = 12.dp),
+                EmptyState(
+                    title = "No conversations yet",
+                    subtitle = "Your past coaching chats will show up here.",
+                    icon = Icons.Filled.History,
                 )
             } else {
                 LazyColumn(
@@ -350,15 +392,17 @@ fun CoachScreen(vm: CoachViewModel = hiltViewModel(), onOpenCalendar: () -> Unit
 
     Column(Modifier.fillMaxSize().padding(top = 8.dp)) {
         Row(
-            Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp),
+            Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 14.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            Text(
-                "Coach",
-                style = MaterialTheme.typography.headlineSmall,
-                fontWeight = FontWeight.Bold,
-                modifier = Modifier.weight(1f),
-            )
+            Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                com.workoutmaker.app.ui.components.SectionLabel("AI COACH")
+                Text(
+                    "Coach",
+                    style = MaterialTheme.typography.headlineSmall,
+                    fontWeight = FontWeight.Bold,
+                )
+            }
             IconButton(onClick = { vm.openHistory() }) {
                 Icon(Icons.Filled.History, contentDescription = "Chat history")
             }
@@ -393,7 +437,10 @@ fun CoachScreen(vm: CoachViewModel = hiltViewModel(), onOpenCalendar: () -> Unit
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
             ) {
                 items(suggestions) { sgn ->
-                    androidx.compose.material3.AssistChip(onClick = { vm.send(sgn) }, label = { Text(sgn) })
+                    androidx.compose.material3.AssistChip(
+                        onClick = { vm.send(sgn.prompt) },
+                        label = { Text(sgn.label) },
+                    )
                 }
             }
         }

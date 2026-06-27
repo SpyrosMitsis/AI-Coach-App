@@ -164,6 +164,25 @@ object ExerciseCatalog {
 
     fun find(name: String): Exercise? = customByName[name] ?: byName[name]
     fun muscleOf(name: String): String = find(name)?.muscle ?: "Other"
+
+    // Generic cardio names the AI sometimes invents ("Light Cardio", "HIIT",
+    // "Conditioning"). Real cardio equipment (Treadmill Run, Rowing Machine, …)
+    // is already tagged Cardio in the catalog, so this only needs to catch the
+    // off-catalog wording — and deliberately omits ambiguous words like "row" /
+    // "run" / "bike" that appear in strength exercise names.
+    private val cardioName = Regex(
+        "\\b(cardio|treadmill|elliptical|jog(ging)?|spinning|cycling|conditioning|hiit|aerobic)\\b",
+        RegexOption.IGNORE_CASE,
+    )
+
+    /** True for cardio entries: tagged Cardio in the catalog, or an off-catalog
+     *  name that clearly reads as cardio. Drives minute-based logging (no load,
+     *  no strength progression). */
+    fun isCardio(name: String): Boolean {
+        val e = find(name)
+        if (e != null && (e.category == "Cardio" || e.muscle == "Cardio")) return true
+        return cardioName.containsMatchIn(name)
+    }
     fun restOf(name: String): Int = find(name)?.defaultRestSec ?: 120
     fun isCustom(name: String): Boolean = customByName.containsKey(name)
 

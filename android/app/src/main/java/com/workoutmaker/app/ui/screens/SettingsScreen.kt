@@ -121,6 +121,14 @@ internal val SETTINGS_GROUPS = listOf(
 @Composable
 fun SettingsScreen(vm: SettingsViewModel = hiltViewModel()) {
     LaunchedEffect(Unit) { vm.load() }
+    // Save confirmations / errors go to the one app-wide snackbar.
+    val snackbar = com.workoutmaker.app.ui.components.LocalAppSnackbar.current
+    val saveStatus by vm.saveStatus.collectAsStateSafe()
+    LaunchedEffect(saveStatus) {
+        val s = saveStatus ?: return@LaunchedEffect
+        snackbar?.show(if (s.startsWith("✓")) s else com.workoutmaker.app.ui.components.friendlyError(s))
+        vm.saveStatus.value = null
+    }
     var open by rememberSaveable { mutableStateOf<String?>(null) }
     BackHandler(enabled = open != null) { open = null }
 
@@ -133,7 +141,7 @@ fun SettingsScreen(vm: SettingsViewModel = hiltViewModel()) {
 
 @Composable
 internal fun SettingsIndex(onOpen: (String) -> Unit) {
-    ScreenScaffold(title = "Settings", subtitle = "Everything in one place") { mod ->
+    ScreenScaffold(title = "Settings", subtitle = "Everything in one place", eyebrow = "PREFERENCES") { mod ->
         SETTINGS_GROUPS.forEach { group ->
             Text(
                 group.header.uppercase(),

@@ -32,10 +32,10 @@ import {
   goalBlock,
   intervalsPhysiology,
   knowledgeBlock,
-  memoryBlock,
   recoveryBlock,
   weatherBlock,
 } from "../_shared/context.ts";
+import { memoryDocsBlock, memoryFromProfile } from "../_shared/agent_memory.ts";
 import { computeRecovery } from "../_shared/recovery.ts";
 import { llmAccess } from "../_shared/llm_keys.ts";
 import {
@@ -44,6 +44,7 @@ import {
   exerciseCatalogBlock,
   registerUnknownExercises,
 } from "../_shared/exercise_catalog.ts";
+import { type MainLift, reviewWorkout } from "../_shared/workout_review.ts";
 
 const DAY = 86_400_000;
 const daysBetween = (a: string, b: Date) => Math.floor((b.getTime() - new Date(a).getTime()) / DAY);
@@ -175,6 +176,11 @@ Deno.serve(async (req) => {
     }
 
     // 6. build prompt -------------------------------------------------------
+    // Hoisted so the post-generation review (step 8d) can re-use the strength
+    // context (progressive-overload floor, volume landmarks, 48h recovery).
+    let mainLifts: MainLift[] = [];
+    let weeklySetsByMuscle: Record<string, number> = {};
+    let muscleGroupsLast48h: string[] = [];
     let userPrompt: string;
     if (type === "strength") {
       // muscle groups trained in last 48h
@@ -184,7 +190,7 @@ Deno.serve(async (req) => {
         .select("muscle_groups, exercise_name, estimated_1rm, sets, date")
         .eq("user_id", userId)
         .gte("date", since48);
-      const muscleGroupsLast48h = [
+      muscleGroupsLast48h = [
         ...new Set((recentStrength ?? []).flatMap((r) => r.muscle_groups ?? [])),
       ];
 
@@ -194,7 +200,7 @@ Deno.serve(async (req) => {
         .select("muscle_groups, sets, date")
         .eq("user_id", userId)
         .gte("date", since7);
-      const weeklySetsByMuscle: Record<string, number> = {};
+      weeklySetsByMuscle = {};
       for (const r of weekStrength ?? []) {
         const setCount = Array.isArray(r.sets) ? r.sets.length : 0;
         for (const mg of r.muscle_groups ?? []) {
@@ -208,7 +214,7 @@ Deno.serve(async (req) => {
         .order("date", { ascending: false })
         .limit(20);
       const seenLift = new Set<string>();
-      const mainLifts = (mainLiftRows ?? [])
+      mainLifts = (mainLiftRows ?? [])
         .filter((r) => {
           if (seenLift.has(r.exercise_name)) return false;
           seenLift.add(r.exercise_name);
@@ -302,10 +308,33 @@ Deno.serve(async (req) => {
       userPrompt += `\n\nRECENT SESSION FEEDBACK (autoregulate from this — if recent sessions were "too_hard" or skipped, reduce intensity/volume; if "too_easy", progress):\n${lines}`;
     }
 
+    // 6a-coherence. adjacent already-planned days (±2) so a single-day
+    // generation doesn't stack two hard/quality sessions back-to-back.
+    if (!body.adjustment) {
+      const win = (offset: number) =>
+        new Date(now.getTime() + offset * DAY).toISOString().slice(0, 10);
+      const { data: neighbors } = await admin
+        .from("planned_workouts")
+        .select("date, type, workout_json")
+        .eq("user_id", userId)
+        .gte("date", win(-2)).lte("date", win(2)).neq("date", date)
+        .order("date", { ascending: true });
+      if (neighbors?.length) {
+        const lines = neighbors.map((n) => {
+          const wj = (n.workout_json ?? {}) as { title?: string; rpe_target?: number };
+          const rpe = typeof wj.rpe_target === "number" ? `, RPE ${wj.rpe_target}` : "";
+          return `- ${n.date}: ${wj.title ?? n.type} (${n.type}${rpe})`;
+        }).join("\n");
+        userPrompt +=
+          `\n\nADJACENT PLANNED DAYS (do NOT place a hard/quality session back-to-back ` +
+          `with one of these — if a neighbour is hard, make today easy/recovery or the ` +
+          `complementary modality; separate hard runs and heavy leg days by ≥24h):\n${lines}`;
+      }
+    }
+
     // 6b-ext. shared context blocks (skipped for the adjust path) -----------
     if (!body.adjustment) {
-      userPrompt += knowledgeBlock(profile);
-      userPrompt += memoryBlock(profile);
+      userPrompt += memoryDocsBlock(memoryFromProfile(profile));
       userPrompt += recoveryBlock(recovery);
       userPrompt += physiologyBlock;
       userPrompt += await adherenceBlock(admin, userId, since14, date, acts28);
@@ -352,7 +381,7 @@ Return the revised workout as JSON only, same schema.`;
     try {
       outcome = await llmGenerateWithFallback(
         chain,
-        { prompt: userPrompt, systemPrompt: SYSTEM_PROMPT },
+        { prompt: userPrompt, systemPrompt: SYSTEM_PROMPT, temperature: 0.4 },
         resolveKey,
         resolveModel,
         resolveBaseUrl,
@@ -389,7 +418,7 @@ Return the revised workout as JSON only, same schema.`;
         const repairPrompt =
           `${userPrompt}\n\nYOUR PREVIOUS RESPONSE could not be parsed/validated (${parseError}). ` +
           `Return ONLY a corrected JSON object that exactly matches the schema — no prose, no code fences.`;
-        const retry = await llmGenerateWithFallback(chain, { prompt: repairPrompt, systemPrompt: SYSTEM_PROMPT }, resolveKey, resolveModel, resolveBaseUrl);
+        const retry = await llmGenerateWithFallback(chain, { prompt: repairPrompt, systemPrompt: SYSTEM_PROMPT, temperature: 0.4 }, resolveKey, resolveModel, resolveBaseUrl);
         const v2 = validateWorkout(extractJson(retry.text));
         if (v2.ok && v2.workout) {
           validated = v2.workout;
@@ -424,9 +453,75 @@ Return the revised workout as JSON only, same schema.`;
     // 8c. snap reworded strength names onto the loggable catalog (e.g. "Machine
     // Lat Pulldown" → "Lat Pulldown") BEFORE saving, so the client gets catalog-
     // exact names and only truly-new exercises become customs.
-    if (validated.type === "strength") {
-      canonicalizeStrengthExercises(validated, await customExercises(admin, userId));
+    const customs = validated.type === "strength" ? await customExercises(admin, userId) : [];
+    if (validated.type === "strength") canonicalizeStrengthExercises(validated, customs);
+
+    // 8d. CONTENT review — enforce the prescription (progressive-overload floor,
+    // load safety ceiling, weekly volume landmark, 48h recovery, endurance
+    // readiness) and recompute an independent TSS so a bad self-report can't
+    // poison next-day ACWR. Auto-fixable issues are corrected in place; any
+    // remaining judgement-call violations trigger ONE targeted repair pass.
+    const reviewCtx = {
+      mainLifts,
+      weeklySetsByMuscle,
+      muscleGroupsLast48h,
+      tsb: fitness.tsb,
+      daysSinceLastHard,
+      experience: onboarding.experience ?? "Intermediate",
+      // Structured safety: injuries on file + durable coach constraints.
+      injuries: [onboarding.injury_history, profile.coach_knowledge].filter(Boolean).join("; "),
+    };
+    let review = reviewWorkout(validated, reviewCtx);
+    validated = review.corrected;
+    if (review.violations.length) {
+      try {
+        const fixPrompt =
+          `${userPrompt}\n\nYOUR PREVIOUS WORKOUT had these problems — fix ALL of them and ` +
+          `return ONLY corrected JSON matching the schema:\n- ${review.violations.join("\n- ")}`;
+        const retry = await llmGenerateWithFallback(
+          chain,
+          { prompt: fixPrompt, systemPrompt: SYSTEM_PROMPT, temperature: 0.4 },
+          resolveKey,
+          resolveModel,
+          resolveBaseUrl,
+        );
+        const v2 = validateWorkout(extractJson(retry.text));
+        if (v2.ok && v2.workout) {
+          const w2 = v2.workout;
+          if (w2.type === "strength") canonicalizeStrengthExercises(w2, customs);
+          const r2 = reviewWorkout(w2, reviewCtx);
+          // Keep the repair only if it genuinely reduced the violation count.
+          if (r2.violations.length < review.violations.length) {
+            validated = r2.corrected;
+            review = r2;
+            outcome = retry;
+          }
+        }
+      } catch (_e) {
+        // Keep the auto-corrected version on any repair failure.
+      }
     }
+
+    // 8e. SAFETY NET — never serve an unsafe or hollowed-out session. If the
+    // contraindication strip (or corrections) left a non-rest workout with no
+    // real content, fall back to a recovery/mobility day rather than risk it.
+    if (validated.type !== "rest" && validated.sections.every((s) => s.exercises.length === 0)) {
+      validated = {
+        type: "rest",
+        title: "Recovery / mobility",
+        duration_minutes: 30,
+        tss_estimate: 10,
+        rpe_target: 2,
+        sections: [],
+        coach_note:
+          "Held back today: the generated session conflicted with an injury/constraint on file. " +
+          "Do easy mobility and recovery instead, and re-generate once it's cleared.",
+      } as typeof validated;
+      review.violations.push("fell back to a safe recovery day (unsafe/empty after review)");
+    }
+
+    // Recompute cost in case the repair pass replaced `outcome`.
+    const finalCost = estimateCostUsd(outcome.provider, outcome.promptTokens, outcome.completionTokens);
 
     // 9. persist planned workout + log -------------------------------------
     // Idempotent: replace any incomplete plan already on this date so repeated
@@ -474,11 +569,13 @@ Return the revised workout as JSON only, same schema.`;
       model: outcome.model,
       prompt_tokens: outcome.promptTokens,
       completion_tokens: outcome.completionTokens,
-      estimated_cost_usd: cost,
+      estimated_cost_usd: finalCost,
       system_prompt: SYSTEM_PROMPT,
       user_prompt: userPrompt,
       raw_response: outcome.text,
       parsed_ok: true,
+      // Record any content-review findings (post-correction) for auditing.
+      error: review.violations.length ? JSON.stringify(review.violations) : null,
       workout_id: planned.id,
     });
 
@@ -513,10 +610,12 @@ Return the revised workout as JSON only, same schema.`;
       workout_id: planned.id,
       provider: outcome.provider,
       model: outcome.model,
-      estimated_cost_usd: cost,
+      estimated_cost_usd: finalCost,
       fallback_attempts: outcome.attempts,
       intervals_event_id: intervalsEventId,
       push_error: pushError,
+      review_violations: review.violations,
+      tss_replaced: review.tssReplaced ?? null,
     });
   } catch (e) {
     return json({ error: e instanceof Error ? e.message : String(e) }, 500);

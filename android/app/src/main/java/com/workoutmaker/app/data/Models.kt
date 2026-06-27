@@ -269,11 +269,32 @@ data class CompletedActivity(
     fun num(key: String): Double? =
         (data_json?.get(key) as? kotlinx.serialization.json.JsonPrimitive)?.contentOrNull?.toDoubleOrNull()
 
+    fun numArray(key: String): List<Double>? {
+        val arr = data_json?.get(key) as? kotlinx.serialization.json.JsonArray ?: return null
+        return arr.map { (it as? kotlinx.serialization.json.JsonPrimitive)?.contentOrNull?.toDoubleOrNull() ?: 0.0 }
+    }
+
     val avgPower: Int? get() = num("icu_average_watts")?.toInt() ?: num("average_watts")?.toInt()
     val maxHr: Int? get() = num("max_heartrate")?.toInt()
     val elevationGain: Int? get() = num("total_elevation_gain")?.toInt() ?: num("icu_elevation_gain")?.toInt()
     val calories: Int? get() = num("calories")?.toInt()
     val avgCadence: Int? get() = num("average_cadence")?.toInt()
+    val maxCadence: Int? get() = num("max_cadence")?.toInt()
+
+    // Elapsed (clock) time including pauses — only interesting when it meaningfully
+    // exceeds moving time.
+    val elapsedSeconds: Int? get() = num("elapsed_time")?.toInt()
+    // Max pace from peak speed (m/s → sec/km); ignores GPS spikes under ~0.5 m/s.
+    val maxPaceSecPerKm: Int? get() = num("max_speed")?.let { if (it > 0.5) (1000.0 / it).toInt() else null }
+    // Normalized/weighted power for runs/rides with a power source.
+    val normalizedPower: Int? get() = num("icu_weighted_avg_watts")?.toInt()
+    // Aerobic decoupling (Pa:HR / Pw:HR drift), as a percentage.
+    val decouplingPct: Double? get() = num("icu_decoupling")
+    // Average ambient temperature (°C), when the device recorded it.
+    val avgTempC: Int? get() = num("average_temp")?.toInt()
+    // Seconds spent in each HR zone (Z1..Zn), when HR zones are configured.
+    val hrZoneTimes: List<Int>? get() =
+        numArray("icu_hr_zone_times")?.map { it.toInt() }?.takeIf { secs -> secs.sum() > 0 }
 }
 
 private val kotlinx.serialization.json.JsonPrimitive.contentOrNull: String?
@@ -365,6 +386,8 @@ data class AnalysisSeries(
     val t: List<Double> = emptyList(),
     val pace: List<Double?> = emptyList(),  // sec/km, null while stopped
     val hr: List<Double?> = emptyList(),
+    val cadence: List<Double?> = emptyList(),  // spm/rpm, null when not recorded
+    val power: List<Double?> = emptyList(),    // watts, null when not recorded
 )
 
 @Serializable
@@ -377,7 +400,7 @@ data class AnalysisTarget(
 )
 
 @Serializable
-data class AnalysisSplit(val km: Double, val sec: Int = 0, val avg_hr: Int? = null)
+data class AnalysisSplit(val km: Double, val sec: Int = 0, val avg_hr: Int? = null, val in_band: Boolean? = null)
 
 @Serializable
 data class ActivityAnalysis(
@@ -424,6 +447,8 @@ data class StrengthAnalysis(
     val total_volume_kg: Double? = null,
     val total_sets: Int? = null,
     val watch: StrengthAnalysisWatch? = null,
+    // HR trace from the paired watch recording, when available (for the chart).
+    val series: AnalysisSeries? = null,
     val planned_title: String? = null,
     val error: String? = null,
 )

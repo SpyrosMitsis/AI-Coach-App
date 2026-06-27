@@ -62,12 +62,25 @@ class UiExercise(val name: String) {
     var suggestion by mutableStateOf<ProgressionSuggestion?>(null) // B1 next-session target
 
     // Cardio entries log MINUTES (in the reps slot) and no weight.
-    val isCardio: Boolean get() = ExerciseCatalog.find(name)?.category == "Cardio"
+    val isCardio: Boolean get() = ExerciseCatalog.isCardio(name)
 }
 
 // Format a kg value tersely (no trailing ".0").
 private fun kg(v: Double): String =
     if (kotlin.math.abs(v - v.toLong()) < 0.001) v.toLong().toString() else ((v * 100).toLong() / 100.0).toString()
+
+// Single source of truth for the 🎯 headline and the greyed input placeholders:
+// when a live progression suggestion exists it drives BOTH, so they can't
+// disagree. Only fills sets the athlete hasn't typed into yet; a history-based
+// suggestion overrides any plan-seeded placeholder.
+private fun applySuggestion(ux: UiExercise, sug: ProgressionSuggestion?) {
+    ux.suggestion = sug
+    if (sug == null) return
+    ux.sets.forEach { s ->
+        if (s.weight.isBlank()) s.suggestedWeight = kg(sug.weightKg)
+        if (s.reps.isBlank()) s.suggestedReps = sug.reps.toString()
+    }
+}
 
 // --- Crash/kill-proof snapshot of the in-progress session -------------------
 @Serializable
@@ -100,6 +113,7 @@ sealed interface StrengthNav {
     data object Picker : StrengthNav
     data class Stats(val exercise: String) : StrengthNav
     data class WorkoutDetail(val workoutId: String) : StrengthNav
+    data object RateEffort : StrengthNav
 }
 
 // A logged workout opened in the detail page: header + sets grouped per exercise.
@@ -443,12 +457,7 @@ class StrengthViewModel @Inject constructor(
         exercises[i] = ux
         viewModelScope.launch {
             ux.previous = repo.previousSets(newName)
-            val sug = repo.progressionFor(newName)
-            ux.suggestion = sug
-            if (sug != null) ux.sets.forEach { s ->
-                if (s.weight.isBlank()) s.suggestedWeight = kg(sug.weightKg)
-                if (s.reps.isBlank()) s.suggestedReps = sug.reps.toString()
-            }
+            applySuggestion(ux, repo.progressionFor(newName))
         }
         persistSession()
     }
@@ -462,12 +471,7 @@ class StrengthViewModel @Inject constructor(
         viewModelScope.launch {
             ux.previous = repo.previousSets(name)
             // B1: prefill empty sets with the auto-progression target.
-            val sug = repo.progressionFor(name)
-            ux.suggestion = sug
-            if (sug != null) ux.sets.forEach { s ->
-                if (s.weight.isBlank() && s.suggestedWeight.isBlank()) s.suggestedWeight = kg(sug.weightKg)
-                if (s.reps.isBlank() && s.suggestedReps.isBlank()) s.suggestedReps = sug.reps.toString()
-            }
+            applySuggestion(ux, repo.progressionFor(name))
         }
     }
 
@@ -483,7 +487,7 @@ class StrengthViewModel @Inject constructor(
                 ux.sets.add(UiSet(suggestedWeight = kg(it.weightKg), suggestedReps = it.reps.toString(), warmup = it.isWarmup))
             }
             exercises.add(ux)
-            launch { ux.previous = repo.previousSets(name); ux.suggestion = repo.progressionFor(name) }
+            launch { ux.previous = repo.previousSets(name); applySuggestion(ux, repo.progressionFor(name)) }
         }
         nav.value = StrengthNav.Active
         startTick()
@@ -537,7 +541,12 @@ class StrengthViewModel @Inject constructor(
                 }
                 e.rest_seconds?.let { ux.restSec = it }
                 exercises.add(ux)
-                viewModelScope.launch { ux.previous = repo.previousSets(e.name) }
+                // History-based suggestion wins over the plan-prescribed weight so
+                // the 🎯 target and the greyed placeholders always match.
+                viewModelScope.launch {
+                    ux.previous = repo.previousSets(e.name)
+                    applySuggestion(ux, repo.progressionFor(e.name))
+                }
             }
         }
     }
@@ -571,6 +580,37 @@ class StrengthViewModel @Inject constructor(
             suggestedWeight = last?.weight?.ifBlank { last.suggestedWeight } ?: "",
             suggestedReps = last?.reps?.ifBlank { last.suggestedReps } ?: "",
         ))
+        persistSession()
+    }
+
+    // Insert a warm-up ramp scaled from the working weight (greyed placeholders,
+    // not logged until the athlete ticks them). Re-running replaces the existing
+    // leading warm-ups instead of stacking. Cardio has no load → no ramp.
+    fun addWarmupRamp(ux: UiExercise) {
+        if (ux.isCardio) return
+        val workKg = ux.sets.firstOrNull { !it.warmup }
+            ?.let { it.weight.toDoubleOrNull() ?: it.suggestedWeight.toDoubleOrNull() }
+            ?: ux.suggestion?.weightKg
+            ?: ux.previous.maxOfOrNull { it.weightKg }
+        if (workKg == null || workKg <= 0.0) {
+            status.value = "Enter a working weight first to build a warm-up ramp"
+            return
+        }
+        // Classic ramp: progressively heavier, fewer reps, toward the work set.
+        val scheme = listOf(0.40 to 5, 0.60 to 3, 0.80 to 2)
+        val rows = mutableListOf<Pair<Double, Int>>()
+        for ((pct, reps) in scheme) {
+            val w = roundToStep(workKg * pct, 2.5)
+            if (w <= 0.0) continue
+            if (rows.isNotEmpty() && kotlin.math.abs(rows.last().first - w) < 0.001) continue
+            rows.add(w to reps)
+        }
+        if (rows.isEmpty()) { status.value = "Working weight is too light for a warm-up ramp"; return }
+        // Drop any existing leading warm-ups so re-runs replace rather than stack.
+        while (ux.sets.firstOrNull()?.warmup == true) ux.sets.removeAt(0)
+        rows.reversed().forEach { (w, reps) ->
+            ux.sets.add(0, UiSet(suggestedWeight = kg(w), suggestedReps = reps.toString(), warmup = true))
+        }
         persistSession()
     }
 
@@ -686,7 +726,7 @@ class StrengthViewModel @Inject constructor(
                 ux.sets.add(UiSet(ss.weight, ss.reps, ss.rpe, ss.done, ss.warmup, ss.note, ss.suggestedWeight, ss.suggestedReps))
             }
             exercises.add(ux)
-            viewModelScope.launch { runCatching { ux.previous = repo.previousSets(se.name); ux.suggestion = repo.progressionFor(se.name) } }
+            viewModelScope.launch { runCatching { ux.previous = repo.previousSets(se.name); applySuggestion(ux, repo.progressionFor(se.name)) } }
         }
         nav.value = StrengthNav.Active
         startTick()
@@ -798,6 +838,19 @@ class StrengthViewModel @Inject constructor(
     }
 
     // --- finish / routines / stats ----------------------------------------
+    // Holds the finished workout between "Finish" and the Rate-your-effort screen,
+    // since reset() clears the live session before the user rates it.
+    private data class PendingFinish(
+        val name: String,
+        val started: Long,
+        val ended: Long,
+        val exercises: List<FinishedExercise>,
+        val note: String,
+        val editId: String?,
+        val linkedId: String?,
+    )
+    private var pendingFinish: PendingFinish? = null
+
     fun finish() {
         val finished = exercises.map { ux ->
             FinishedExercise(
@@ -822,27 +875,48 @@ class StrengthViewModel @Inject constructor(
         val started = startedAt
         // Keep the original end time when editing; otherwise stamp now.
         val ended = if (editId != null) editingEndedAt.coerceAtLeast(started) else System.currentTimeMillis()
-        val name = workoutName
-        val note = workoutNote.trim()
+        // Stash everything the save needs, then clear the live session and ask
+        // the user to rate the session effort before we persist.
+        pendingFinish = PendingFinish(workoutName, started, ended, finished, workoutNote.trim(), editId, linkedId)
+        reset()
+        nav.value = StrengthNav.RateEffort
+    }
+
+    /** Save the pending workout and (optionally) a session-RPE feedback row. */
+    fun submitEffort(rpe: Int?, difficulty: String?) {
+        val p = pendingFinish ?: run { nav.value = StrengthNav.Home; return }
+        pendingFinish = null
         viewModelScope.launch {
-            runCatching { repo.finishWorkout(name, started, ended, finished, note, editId) }
+            runCatching { repo.finishWorkout(p.name, p.started, p.ended, p.exercises, p.note, p.editId) }
                 .onSuccess { result ->
                     lastPrs.value = result.prs
                     // Auto-complete the linked plan so the calendar reflects it.
-                    if (linkedId != null) runCatching { repo.markPlannedWorkoutDone(linkedId, true) }
+                    if (p.linkedId != null) runCatching { repo.markPlannedWorkoutDone(p.linkedId, true) }
                     status.value = when {
-                        editId != null -> "✓ Workout updated"
-                        linkedId != null -> "✓ Logged — planned session marked done"
+                        p.editId != null -> "✓ Workout updated"
+                        p.linkedId != null -> "✓ Logged — planned session marked done"
                         result.prs.isEmpty() -> "✓ Workout saved"
                         else -> "✓ Saved · ${result.prs.size} new PR${if (result.prs.size > 1) "s" else ""}! 🎉"
                     }
+                    // Push the session to the cloud now (not at next launch) so the
+                    // AI generator sees today's work immediately.
+                    requestSync()
+                    // Durably submit the session effort + refresh memory — survives
+                    // being offline at the gym or an app kill (WorkManager retries).
+                    val date = java.time.Instant.ofEpochMilli(p.ended)
+                        .atZone(java.time.ZoneId.systemDefault()).toLocalDate().toString()
+                    com.workoutmaker.app.work.FeedbackSyncWorker.request(
+                        context, date, rpe, difficulty, p.note.ifBlank { null },
+                    )
                 }
                 .onFailure { status.value = "Saved locally; sync failed: ${it.message}" }
             loadHome()
         }
-        reset()
         nav.value = StrengthNav.Home
     }
+
+    /** Skip rating — still save the workout, just without a feedback row. */
+    fun skipEffort() = submitEffort(null, null)
 
     fun saveAsRoutine() = viewModelScope.launch {
         if (exercises.isEmpty()) return@launch
@@ -892,6 +966,10 @@ class StrengthViewModel @Inject constructor(
         currentStats.value = repo.stats(name)
         nav.value = StrengthNav.Stats(name)
     }
+
+    // Stats for the in-session insight peek (bottom sheet) — doesn't touch nav or
+    // currentStats, so the active session stays put underneath.
+    suspend fun statsFor(name: String): ExerciseStats = repo.stats(name)
 
     // --- push to Intervals.icu → watch (Zepp) ------------------------------
     private fun vibrate() {

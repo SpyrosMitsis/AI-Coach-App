@@ -140,7 +140,7 @@ internal fun RequestSessionDialog(date: LocalDate, onDismiss: () -> Unit, onSubm
             confirmButton = { TextButton(onClick = {
                 state.selectedDateMillis?.let { day = java.time.Instant.ofEpochMilli(it).atZone(java.time.ZoneOffset.UTC).toLocalDate() }
                 showPicker = false
-            }) { Text("OK") } },
+            }) { Text("Set date") } },
             dismissButton = { TextButton(onClick = { showPicker = false }) { Text("Cancel") } },
         ) { DatePicker(state = state) }
     }
@@ -249,7 +249,7 @@ internal fun IntervalBuilderDialog(date: LocalDate, onDismiss: () -> Unit, onSav
                         androidx.compose.material3.FilterChip(selected = type == k, onClick = { type = k }, label = { Text(label) })
                     }
                 }
-                Text("${totalMin.toInt()} min · ~${tss.toInt()} TSS", style = MaterialTheme.typography.labelMedium, color = Sage)
+                Text("${totalMin.toInt()} min · ~${tss.toInt()} TSS", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.primary)
 
                 steps.forEachIndexed { i, s ->
                     SectionCard {

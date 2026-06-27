@@ -1,6 +1,9 @@
 package com.workoutmaker.app.ui.components
 
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.nativeCanvas
 import androidx.compose.ui.graphics.toArgb
@@ -9,16 +12,56 @@ import androidx.compose.ui.unit.sp
 // Tiny helpers so every Canvas line plot can carry axis values + units instead
 // of being a naked line: faint horizontal gridlines and small text labels.
 
-val ChartGridColor = Color(0xFF333535)
+// Translucent neutral so the gridline reads as "faint" on BOTH the dark card and
+// the light-mode paper (an opaque dark line would look heavy on light).
+val ChartGridColor = Color(0x33888B86)
 val ChartLabelColor = Color(0xFF8E938E)
 
-/** A faint horizontal gridline across the full width at [y]. */
-fun DrawScope.hGridLine(y: Float) {
+// Shared chart geometry so every plot leaves room for its axis text in the
+// margins (gutters) instead of drawing labels over the line.
+object ChartDims {
+    const val GUTTER_LEFT = 44f // px added at runtime via toPx(); see usage
+    const val GUTTER_BOTTOM = 16f
+    const val PAD_TOP = 8f
+}
+
+/** A faint horizontal gridline at [y], optionally only across the plot area. */
+fun DrawScope.hGridLine(y: Float, xStart: Float = 0f, xEnd: Float = size.width) {
     drawLine(
         ChartGridColor,
-        androidx.compose.ui.geometry.Offset(0f, y),
-        androidx.compose.ui.geometry.Offset(size.width, y),
+        Offset(xStart, y),
+        Offset(xEnd, y),
         strokeWidth = 1.5f,
+    )
+}
+
+/**
+ * Paints a soft top-down gradient under a line: closes [linePath] down to
+ * [baselineY] and fills it with [color] fading to transparent. Pass the line's
+ * first/last x so the fill closes cleanly at the plot edges.
+ */
+fun DrawScope.fillUnderLine(
+    linePath: Path,
+    color: Color,
+    baselineY: Float,
+    topY: Float,
+    firstX: Float,
+    lastX: Float,
+) {
+    val fill = Path().apply {
+        addPath(linePath)
+        lineTo(lastX, baselineY)
+        lineTo(firstX, baselineY)
+        close()
+    }
+    drawPath(
+        fill,
+        Brush.verticalGradient(
+            0f to color.copy(alpha = 0.28f),
+            1f to color.copy(alpha = 0f),
+            startY = topY,
+            endY = baselineY,
+        ),
     )
 }
 

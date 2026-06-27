@@ -103,6 +103,20 @@ interface GenArgs {
   // OpenAI-compatible base URL for the "custom" provider (e.g.
   // http://host:11434/v1). Ignored by the built-in providers.
   baseUrl?: string;
+  // Sampling temperature. Defaults to 0.6 (conversational). Structured workout
+  // generation passes a lower value for less variance in the numbers (TSS/load).
+  // Ignored by models that reject the parameter (Opus 4.7+, gpt-5/o-series).
+  temperature?: number;
+  // Reproducible mode for regression/eval runs: forces temperature 0 and passes
+  // a fixed `seed` where the provider supports it (OpenAI-compatible).
+  deterministic?: boolean;
+  seed?: number;
+}
+
+// Resolve the effective temperature for a call (deterministic → 0, else 0.6).
+function tempOf(args: GenArgs): number {
+  if (args.deterministic) return 0;
+  return typeof args.temperature === "number" ? args.temperature : 0.6;
 }
 
 function turns(args: GenArgs): ChatMessage[] {
@@ -138,9 +152,11 @@ async function openAiCompatible(
   if (openAiModernParams(provider, model)) {
     body.max_completion_tokens = 2500;
   } else {
-    body.temperature = 0.6;
+    body.temperature = tempOf(args);
     body.max_tokens = 2500;
   }
+  // Reproducible sampling where supported (OpenAI/DeepSeek/Groq honor `seed`).
+  if (args.deterministic && typeof args.seed === "number") body.seed = args.seed;
   if (args.jsonMode !== false) body.response_format = { type: "json_object" };
 
   const res = await fetch(`${baseUrl}/chat/completions`, {
@@ -184,7 +200,7 @@ async function anthropic(args: GenArgs): Promise<LlmResult> {
     system: args.systemPrompt,
     messages: turns(args),
   };
-  if (anthropicAcceptsTemperature(model)) body.temperature = 0.6;
+  if (anthropicAcceptsTemperature(model)) body.temperature = tempOf(args);
   const res = await fetch("https://api.anthropic.com/v1/messages", {
     method: "POST",
     headers: {
@@ -218,7 +234,7 @@ async function gemini(args: GenArgs): Promise<LlmResult> {
   const url =
     `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${args.apiKey}`;
   const generationConfig: Record<string, unknown> = {
-    temperature: 0.6,
+    temperature: tempOf(args),
     maxOutputTokens: 2500,
   };
   if (args.jsonMode !== false) generationConfig.responseMimeType = "application/json";

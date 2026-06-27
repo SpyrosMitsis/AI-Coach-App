@@ -277,8 +277,10 @@ class WorkoutRepository @Inject constructor(
         }.decodeList()
 
     // Fire-and-forget refresh of the rolling athlete "training memory".
+    // Invalidates the profile cache so a following loadMemory() reads the new notes.
     suspend fun refreshMemory() {
         runCatching { supabase.functions.invoke("refresh-memory") }.logFailure("refreshMemory")
+        invalidateProfileCache()
     }
 
     suspend fun generationLogs(limit: Long = 20): List<GenerationLogRow> =
@@ -393,6 +395,34 @@ class WorkoutRepository @Inject constructor(
     suspend fun saveKnowledge(text: String) {
         supabase.postgrest.from("user_profiles").update(
             mapOf("coach_knowledge" to kotlinx.serialization.json.JsonPrimitive(text)),
+        ) { filter { eq("id", uid()) } }
+        invalidateProfileCache()
+    }
+
+    // --- Coach memory (rolling notes the coach carries between sessions) ------
+    suspend fun loadMemory(): String =
+        runCatching {
+            (profileRow()?.get("training_memory") as? JsonPrimitive)?.content ?: ""
+        }.logFailure("loadMemory").getOrDefault("")
+
+    suspend fun saveMemory(text: String) {
+        supabase.postgrest.from("user_profiles").update(
+            mapOf("training_memory" to kotlinx.serialization.json.JsonPrimitive(text)),
+        ) { filter { eq("id", uid()) } }
+        invalidateProfileCache()
+    }
+
+    // --- Coach soul (the coach's identity + its evolving relationship with you) -
+    // Falls back to "" when the coach_soul column is absent (pre-migration 30) or
+    // unseeded; the backend serves a default persona until the first auto-evolve.
+    suspend fun loadSoul(): String =
+        runCatching {
+            (profileRow()?.get("coach_soul") as? JsonPrimitive)?.content ?: ""
+        }.logFailure("loadSoul").getOrDefault("")
+
+    suspend fun saveSoul(text: String) {
+        supabase.postgrest.from("user_profiles").update(
+            mapOf("coach_soul" to kotlinx.serialization.json.JsonPrimitive(text)),
         ) { filter { eq("id", uid()) } }
         invalidateProfileCache()
     }

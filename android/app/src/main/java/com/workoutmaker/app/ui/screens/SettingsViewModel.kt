@@ -224,6 +224,14 @@ class SettingsViewModel @Inject constructor(
     val knowledge = MutableStateFlow("")
     val knowledgeStatus = MutableStateFlow<String?>(null)
 
+    // Rolling coach memory — durable notes the coach carries between sessions.
+    val memory = MutableStateFlow("")
+    val memoryStatus = MutableStateFlow<String?>(null)
+
+    // Coach soul — the coach's identity/voice + its evolving relationship with you.
+    val soul = MutableStateFlow("")
+    val soulStatus = MutableStateFlow<String?>(null)
+
     // P1 races + E4 threshold tests.
     val races = MutableStateFlow<List<com.workoutmaker.app.data.Race>>(emptyList())
     val thresholdTests = MutableStateFlow<List<com.workoutmaker.app.data.ThresholdTest>>(emptyList())
@@ -238,6 +246,8 @@ class SettingsViewModel @Inject constructor(
         autoPlan.value = repo.autoPlanEnabled()
         runCatching { repo.modelOverrides() }.onSuccess { modelOverrides.value = it }
         runCatching { repo.loadKnowledge() }.onSuccess { knowledge.value = it }
+        runCatching { repo.loadMemory() }.onSuccess { memory.value = it }
+        runCatching { repo.loadSoul() }.onSuccess { soul.value = it }
         runCatching { repo.generationLogs() }.onSuccess { logs.value = it }
         runCatching { repo.races() }.onSuccess { races.value = it }
         runCatching { repo.thresholdTests() }.onSuccess { thresholdTests.value = it }
@@ -292,6 +302,36 @@ class SettingsViewModel @Inject constructor(
         runCatching { repo.saveKnowledge(knowledge.value) }
             .onSuccess { knowledgeStatus.value = "✓ Saved" }
             .onFailure { knowledgeStatus.value = "Couldn't save: ${it.message}" }
+        busy.value = false
+    }
+
+    fun updateMemory(text: String) { memory.value = text }
+
+    fun saveMemory() = viewModelScope.launch {
+        busy.value = true
+        runCatching { repo.saveMemory(memory.value) }
+            .onSuccess { memoryStatus.value = "✓ Saved" }
+            .onFailure { memoryStatus.value = "Couldn't save: ${it.message}" }
+        busy.value = false
+    }
+
+    fun updateSoul(text: String) { soul.value = text }
+
+    fun saveSoul() = viewModelScope.launch {
+        busy.value = true
+        runCatching { repo.saveSoul(soul.value) }
+            .onSuccess { soulStatus.value = "✓ Saved" }
+            .onFailure { soulStatus.value = "Couldn't save: ${it.message}" }
+        busy.value = false
+    }
+
+    // Re-derive the rolling notes from recent training, then reload them.
+    fun refreshMemory() = viewModelScope.launch {
+        busy.value = true
+        memoryStatus.value = "Refreshing from recent training…"
+        runCatching { repo.refreshMemory(); repo.loadMemory() }
+            .onSuccess { memory.value = it; memoryStatus.value = "✓ Updated" }
+            .onFailure { memoryStatus.value = "Couldn't refresh: ${it.message}" }
         busy.value = false
     }
 

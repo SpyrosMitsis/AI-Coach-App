@@ -19,6 +19,8 @@ export interface AnalysisSeries {
   t: number[]; // seconds since start
   pace: (number | null)[]; // sec/km (null when not moving)
   hr: (number | null)[];
+  cadence: (number | null)[]; // spm/rpm (null when not recorded)
+  power: (number | null)[]; // watts (null when not recorded)
 }
 
 export interface AnalysisTarget {
@@ -33,6 +35,8 @@ export interface AnalysisSplit {
   km: number;
   sec: number;
   avg_hr: number | null;
+  // Whether the split landed in the planned target band (null = no plan/band).
+  in_band?: boolean | null;
 }
 
 // --- small utils -------------------------------------------------------------
@@ -121,31 +125,41 @@ export interface RawStreams {
   velocity: (number | null)[];
   hr: (number | null)[];
   distance: (number | null)[];
+  cadence?: (number | null)[];
+  power?: (number | null)[];
 }
 
 // Downsample to ≤ maxPoints, converting velocity (m/s) to pace (sec/km).
 // Velocities under ~0.5 m/s (standing) become null gaps instead of absurd paces.
 export function buildSeries(s: RawStreams, maxPoints = 120): AnalysisSeries {
   const n = s.time.length;
-  if (!n) return { t: [], pace: [], hr: [] };
+  if (!n) return { t: [], pace: [], hr: [], cadence: [], power: [] };
   const stride = Math.max(1, Math.ceil(n / maxPoints));
   const t: number[] = [];
   const pace: (number | null)[] = [];
   const hr: (number | null)[] = [];
+  const cadence: (number | null)[] = [];
+  const power: (number | null)[] = [];
   for (let i = 0; i < n; i += stride) {
     // Average the window for a smoother line than point-sampling.
-    let vSum = 0, vN = 0, hSum = 0, hN = 0;
+    let vSum = 0, vN = 0, hSum = 0, hN = 0, cSum = 0, cN = 0, pSum = 0, pN = 0;
     for (let j = i; j < Math.min(i + stride, n); j++) {
       const v = s.velocity[j];
       if (typeof v === "number" && v > 0.5) { vSum += v; vN++; }
       const h = s.hr[j];
       if (typeof h === "number" && h > 0) { hSum += h; hN++; }
+      const c = s.cadence?.[j];
+      if (typeof c === "number" && c > 0) { cSum += c; cN++; }
+      const p = s.power?.[j];
+      if (typeof p === "number" && p > 0) { pSum += p; pN++; }
     }
     t.push(s.time[i]);
     pace.push(vN ? Math.round(1000 / (vSum / vN)) : null);
     hr.push(hN ? Math.round(hSum / hN) : null);
+    cadence.push(cN ? Math.round(cSum / cN) : null);
+    power.push(pN ? Math.round(pSum / pN) : null);
   }
-  return { t, pace, hr };
+  return { t, pace, hr, cadence, power };
 }
 
 export function buildSplits(s: RawStreams): AnalysisSplit[] {
@@ -197,6 +211,29 @@ export function paceInBandScore(
   if (!total) return { score: 0, frac: 0 };
   const frac = inBand / total;
   return { score: Math.round(clamp(frac * 125, 0, 100)), frac };
+}
+
+// Mark each split in/out of the planned target band, using the same ±3% grace as
+// paceInBandScore. Prefers the pace band (split.sec IS the per-km pace); falls back
+// to the HR band on split.avg_hr. Mutates splits in place and returns the on-target
+// count. With no band, leaves in_band null and returns 0.
+export function markSplitsInBand(
+  splits: AnalysisSplit[],
+  paceBand: { lo: number; hi: number } | null,
+  hrBand: { lo: number; hi: number } | null,
+): number {
+  let onTarget = 0;
+  for (const s of splits) {
+    let inBand: boolean | null = null;
+    if (paceBand) {
+      inBand = s.sec >= paceBand.lo * 0.97 && s.sec <= paceBand.hi * 1.03;
+    } else if (hrBand && s.avg_hr != null) {
+      inBand = s.avg_hr >= hrBand.lo && s.avg_hr <= hrBand.hi;
+    }
+    s.in_band = inBand;
+    if (inBand === true) onTarget++;
+  }
+  return onTarget;
 }
 
 export function scoreLabel(score: number): string {

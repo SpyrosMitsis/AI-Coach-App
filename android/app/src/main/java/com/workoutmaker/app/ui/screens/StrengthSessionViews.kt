@@ -1,7 +1,10 @@
 package com.workoutmaker.app.ui.screens
 
+import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.horizontalScroll
@@ -31,6 +34,7 @@ import androidx.compose.ui.graphics.compositeOver
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.FitnessCenter
 import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.BarChart
 import androidx.compose.material.icons.filled.Check
@@ -59,6 +63,8 @@ import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.ModalBottomSheet
+import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.SwipeToDismissBox
@@ -112,9 +118,7 @@ import com.workoutmaker.app.ui.components.ScreenScaffold
 import com.workoutmaker.app.ui.components.SectionCard
 import com.workoutmaker.app.ui.components.SectionLabel
 import com.workoutmaker.app.ui.components.SkeletonCard
-import com.workoutmaker.app.ui.theme.BandAmber
-import com.workoutmaker.app.ui.theme.BandRed
-import com.workoutmaker.app.ui.theme.Sage
+import com.workoutmaker.app.ui.theme.amberAccent
 
 // ---------------------------------------------------------------------------
 // Workout detail — drill into one logged session: every exercise and set.
@@ -177,7 +181,7 @@ internal fun WorkoutDetailView(vm: StrengthViewModel) {
                     color = MaterialTheme.colorScheme.onSurfaceVariant)
                 if (d.workout.note.isNotBlank()) {
                     Text("“${d.workout.note}”", Modifier.padding(top = 4.dp),
-                        style = MaterialTheme.typography.bodyMedium, color = Sage)
+                        style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.primary)
                 }
             }
             items(d.exercises, key = { it.first }) { (name, sets) ->
@@ -240,6 +244,7 @@ internal fun ActiveWorkoutView(vm: StrengthViewModel) {
     var menu by remember { mutableStateOf(false) }
     var showPlate by remember { mutableStateOf(false) }
     var confirmFinish by remember { mutableStateOf(false) }
+    val finishHaptics = LocalHapticFeedback.current
 
     // Keep the screen awake during a workout when the user opts in.
     val view = androidx.compose.ui.platform.LocalView.current
@@ -318,7 +323,13 @@ internal fun ActiveWorkoutView(vm: StrengthViewModel) {
                 ExerciseCard(vm, ux)
             }
             if (vm.exercises.isEmpty()) {
-                item { Text("No exercises yet — tap “Add exercise”.", color = MaterialTheme.colorScheme.onSurfaceVariant) }
+                item {
+                    EmptyState(
+                        title = "No exercises yet",
+                        subtitle = "Tap “Add exercise” to start logging sets.",
+                        icon = Icons.Filled.FitnessCenter,
+                    )
+                }
             }
         }
     }
@@ -329,18 +340,188 @@ internal fun ActiveWorkoutView(vm: StrengthViewModel) {
             onDismissRequest = { confirmFinish = false },
             title = { Text(if (vm.isEditing) "Save changes?" else "Finish workout?") },
             text = { Text(if (vm.isEditing) "Your edits replace the saved workout." else "Completed sets are saved and synced for your AI coach.") },
-            confirmButton = { TextButton(onClick = { confirmFinish = false; vm.finish() }) { Text(if (vm.isEditing) "Save" else "Finish") } },
+            confirmButton = { TextButton(onClick = { confirmFinish = false; finishHaptics.performHapticFeedback(HapticFeedbackType.LongPress); vm.finish() }) { Text(if (vm.isEditing) "Save" else "Finish") } },
             dismissButton = { TextButton(onClick = { confirmFinish = false }) { Text("Keep going") } },
         )
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Post-workout effort rating — session RPE + difficulty feed the AI engine.
+// RPE measures effort only — it is NOT a quality score — so the bars use one
+// neutral accent rather than a green→red "good/bad" ramp.
+// ---------------------------------------------------------------------------
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+internal fun RateEffortView(vm: StrengthViewModel) {
+    var rpe by remember { mutableStateOf<Int?>(null) }
+    var difficulty by remember { mutableStateOf<String?>(null) }
+    val accent = MaterialTheme.colorScheme.primary
+    val haptics = LocalHapticFeedback.current
+
+    Scaffold(
+        containerColor = MaterialTheme.colorScheme.background,
+        topBar = { TopAppBar(title = { Text("Rate your effort") }) },
+    ) { padding ->
+        // Full page, NO scroll: the bars flex to absorb slack so the readout
+        // stays at the top and the buttons stay pinned at the bottom on any phone.
+        Column(
+            Modifier
+                .padding(padding)
+                .fillMaxSize()
+                .padding(horizontal = 20.dp, vertical = 12.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+        ) {
+            Text(
+                "How hard did that feel?",
+                style = MaterialTheme.typography.titleMedium,
+                color = MaterialTheme.colorScheme.onSurface,
+                textAlign = androidx.compose.ui.text.style.TextAlign.Center,
+            )
+            Spacer(Modifier.height(14.dp))
+
+            // Big animated readout of the chosen effort.
+            Text(
+                "RATE OF PERCEIVED EXERTION",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                letterSpacing = 1.5.sp,
+            )
+            Spacer(Modifier.height(4.dp))
+            Row(verticalAlignment = Alignment.Bottom) {
+                Text(
+                    rpe?.toString() ?: "–",
+                    style = MaterialTheme.typography.displayLarge,
+                    fontWeight = FontWeight.Bold,
+                    color = accent,
+                )
+                Text(
+                    " / 10",
+                    style = MaterialTheme.typography.titleMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(bottom = 12.dp),
+                )
+            }
+            Text(
+                rpe?.let { rpeWord(it).replaceFirstChar { c -> c.uppercase() } } ?: "Tap a bar below",
+                style = MaterialTheme.typography.titleMedium,
+                color = accent,
+            )
+
+            // Flexes to fill whatever space is left between readout and the card.
+            EffortBars(
+                selected = rpe,
+                onSelect = { rpe = it },
+                modifier = Modifier.weight(1f).fillMaxWidth().padding(vertical = 16.dp),
+            )
+
+            // Quick qualitative tag — strongest signal for autoregulation.
+            SectionCard {
+                Text(
+                    "How did the session go?",
+                    style = MaterialTheme.typography.titleSmall,
+                    color = MaterialTheme.colorScheme.onSurface,
+                )
+                Spacer(Modifier.height(10.dp))
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    listOf("too_easy" to "Too easy", "just_right" to "Just right", "too_hard" to "Too hard").forEach { (k, label) ->
+                        val sel = difficulty == k
+                        FilterChip(
+                            selected = sel,
+                            onClick = { difficulty = if (sel) null else k },
+                            label = {
+                                Text(
+                                    label,
+                                    style = MaterialTheme.typography.labelMedium,
+                                    textAlign = androidx.compose.ui.text.style.TextAlign.Center,
+                                    modifier = Modifier.fillMaxWidth(),
+                                )
+                            },
+                            modifier = Modifier.weight(1f),
+                        )
+                    }
+                }
+            }
+
+            Spacer(Modifier.height(12.dp))
+            Button(
+                onClick = {
+                    haptics.performHapticFeedback(HapticFeedbackType.LongPress)
+                    vm.submitEffort(rpe, difficulty)
+                },
+                modifier = Modifier.fillMaxWidth().height(52.dp),
+                shape = RoundedCornerShape(16.dp),
+            ) { Text("Save effort", style = MaterialTheme.typography.titleSmall) }
+            TextButton(onClick = { vm.skipEffort() }, modifier = Modifier.fillMaxWidth()) {
+                Text("Skip", color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+        }
+    }
+}
+
+// Tall, rounded "equalizer" bars in one neutral accent (effort, not a score).
+// Bars 1..selected light up; the chosen bar is outlined. Bars and their number
+// labels live in separate rows so the numbers always sit on one baseline,
+// regardless of how tall each bar is.
+@Composable
+private fun EffortBars(selected: Int?, onSelect: (Int) -> Unit, modifier: Modifier = Modifier) {
+    val accent = MaterialTheme.colorScheme.primary
+    val idle = MaterialTheme.colorScheme.surfaceContainerHighest
+    val haptics = LocalHapticFeedback.current
+    Column(modifier) {
+        Row(
+            Modifier.fillMaxWidth().weight(1f).heightIn(min = 120.dp),
+            horizontalArrangement = Arrangement.spacedBy(7.dp),
+            verticalAlignment = Alignment.Bottom,
+        ) {
+            (1..10).forEach { n ->
+                val active = selected != null && n <= selected
+                val current = selected == n
+                val heightFrac = 0.34f + (n - 1) * (0.66f / 9f)
+                val barColor by animateColorAsState(if (active) accent else idle, label = "effortBar$n")
+                Box(
+                    Modifier
+                        .weight(1f)
+                        .fillMaxHeight(heightFrac)
+                        .clip(RoundedCornerShape(50))
+                        .background(barColor)
+                        .then(
+                            if (current) Modifier.border(2.dp, MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f), RoundedCornerShape(50))
+                            else Modifier,
+                        )
+                        .clickable {
+                            haptics.performHapticFeedback(HapticFeedbackType.LongPress)
+                            onSelect(n)
+                        },
+                )
+            }
+        }
+        Spacer(Modifier.height(8.dp))
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(7.dp)) {
+            (1..10).forEach { n ->
+                val current = selected == n
+                Text(
+                    "$n",
+                    modifier = Modifier.weight(1f),
+                    textAlign = androidx.compose.ui.text.style.TextAlign.Center,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = if (current) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.onSurfaceVariant,
+                    fontWeight = if (current) FontWeight.Bold else FontWeight.Normal,
+                )
+            }
+        }
     }
 }
 
 @Composable
 internal fun ExerciseCard(vm: StrengthViewModel, ux: UiExercise) {
     var menu by remember { mutableStateOf(false) }
+    var showInsight by remember { mutableStateOf(false) }
+    if (showInsight) ExerciseInsightSheet(vm, ux.name) { showInsight = false }
     SectionCard {
         Row(verticalAlignment = Alignment.CenterVertically) {
-            Column(Modifier.weight(1f)) {
+            // Tap the name to peek this exercise's history without leaving the session.
+            Column(Modifier.weight(1f).clickable { showInsight = true }) {
                 Text(ux.name, style = MaterialTheme.typography.titleSmall, color = MaterialTheme.colorScheme.primary)
                 Text(ux.muscle, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
@@ -357,12 +538,18 @@ internal fun ExerciseCard(vm: StrengthViewModel, ux: UiExercise) {
                     Icon(Icons.Filled.MoreVert, "Exercise options", tint = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
                 DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
+                    if (!ux.isCardio) {
+                        DropdownMenuItem(
+                            text = { Text("Add warm-up sets") },
+                            onClick = { menu = false; vm.addWarmupRamp(ux) },
+                        )
+                    }
                     DropdownMenuItem(
                         text = { Text("Replace exercise") },
                         onClick = { menu = false; vm.openPickerForReplace(ux) },
                     )
                     DropdownMenuItem(
-                        text = { Text("Remove exercise", color = BandRed) },
+                        text = { Text("Remove exercise", color = MaterialTheme.colorScheme.error) },
                         onClick = { menu = false; vm.removeExercise(ux) },
                     )
                 }
@@ -371,7 +558,7 @@ internal fun ExerciseCard(vm: StrengthViewModel, ux: UiExercise) {
         // B1 auto-progression target
         ux.suggestion?.let { s ->
             Text("🎯 Target ${trimKg(s.weightKg)}kg × ${s.reps} · ${s.note}",
-                style = MaterialTheme.typography.labelSmall, color = Sage)
+                style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.primary)
         }
         // column headers — cardio logs minutes only (no load, no rep count)
         Row(Modifier.fillMaxWidth().padding(top = 4.dp), verticalAlignment = Alignment.CenterVertically) {
@@ -400,6 +587,74 @@ internal fun ExerciseCard(vm: StrengthViewModel, ux: UiExercise) {
             }
         }
         TextButton(onClick = { vm.addSet(ux) }) { Icon(Icons.Filled.Add, null); Text(" Add set") }
+    }
+}
+
+// In-session peek at an exercise's history (PRs, e1RM/volume trend, recent
+// sessions) as a bottom sheet, so the live session stays mounted underneath.
+// Reuses the stats pieces from the standalone ExerciseStatsView.
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+internal fun ExerciseInsightSheet(vm: StrengthViewModel, exercise: String, onDismiss: () -> Unit) {
+    var stats by remember(exercise) { mutableStateOf<com.workoutmaker.app.strength.ExerciseStats?>(null) }
+    var loaded by remember(exercise) { mutableStateOf(false) }
+    LaunchedEffect(exercise) { stats = vm.statsFor(exercise); loaded = true }
+    ModalBottomSheet(onDismissRequest = onDismiss, sheetState = rememberModalBottomSheetState()) {
+        Column(
+            Modifier.fillMaxWidth().padding(horizontal = 20.dp).padding(bottom = 24.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
+            Text(exercise, style = MaterialTheme.typography.titleMedium, color = MaterialTheme.colorScheme.primary)
+            val s = stats
+            when {
+                !loaded -> Text("Loading…", style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant)
+                s == null || !s.hasData -> EmptyState(
+                    title = "No history yet",
+                    subtitle = "Log this exercise to see e1RM and PRs.",
+                    icon = Icons.Filled.BarChart,
+                )
+                else -> {
+                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                        Pr("Best e1RM", "${s.bestE1rm.toInt()} kg")
+                        Pr("Best set", "${s.bestWeight.toInt()} kg")
+                        Pr("Best volume", "${s.bestVolume.toInt()} kg")
+                    }
+                    var metric by remember { mutableStateOf("e1RM") }
+                    SectionCard(title = "Progression") {
+                        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                            listOf("e1RM", "Top weight", "Volume").forEach { m ->
+                                FilterChip(selected = metric == m, onClick = { metric = m }, label = { Text(m) })
+                            }
+                        }
+                        val series = s.points.map {
+                            when (metric) {
+                                "Top weight" -> it.bestWeight
+                                "Volume" -> it.volume
+                                else -> it.e1rm
+                            }
+                        }
+                        MetricChart(series, unit = if (metric == "Volume") "kg vol" else "kg")
+                        Text(
+                            "${s.points.size} sessions · latest ${series.lastOrNull()?.toInt() ?: 0}" +
+                                if (metric == "Volume") " kg vol" else " kg",
+                            style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                    SectionCard(title = "Recent sessions") {
+                        s.points.reversed().take(3).forEach { p ->
+                            val d = java.time.Instant.ofEpochMilli(p.dateMillis)
+                                .atZone(java.time.ZoneId.systemDefault()).toLocalDate().toString()
+                            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                                Text(d, style = MaterialTheme.typography.bodySmall)
+                                Text("e1RM ${p.e1rm.toInt()}kg · ${p.volume.toInt()}kg vol",
+                                    style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            }
+                        }
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -449,7 +704,7 @@ internal fun SetRow(
         backgroundContent = {
             Box(
                 Modifier.fillMaxSize().clip(RoundedCornerShape(8.dp))
-                    .background(BandRed.copy(alpha = 0.9f)).padding(horizontal = 20.dp),
+                    .background(MaterialTheme.colorScheme.error.copy(alpha = 0.9f)).padding(horizontal = 20.dp),
                 contentAlignment = Alignment.CenterEnd,
             ) {
                 Icon(Icons.Filled.Delete, "Delete set", tint = androidx.compose.ui.graphics.Color.White)
@@ -479,7 +734,7 @@ internal fun SetRow(
                         } else Modifier,
                     ),
                 style = MaterialTheme.typography.bodySmall,
-                color = if (prev != null) Sage else MaterialTheme.colorScheme.onSurfaceVariant,
+                color = if (prev != null) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
                 textAlign = TextAlign.Center,
             )
             if (cardio) {
@@ -492,7 +747,7 @@ internal fun SetRow(
             Spacer(Modifier.weight(1f))
             IconButton(onClick = { showNote = !showNote }, modifier = Modifier.size(34.dp)) {
                 Icon(Icons.AutoMirrored.Filled.NoteAdd, "Note",
-                    tint = if (s.note.isNotBlank()) Sage else MaterialTheme.colorScheme.onSurfaceVariant,
+                    tint = if (s.note.isNotBlank()) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
                     modifier = Modifier.size(18.dp))
             }
             IconButton(
@@ -503,7 +758,7 @@ internal fun SetRow(
                 },
                 modifier = Modifier.size(38.dp),
             ) {
-                Icon(Icons.Filled.Check, "Done", tint = if (s.done) Sage else MaterialTheme.colorScheme.onSurfaceVariant)
+                Icon(Icons.Filled.Check, "Done", tint = if (s.done) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant)
             }
         }
         if (showNote) {
@@ -570,7 +825,7 @@ internal fun RestTimerBar(remaining: Int, vm: StrengthViewModel) {
     val target = (if (total > 0) remaining.toFloat() / total else 0f).coerceIn(0f, 1f)
     val progress by animateFloatAsState(targetValue = target, label = "rest-progress")
     val nearDone = remaining in 1..5
-    val accent = if (nearDone) BandAmber else Sage
+    val accent = if (nearDone) amberAccent() else MaterialTheme.colorScheme.primary
     Column(Modifier.fillMaxWidth().background(MaterialTheme.colorScheme.surfaceContainerHigh)) {
         androidx.compose.material3.LinearProgressIndicator(
             progress = { progress },

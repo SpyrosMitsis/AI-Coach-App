@@ -92,4 +92,51 @@ object Zones {
         }
         return out
     }
+
+    // --- planned endurance step helpers (structured interval view) -------------
+
+    /** Zone number 1–5 from a label like "Z4", "Zone 4", "4 - threshold". */
+    fun zoneNum(label: String?): Int? =
+        label?.let { Regex("(\\d)").find(it)?.groupValues?.getOrNull(1)?.toIntOrNull() }
+            ?.takeIf { it in 1..5 }
+
+    /** Parse an endurance step's duration ("3min", "10 min", "90s", "5:00", "1h")
+     *  into seconds. Distance ("1km", "400m treated as distance via 'km'") and
+     *  bare rep counts ("8-10") return null — mirrors the backend durationToken. */
+    fun parseDurationSec(reps: String?): Int? {
+        val s = reps?.trim()?.lowercase() ?: return null
+        if (s.isEmpty()) return null
+        if (Regex("^\\d{1,3}:\\d{2}$").matches(s)) return parsePace(s)
+        // Distance, not time.
+        if (Regex("\\d\\s*(km|k|mi|mile)\\b").containsMatchIn(s)) return null
+        Regex("(\\d+(?:\\.\\d+)?)\\s*h\\b").find(s)?.let { return (it.groupValues[1].toDouble() * 3600).toInt() }
+        Regex("(\\d+(?:\\.\\d+)?)\\s*(?:min|m)\\b").find(s)?.let { return (it.groupValues[1].toDouble() * 60).toInt() }
+        Regex("(\\d+)\\s*(?:s|sec|secs|seconds)\\b").find(s)?.let { return it.groupValues[1].toInt() }
+        return null
+    }
+
+    /** Friendly duration: "3 min", "1:30", "45s". Empty for ≤0. */
+    fun fmtDurationShort(sec: Int): String = when {
+        sec <= 0 -> ""
+        sec < 60 -> "${sec}s"
+        sec % 60 == 0 -> "${sec / 60} min"
+        else -> formatPace(sec)
+    }
+
+    /** Concrete target for a planned step: the pace range for its pace_zone
+     *  (preferred), else the HR range for its hr_zone — using the athlete's
+     *  thresholds. Null when no zone or no relevant threshold is set. */
+    fun targetRange(paceZone: String?, hrZone: String?, thresholdSecPerKm: Int?, lthr: Int?): String? {
+        zoneNum(paceZone)?.let { n ->
+            if (thresholdSecPerKm != null && thresholdSecPerKm > 0) {
+                paceZonesFromThreshold(thresholdSecPerKm).getOrNull(n - 1)?.let { return it.range }
+            }
+        }
+        zoneNum(hrZone)?.let { n ->
+            if (lthr != null && lthr > 0) {
+                hrZonesFromLthr(lthr).getOrNull(n - 1)?.let { return "${it.min}–${it.max} bpm" }
+            }
+        }
+        return null
+    }
 }

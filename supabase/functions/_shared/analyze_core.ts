@@ -17,11 +17,13 @@ import {
 import {
   adherenceScore,
   AnalysisComponent,
+  type AnalysisSeries,
   buildSeries,
   buildSplits,
   combineScore,
   fmtPace,
   hrBandForZones,
+  markSplitsInBand,
   paceBandForZones,
   paceInBandScore,
   parsePaceToSec,
@@ -31,6 +33,7 @@ import {
 } from "./analysis.ts";
 import { llmGenerateWithFallback } from "./llm.ts";
 import { llmAccess } from "./llm_keys.ts";
+import { customExercises, muscleForName } from "./exercise_catalog.ts";
 import type { Workout } from "./types.ts";
 
 export function activityMatchesPlanned(plannedType: string, actualType: string | null): boolean {
@@ -81,7 +84,7 @@ export async function runActivityAnalysis(
       if (apiKey) {
         const [streams, athlete] = await Promise.all([
           getActivityStreams(apiKey, String(act.intervals_id), [
-            "time", "velocity_smooth", "heartrate", "distance",
+            "time", "velocity_smooth", "heartrate", "distance", "cadence", "watts",
           ]),
           getAthleteFull(profile.intervals_athlete_id, apiKey).catch(() => null),
         ]);
@@ -93,6 +96,8 @@ export async function runActivityAnalysis(
             velocity: by("velocity_smooth"),
             hr: by("heartrate"),
             distance: by("distance"),
+            cadence: by("cadence"),
+            power: by("watts"),
           };
         }
         if (athlete) {
@@ -118,6 +123,10 @@ export async function runActivityAnalysis(
   const hZones = planned ? plannedZones(planned, "hr_zone") : [];
   const paceBand = paceBandForZones(pZones, thresholdSecPerKm);
   const hrBand = hrBandForZones(hZones, hrZones);
+  // Per-split target adherence — which kilometres landed in the planned band.
+  const onTargetSplits = markSplitsInBand(splits, paceBand, hrBand);
+  const bandedSplits = splits.filter((s) => s.in_band != null).length;
+  const adherenceText = bandedSplits ? ` · ${onTargetSplits}/${bandedSplits} km on target` : "";
   const zoneText = pZones.length
     ? (Math.min(...pZones) === Math.max(...pZones)
       ? `Z${pZones[0]}`
@@ -148,7 +157,7 @@ export async function runActivityAnalysis(
     components.push({
       name: "Intensity",
       score,
-      detail: `${Math.round(frac * 100)}% of moving time in the target ${zoneText} pace band (${fmtPace(paceBand.lo)}–${fmtPace(paceBand.hi)})`,
+      detail: `${Math.round(frac * 100)}% of moving time in the target ${zoneText} pace band (${fmtPace(paceBand.lo)}–${fmtPace(paceBand.hi)})${adherenceText}`,
     });
   } else if (hrBand && act.avg_hr) {
     const inBand = act.avg_hr >= hrBand.lo && act.avg_hr <= hrBand.hi;
@@ -156,7 +165,7 @@ export async function runActivityAnalysis(
     components.push({
       name: "Intensity",
       score: Math.max(0, Math.round(95 - dist * 3)),
-      detail: `avg HR ${act.avg_hr} bpm vs target ${zoneText} (${hrBand.lo}–${hrBand.hi} bpm)`,
+      detail: `avg HR ${act.avg_hr} bpm vs target ${zoneText} (${hrBand.lo}–${hrBand.hi} bpm)${adherenceText}`,
     });
   }
 
@@ -179,16 +188,24 @@ export async function runActivityAnalysis(
         act.tss && `TSS ${Math.round(act.tss)}`,
       ].filter(Boolean).join(", ");
       const splitText = splits.slice(0, 20)
-        .map((s) => `km${s.km} ${fmtPace(s.sec)}${s.avg_hr ? ` @${s.avg_hr}bpm` : ""}`)
+        .map((s) =>
+          `km${s.km} ${fmtPace(s.sec)}${s.avg_hr ? ` @${s.avg_hr}bpm` : ""}` +
+          (s.in_band == null ? "" : s.in_band ? " ✓" : " ✗")
+        )
         .join("; ");
+      const targetText = paceBand
+        ? ` Target ${zoneText} pace ${fmtPace(paceBand.lo)}–${fmtPace(paceBand.hi)} /km (${onTargetSplits}/${bandedSplits} km on target).`
+        : hrBand
+        ? ` Target ${zoneText} HR ${hrBand.lo}–${hrBand.hi} bpm (${onTargetSplits}/${bandedSplits} km on target).`
+        : "";
       const prompt = `Review this completed session against its plan.
 
 PLANNED: ${planned ? `${planned.title} — ${planned.type}, ~${planned.duration_minutes} min, ~${planned.tss_estimate} TSS.${zoneText ? ` Target intensity ${zoneText}.` : ""} Structure: ${(planned.sections ?? []).map((s) => s.name).join(" → ")}` : "nothing was planned this day."}
-ACTUAL: ${actualBits || "no summary data"}.
-${splitText ? `SPLITS: ${splitText}.` : ""}
+ACTUAL: ${actualBits || "no summary data"}.${targetText}
+${splitText ? `SPLITS (✓ = in the target band, ✗ = out): ${splitText}.` : ""}
 ${components.length ? `EXECUTION: ${components.map((c) => `${c.name} ${c.score}/100 (${c.detail})`).join("; ")}. Overall ${score}/100.` : ""}
 
-Write 3-5 sentences of specific coach feedback: what was executed well, where pacing/effort drifted and the physiological consequence, and ONE concrete cue for next time. Plain prose, no headings, no bullet points.`;
+Write 3-5 sentences of specific coach feedback: what was executed well, where pacing/effort drifted and the physiological consequence, how well the work intervals held the target band (use the ✓/✗ splits), and ONE concrete cue for next time. Plain prose, no headings, no bullet points.`;
       const out = await llmGenerateWithFallback(
         chain,
         {
@@ -252,7 +269,106 @@ const namesMatch = (a: string, b: string) => {
   return na === nb || na.includes(nb) || nb.includes(na);
 };
 
+// Coverage matching for a completed strength session, substitution-aware. A
+// planned exercise is "covered" by a name match OR — failing that — by an
+// as-yet-unused logged exercise that hits the SAME muscle (a legitimate swap,
+// e.g. Preacher Curl for the planned Machine Bicep Curl). Matching is greedy and
+// 1:1 so one lift can't paper over two planned slots; "Other"/"Cardio"/unknown
+// muscles never substitute (too loose to be meaningful). Pure + unit-testable.
+export interface CoverageItem {
+  name: string;
+  muscle: string | null;
+}
+export interface CoverageResult {
+  done: number;
+  total: number;
+  substitutions: { logged: string; planned: string }[];
+  skipped: string[];
+  /** For each planned item, the logged exercise name covering it (or null). */
+  coveredBy: (string | null)[];
+}
+
+export function matchCoverage(
+  planned: CoverageItem[],
+  logged: CoverageItem[],
+): CoverageResult {
+  const realMuscle = (m: string | null) =>
+    m && m !== "Other" && m !== "Cardio" ? m : null;
+  const consumed = new Set<number>();
+  const coveredBy: (string | null)[] = planned.map(() => null);
+  const substitutions: { logged: string; planned: string }[] = [];
+
+  // Pass 1 — exact / substring name matches.
+  planned.forEach((pe, pi) => {
+    const li = logged.findIndex((le, i) => !consumed.has(i) && namesMatch(pe.name, le.name));
+    if (li >= 0) {
+      consumed.add(li);
+      coveredBy[pi] = logged[li].name;
+    }
+  });
+  // Pass 2 — same-muscle substitutions for the still-uncovered planned items.
+  planned.forEach((pe, pi) => {
+    if (coveredBy[pi]) return;
+    const pm = realMuscle(pe.muscle);
+    if (!pm) return;
+    const li = logged.findIndex((le, i) => !consumed.has(i) && realMuscle(le.muscle) === pm);
+    if (li >= 0) {
+      consumed.add(li);
+      coveredBy[pi] = logged[li].name;
+      substitutions.push({ logged: logged[li].name, planned: pe.name });
+    }
+  });
+
+  const skipped = planned.filter((_, pi) => !coveredBy[pi]).map((pe) => pe.name);
+  return { done: planned.length - skipped.length, total: planned.length, substitutions, skipped, coveredBy };
+}
+
 interface LoggedSet { reps?: number; weight_kg?: number; rpe?: number }
+
+// Fetch just the heartrate stream of a watch recording and build a downsampled
+// series for the chart. Cheap (no LLM) and best-effort — returns null when there
+// is no synced watch activity, no credentials, or no HR data.
+async function watchHrSeries(
+  admin: SupabaseClient,
+  profile: Row | null,
+  watchIntervalsId: unknown,
+): Promise<AnalysisSeries | null> {
+  const id = watchIntervalsId ? String(watchIntervalsId) : null;
+  if (
+    !id || id.startsWith("manual:") ||
+    !profile?.intervals_athlete_id || !profile?.intervals_api_key_encrypted
+  ) return null;
+  try {
+    const apiKey = await decryptSecret(admin, profile.intervals_api_key_encrypted);
+    if (!apiKey) return null;
+    const streams = await getActivityStreams(apiKey, id, ["time", "heartrate"]);
+    const by = (t: string) => streams.find((s) => s.type === t)?.data ?? [];
+    const time = by("time") as number[];
+    if (!time.length) return null;
+    const built = buildSeries({ time, velocity: [], hr: by("heartrate"), distance: [] });
+    return built.hr.some((h) => h != null) ? built : null;
+  } catch (_e) {
+    return null; // best-effort — HR chart is optional
+  }
+}
+
+// Resolve the HR series for a strength session by date — loads the profile +
+// paired watch recording itself, so callers (e.g. the cache-return path) can
+// backfill a series into an older analysis without re-running the LLM.
+export async function fetchStrengthHrSeries(
+  admin: SupabaseClient,
+  userId: string,
+  date: string,
+): Promise<AnalysisSeries | null> {
+  const [{ data: profile }, { data: watchActs }] = await Promise.all([
+    admin.from("user_profiles")
+      .select("intervals_athlete_id, intervals_api_key_encrypted").eq("id", userId).single(),
+    admin.from("completed_activities")
+      .select("intervals_id, type").eq("user_id", userId).eq("date", date),
+  ]);
+  const watch = (watchActs ?? []).find((a) => activityMatchesPlanned("strength", a.type)) ?? null;
+  return watchHrSeries(admin, profile, watch?.intervals_id);
+}
 
 export async function runStrengthAnalysis(
   admin: SupabaseClient,
@@ -265,7 +381,7 @@ export async function runStrengthAnalysis(
       .eq("user_id", userId).eq("date", date).eq("type", "strength"),
     admin.from("strength_logs").select("exercise_name, sets, estimated_1rm, muscle_groups")
       .eq("user_id", userId).eq("date", date),
-    admin.from("completed_activities").select("type, duration_seconds, avg_hr, tss, data_json")
+    admin.from("completed_activities").select("intervals_id, type, duration_seconds, avg_hr, tss, data_json")
       .eq("user_id", userId).eq("date", date),
   ]);
 
@@ -278,16 +394,22 @@ export async function runStrengthAnalysis(
     activityMatchesPlanned("strength", a.type)
   ) ?? null;
 
+  // --- HR trace from the paired watch recording (for the chart) -------------
+  // Strength sessions have no pace/distance, but the watch still records HR.
+  const series = await watchHrSeries(admin, profile, watch?.intervals_id);
+
   // --- per-exercise actuals ---------------------------------------------------
   const exercises = logged.map((l) => {
     const sets = (Array.isArray(l.sets) ? l.sets : []) as LoggedSet[];
     const volume = sets.reduce((s, x) => s + (x.weight_kg ?? 0) * (x.reps ?? 0), 0);
     const top = sets.reduce((m, x) => Math.max(m, x.weight_kg ?? 0), 0);
+    const mg = Array.isArray(l.muscle_groups) ? (l.muscle_groups as string[]) : [];
     return {
       name: l.exercise_name as string,
       actual_sets: sets.length,
       top_weight_kg: top > 0 ? top : null,
       volume_kg: Math.round(volume),
+      muscle: (mg[0] && String(mg[0])) || null,
       planned: null as string | null,
     };
   });
@@ -296,35 +418,56 @@ export async function runStrengthAnalysis(
 
   // --- planned exercises + components ------------------------------------------
   const components: AnalysisComponent[] = [];
-  let plannedExercises: { name: string; sets: number; reps: string; weight_kg: number | null }[] = [];
+  let plannedExercises: {
+    name: string;
+    sets: number;
+    reps: string;
+    weight_kg: number | null;
+    muscle: string | null;
+  }[] = [];
+  // Accepted same-muscle swaps (planned ← logged), for the coach prompt below.
+  let substitutions: { logged: string; planned: string }[] = [];
   if (planned) {
+    // Custom exercises let us resolve muscles for names outside the catalog.
+    const custom = await customExercises(admin, userId).catch(() => []);
     plannedExercises = (planned.sections ?? []).flatMap((s) =>
-      (s.exercises ?? []).filter((e) => (e.sets ?? 0) > 0).map((e) => ({
-        name: e.name,
-        sets: e.sets ?? 0,
-        reps: e.reps ?? "",
-        weight_kg: e.weight_kg ?? null,
-      }))
+      (s.exercises ?? []).filter((e) => (e.sets ?? 0) > 0).map((e) => {
+        const explicit = (e as { muscle?: string | null }).muscle;
+        return {
+          name: e.name,
+          sets: e.sets ?? 0,
+          reps: e.reps ?? "",
+          weight_kg: e.weight_kg ?? null,
+          muscle: (explicit && explicit !== "Other" ? explicit : null) ?? muscleForName(e.name, custom),
+        };
+      })
     );
-    // Annotate each logged exercise with its planned prescription.
-    for (const ex of exercises) {
-      const p = plannedExercises.find((pe) => namesMatch(pe.name, ex.name));
-      if (p) ex.planned = `${p.sets}×${p.reps}${p.weight_kg ? ` @ ${p.weight_kg}kg` : ""}`;
-    }
 
     if (plannedExercises.length) {
-      const done = plannedExercises.filter((pe) =>
-        exercises.some((ex) => namesMatch(pe.name, ex.name))
-      );
-      const missed = plannedExercises.filter((pe) =>
-        !exercises.some((ex) => namesMatch(pe.name, ex.name))
-      ).map((pe) => pe.name);
-      const frac = done.length / plannedExercises.length;
+      // Substitution-aware coverage: a same-muscle swap counts as completed.
+      for (const ex of exercises) if (!ex.muscle) ex.muscle = muscleForName(ex.name, custom);
+      const cov = matchCoverage(plannedExercises, exercises.map((ex) => ({ name: ex.name, muscle: ex.muscle })));
+      substitutions = cov.substitutions;
+
+      // Annotate each covering logged exercise (name match or substitution) with
+      // its planned prescription so the load comparison still appears.
+      cov.coveredBy.forEach((loggedName, pi) => {
+        if (!loggedName) return;
+        const pe = plannedExercises[pi];
+        const ex = exercises.find((e) => e.name === loggedName);
+        if (ex) ex.planned = `${pe.sets}×${pe.reps}${pe.weight_kg ? ` @ ${pe.weight_kg}kg` : ""}`;
+      });
+
+      const subText = cov.substitutions.length
+        ? ` — substituted: ${cov.substitutions.map((s) => `${s.logged}→${s.planned}`).slice(0, 3).join(", ")}`
+        : "";
+      const missText = cov.skipped.length
+        ? ` — skipped: ${cov.skipped.slice(0, 3).join(", ")}${cov.skipped.length > 3 ? "…" : ""}`
+        : "";
       components.push({
         name: "Coverage",
-        score: Math.round(frac * 100),
-        detail: `${done.length} of ${plannedExercises.length} planned exercises completed` +
-          (missed.length ? ` — skipped: ${missed.slice(0, 3).join(", ")}${missed.length > 3 ? "…" : ""}` : ""),
+        score: Math.round((cov.done / cov.total) * 100),
+        detail: `${cov.done} of ${cov.total} planned exercises completed${subText}${missText}`,
       });
 
       const plannedSets = plannedExercises.reduce((s, pe) => s + pe.sets, 0);
@@ -363,15 +506,21 @@ export async function runStrengthAnalysis(
       const watchText = watch
         ? `Watch: ${watch.duration_seconds ? `${Math.round(watch.duration_seconds / 60)} min` : ""}${watch.avg_hr ? `, avg HR ${watch.avg_hr}` : ""}${watch.tss ? `, TSS ${Math.round(watch.tss)}` : ""}.`
         : "";
+      const subsText = substitutions.length
+        ? `SUBSTITUTIONS (athlete swapped a same-muscle lift — these COUNT as completed, do NOT call them missed): ${
+          substitutions.map((s) => `${s.logged} for the planned ${s.planned}`).join("; ")
+        }.`
+        : "";
       const prompt = `Review this completed STRENGTH session against its plan.
 
 PLANNED: ${plannedText}
 LOGGED (${totalSets} sets, ${Math.round(totalVolume)}kg total volume):
 ${actualText}
+${subsText}
 ${watchText}
 ${components.length ? `EXECUTION: ${components.map((c) => `${c.name} ${c.score}/100 (${c.detail})`).join("; ")}. Overall ${score}/100.` : ""}
 
-Write 3-5 sentences of specific coach feedback: completion vs the plan, load selection vs the prescription (under/over-shooting weights), anything notable about volume or exercise balance, and ONE concrete cue for the next session (e.g. which lift to progress and by how much). Plain prose, no headings, no bullet points.`;
+Write 3-5 sentences of specific coach feedback: completion vs the plan, load selection vs the prescription (under/over-shooting weights), anything notable about volume or exercise balance, and ONE concrete cue for the next session (e.g. which lift to progress and by how much). If the athlete substituted a same-muscle exercise, treat it as completed (acknowledge the swap, don't scold a miss). Plain prose, no headings, no bullet points.`;
       const out = await llmGenerateWithFallback(
         chain,
         {
@@ -409,6 +558,7 @@ Write 3-5 sentences of specific coach feedback: completion vs the plan, load sel
         tss: watch.tss ?? null,
       }
       : null,
+    series,
     planned_title: planned?.title ?? null,
     generated_at: new Date().toISOString(),
   };

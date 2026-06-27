@@ -100,6 +100,9 @@ class CalendarViewModel @Inject constructor(
     // Past activities from Intervals.icu, grouped by date for the calendar + detail.
     val activitiesByDate = MutableStateFlow<Map<String, List<com.workoutmaker.app.data.CompletedActivity>>>(emptyMap())
     val adapting = MutableStateFlow(false)
+    // Count of local strength changes (logged/edited/deleted offline) not yet
+    // pushed to the cloud — surfaced as a banner so nothing looks lost.
+    val pendingSync = MutableStateFlow(0)
 
     // Sets for a strength session opened from the calendar, keyed by workout id.
     val strengthSets = MutableStateFlow<Map<String, List<com.workoutmaker.app.strength.SetEntity>>>(emptyMap())
@@ -135,6 +138,7 @@ class CalendarViewModel @Inject constructor(
                 java.time.Instant.ofEpochMilli(it.startedAt).atZone(zone).toLocalDate().toString()
             }
         }.onSuccess { strengthByDate.value = it }
+        runCatching { strength.pendingSyncCount() }.onSuccess { pendingSync.value = it }
         loading.value = false
     }
 

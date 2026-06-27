@@ -18,7 +18,9 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.background
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.Flag
 import androidx.compose.material.icons.filled.EditCalendar
 import androidx.compose.material.icons.outlined.AccountCircle
 import androidx.compose.material.icons.outlined.AutoAwesome
@@ -67,6 +69,8 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.foundation.text.KeyboardOptions
@@ -98,8 +102,8 @@ import javax.inject.Inject
 @Composable
 internal fun ProfileSection(vm: SettingsViewModel) {
     val profile by vm.profile.collectAsStateSafe()
-    val saveStatus by vm.saveStatus.collectAsStateSafe()
     val busy by vm.busy.collectAsStateSafe()
+    val haptics = LocalHapticFeedback.current
     SectionCard {
         ChipGroup("Goal", GOALS, profile.goal) { g -> vm.updateProfile { it.copy(goal = g) } }
         ChipGroup("Experience", LEVELS, profile.experience) { e -> vm.updateProfile { it.copy(experience = e) } }
@@ -149,8 +153,7 @@ internal fun ProfileSection(vm: SettingsViewModel) {
         }
         OutlinedTextField(profile.injury_history ?: "", { v -> vm.updateProfile { it.copy(injury_history = v) } },
             label = { Text("Injury history (optional)") }, modifier = Modifier.fillMaxWidth())
-        Button(onClick = { vm.saveProfile() }, enabled = !busy, modifier = Modifier.fillMaxWidth()) { Text("Save profile") }
-        saveStatus?.let { Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.primary) }
+        Button(onClick = { haptics.performHapticFeedback(HapticFeedbackType.LongPress); vm.saveProfile() }, enabled = !busy, modifier = Modifier.fillMaxWidth()) { Text("Save profile") }
     }
 }
 
@@ -193,7 +196,7 @@ internal fun PlanningSection(vm: SettingsViewModel) {
     val autoPlan by vm.autoPlan.collectAsStateSafe()
     val profile by vm.profile.collectAsStateSafe()
     val busy by vm.busy.collectAsStateSafe()
-    val saveStatus by vm.saveStatus.collectAsStateSafe()
+    val haptics = LocalHapticFeedback.current
     SectionCard {
         ToggleRow("Auto-plan next week", "Every Sunday the AI lays out your week and (if connected) pushes it to your watch.", autoPlan) { vm.setAutoPlan(it) }
     }
@@ -205,15 +208,21 @@ internal fun PlanningSection(vm: SettingsViewModel) {
         )
         Text("Guides how much training load the weekly planner aims for. Leave blank to auto-estimate.",
             style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-        Button(onClick = { vm.saveProfile() }, enabled = !busy, modifier = Modifier.fillMaxWidth()) { Text("Save") }
-        saveStatus?.let { Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.primary) }
+        Button(onClick = { haptics.performHapticFeedback(HapticFeedbackType.LongPress); vm.saveProfile() }, enabled = !busy, modifier = Modifier.fillMaxWidth()) { Text("Save") }
     }
 }
 
+// "What your coach knows about you" — the three coach-memory documents in one
+// place: hard constraints (coach_knowledge ≈ user.md), the rolling notes
+// (training_memory ≈ memory.md), and the coach's identity (coach_soul ≈ soul.md).
 @Composable
 internal fun KnowledgeSection(vm: SettingsViewModel) {
     val knowledge by vm.knowledge.collectAsStateSafe()
     val knowledgeStatus by vm.knowledgeStatus.collectAsStateSafe()
+    val memory by vm.memory.collectAsStateSafe()
+    val memoryStatus by vm.memoryStatus.collectAsStateSafe()
+    val soul by vm.soul.collectAsStateSafe()
+    val soulStatus by vm.soulStatus.collectAsStateSafe()
     val busy by vm.busy.collectAsStateSafe()
     SectionCard {
         Text(
@@ -229,6 +238,40 @@ internal fun KnowledgeSection(vm: SettingsViewModel) {
         )
         Button(onClick = { vm.saveKnowledge() }, enabled = !busy, modifier = Modifier.fillMaxWidth()) { Text("Save knowledge") }
         knowledgeStatus?.let { Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.primary) }
+    }
+    SectionCard {
+        Text(
+            "Your coach's running notes — durable patterns it has learned from your sessions, " +
+                "feedback and PRs (e.g. how you respond to volume, recurring soreness, what motivates you). " +
+                "It carries these into every chat and plan. Tap Refresh to re-derive them from recent training, " +
+                "or edit them directly.",
+            style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        OutlinedTextField(
+            memory, { vm.updateMemory(it) }, label = { Text("Coach's notes about you") },
+            placeholder = { Text("Builds up automatically as you train — or jot something here.") },
+            minLines = 4, modifier = Modifier.fillMaxWidth(),
+        )
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            OutlinedButton(onClick = { vm.refreshMemory() }, enabled = !busy, modifier = Modifier.weight(1f)) { Text("Refresh") }
+            Button(onClick = { vm.saveMemory() }, enabled = !busy, modifier = Modifier.weight(1f)) { Text("Save notes") }
+        }
+        memoryStatus?.let { Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.primary) }
+    }
+    SectionCard {
+        Text(
+            "Your coach's soul — who it is to you: its voice, coaching philosophy, and the " +
+                "story of how you two train together. It deepens slowly on its own; you rarely need to " +
+                "touch it, but you can shape its personality here. Leave it blank to use the default coach.",
+            style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        OutlinedTextField(
+            soul, { vm.updateSoul(it) }, label = { Text("Coach's identity & your story") },
+            placeholder = { Text("Seeded with a default coach personality, then deepened over time as you train together.") },
+            minLines = 5, modifier = Modifier.fillMaxWidth(),
+        )
+        Button(onClick = { vm.saveSoul() }, enabled = !busy, modifier = Modifier.fillMaxWidth()) { Text("Save soul") }
+        soulStatus?.let { Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.primary) }
     }
 }
 
@@ -275,7 +318,7 @@ internal fun ConnectionsSection(vm: SettingsViewModel) {
             Text(
                 "Saved: athlete $athlete · API key ${hint ?: "••••••••"}",
                 style = MaterialTheme.typography.bodySmall,
-                color = Sage,
+                color = MaterialTheme.colorScheme.primary,
             )
             // Sync uses the saved credentials server-side — no need to re-enter
             // the key/id. (Also runs automatically every 30 min via the backend.)
@@ -348,7 +391,13 @@ internal fun NotificationsSection(vm: SettingsViewModel) {
 internal fun DiagnosticsSection(vm: SettingsViewModel) {
     val logs by vm.logs.collectAsStateSafe()
     if (logs.isEmpty()) {
-        SectionCard { Text("No AI generations yet.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant) }
+        SectionCard {
+            com.workoutmaker.app.ui.components.EmptyState(
+                title = "No AI generations yet",
+                subtitle = "Generate a workout or plan and it'll be logged here.",
+                icon = Icons.Filled.AutoAwesome,
+            )
+        }
         return
     }
     val spent = logs.sumOf { it.estimated_cost_usd }
@@ -481,7 +530,11 @@ internal fun RacesSection(vm: SettingsViewModel) {
         Text("Set goals for any sport — races, FTP targets, swim times, lifts. Your A-goal drives periodization and the taper; B/C goals are tune-ups shown on the countdown.",
             style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
         if (races.isEmpty()) {
-            Text("No goals yet.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            com.workoutmaker.app.ui.components.EmptyState(
+                title = "No goals yet",
+                subtitle = "Add a goal race or target to drive your periodization.",
+                icon = Icons.Filled.Flag,
+            )
         }
         races.forEach { r ->
             val days = runCatching { java.time.temporal.ChronoUnit.DAYS.between(today, java.time.LocalDate.parse(r.date)) }.getOrNull()
@@ -615,7 +668,7 @@ internal fun ProviderCard(mod: Modifier, provider: LlmProvider, vm: SettingsView
                     null -> "untested"
                 },
                 style = MaterialTheme.typography.bodySmall,
-                color = if (s.is_valid == false) MaterialTheme.colorScheme.error else Sage,
+                color = if (s.is_valid == false) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary,
             )
             if (isCustom && !s.base_url.isNullOrBlank()) {
                 Text("Endpoint: ${s.base_url}", style = MaterialTheme.typography.labelSmall,

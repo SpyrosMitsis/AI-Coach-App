@@ -1,7 +1,10 @@
 package com.workoutmaker.app.ui.screens
 
+import androidx.compose.animation.animateColorAsState
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -14,8 +17,11 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
+import androidx.activity.compose.BackHandler
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.FitnessCenter
 import androidx.compose.material.icons.filled.KeyboardArrowDown
+import androidx.compose.material.icons.filled.KeyboardArrowRight
 import androidx.compose.material.icons.filled.KeyboardArrowUp
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
@@ -43,6 +49,7 @@ import com.workoutmaker.app.data.WorkoutRepository
 import com.workoutmaker.app.ui.collectAsStateSafe
 import com.workoutmaker.app.ui.components.ChipRow
 import com.workoutmaker.app.ui.components.chartLabel
+import com.workoutmaker.app.ui.components.fillUnderLine
 import com.workoutmaker.app.ui.components.hGridLine
 import com.workoutmaker.app.ui.components.GhostButton
 import com.workoutmaker.app.ui.components.InfoIcon
@@ -61,10 +68,13 @@ import javax.inject.Inject
 @HiltViewModel
 class HomeViewModel @Inject constructor(
     private val repo: WorkoutRepository,
+    private val strength: com.workoutmaker.app.strength.StrengthRepository,
     private val location: com.workoutmaker.app.data.LocationProvider,
 ) : ViewModel() {
     val summary = MutableStateFlow<DailySummary?>(null)
     val fitness = MutableStateFlow<com.workoutmaker.app.data.IntervalsStats?>(null)
+    // Thresholds for turning a planned step's zone into a concrete target range.
+    val profile = MutableStateFlow<com.workoutmaker.app.data.TrainingProfile?>(null)
     val loading = MutableStateFlow(true)
     val generating = MutableStateFlow(false)
     val error = MutableStateFlow<String?>(null)
@@ -101,6 +111,7 @@ class HomeViewModel @Inject constructor(
             }
         runCatching { repo.wellnessCheckin(java.time.LocalDate.now().toString()) }
             .onSuccess { wellnessToday.value = it; wellnessLoaded.value = true }
+        if (profile.value == null) runCatching { repo.loadProfile() }.onSuccess { profile.value = it }
         runCatching { repo.intervalsStats() }.onSuccess { fitness.value = it }
         loading.value = false
     }
@@ -119,6 +130,67 @@ class HomeViewModel @Inject constructor(
 
     val adjusting = MutableStateFlow(false)
     val feedbackStatus = MutableStateFlow<String?>(null)
+
+    // Tapping a Home "recent activity" digest resolves it to the full
+    // CompletedActivity (rich Intervals data) so it opens the SAME detail page
+    // used by Calendar/History. Falls back to the thin digest if the synced row
+    // isn't found (e.g. very recent activity not yet in completed_activities).
+    val openedActivity = MutableStateFlow<com.workoutmaker.app.data.CompletedActivity?>(null)
+
+    // A strength session is logged in-app AND (usually) recorded on the watch. When
+    // one is tapped, we open the SAME unified detail page the Calendar uses, which
+    // merges the logged sets with the watch recording — instead of the watch-only
+    // endurance page that ignores everything that was lifted.
+    data class StrengthDetail(
+        val workout: com.workoutmaker.app.strength.WorkoutEntity,
+        val sets: List<com.workoutmaker.app.strength.SetEntity>,
+        val watch: com.workoutmaker.app.data.CompletedActivity?,
+    )
+    val openedStrength = MutableStateFlow<StrengthDetail?>(null)
+
+    fun openActivity(a: com.workoutmaker.app.data.IntervalsActivity) = viewModelScope.launch {
+        val from = java.time.LocalDate.now().minusDays(120).toString()
+        val completed = runCatching { repo.completedActivities(from) }.getOrNull().orEmpty()
+
+        // Strength path: if an in-app strength session was logged on this date, open
+        // the merged detail (logged + watch) rather than the watch-only one.
+        val zone = java.time.ZoneId.systemDefault()
+        val logged = runCatching { strength.recentWorkouts(500) }.getOrNull()?.firstOrNull { w ->
+            java.time.Instant.ofEpochMilli(w.startedAt).atZone(zone).toLocalDate().toString() == a.date
+        }
+        if (logged != null) {
+            val sets = runCatching { strength.setsForWorkout(logged.id) }.getOrNull().orEmpty()
+            val watch = completed.firstOrNull { c -> c.date == a.date && looksLike("strength", c.type) }
+            openedStrength.value = StrengthDetail(logged, sets, watch)
+            return@launch
+        }
+
+        val match = completed.firstOrNull { c ->
+            c.date == a.date &&
+                (c.displayName.equals(a.name, ignoreCase = true) ||
+                    (a.name.isBlank() && (c.type ?: "").equals(a.type, ignoreCase = true)))
+        }
+        openedActivity.value = match ?: a.toCompleted()
+    }
+    fun closeActivity() { openedActivity.value = null }
+    fun closeStrength() { openedStrength.value = null }
+
+    private fun com.workoutmaker.app.data.IntervalsActivity.toCompleted() =
+        com.workoutmaker.app.data.CompletedActivity(
+            id = "digest:$date:$name",
+            intervals_id = "digest",
+            type = type.ifBlank { null },
+            date = date,
+            duration_seconds = duration_min?.let { it * 60 },
+            distance_m = distance_km?.let { it * 1000.0 },
+            avg_hr = avg_hr,
+            tss = tss,
+            data_json = if (name.isNotBlank()) {
+                kotlinx.serialization.json.JsonObject(mapOf("name" to kotlinx.serialization.json.JsonPrimitive(name)))
+            } else {
+                null
+            },
+        )
 
     fun hasLocation(): Boolean = location.hasPermission()
 
@@ -207,6 +279,17 @@ fun HomeScreen(vm: HomeViewModel = hiltViewModel()) {
     val wellnessToday by vm.wellnessToday.collectAsStateSafe()
     val wellnessLoaded by vm.wellnessLoaded.collectAsStateSafe()
     val wellnessBusy by vm.wellnessBusy.collectAsStateSafe()
+    val profile by vm.profile.collectAsStateSafe()
+    val haptics = LocalHapticFeedback.current
+
+    // Transient confirmations ("✓ Marked done") and action errors surface through
+    // the one app-wide snackbar instead of an easy-to-miss inline status line.
+    val snackbar = com.workoutmaker.app.ui.components.LocalAppSnackbar.current
+    androidx.compose.runtime.LaunchedEffect(feedbackStatus) {
+        val s = feedbackStatus ?: return@LaunchedEffect
+        snackbar?.show(if (s.startsWith("✓") || s.startsWith("⟳")) s else com.workoutmaker.app.ui.components.friendlyError(s))
+        vm.feedbackStatus.value = null
+    }
 
     // Reload on every resume (delivered once on first composition too) so a
     // dashboard left open overnight doesn't keep showing yesterday's workout.
@@ -257,9 +340,35 @@ fun HomeScreen(vm: HomeViewModel = hiltViewModel()) {
         lastSyncAt != null -> "$today · synced ${hhmm(lastSyncAt!!)}"
         else -> today
     }
+    // Full-screen detail overlay when a recent activity is tapped — reuses the
+    // same page as Calendar/History.
+    val openedStrength by vm.openedStrength.collectAsStateSafe()
+    openedStrength?.let { d ->
+        BackHandler { vm.closeStrength() }
+        com.workoutmaker.app.ui.components.DetailOverlay {
+            StrengthSessionDetailScreen(
+                w = d.workout,
+                sets = d.sets,
+                watch = d.watch,
+                onBack = { vm.closeStrength() },
+            )
+        }
+        return
+    }
+
+    val openedActivity by vm.openedActivity.collectAsStateSafe()
+    openedActivity?.let { act ->
+        BackHandler { vm.closeActivity() }
+        com.workoutmaker.app.ui.components.DetailOverlay {
+            ActivityDetailScreen(act, planned = null) { vm.closeActivity() }
+        }
+        return
+    }
+
     ScreenScaffold(
         title = "Today",
         subtitle = syncNote,
+        eyebrow = "DAILY READINESS",
         isRefreshing = loading,
         onRefresh = { vm.load() },
     ) { mod ->
@@ -274,7 +383,11 @@ fun HomeScreen(vm: HomeViewModel = hiltViewModel()) {
         val s = summary
         if (s == null) {
             SectionCard(mod, title = "Couldn't load today") {
-                Text(error ?: "Check your connection and try again.", style = MaterialTheme.typography.bodyMedium)
+                Text(
+                    error?.let { com.workoutmaker.app.ui.components.friendlyError(it) }
+                        ?: "Check your connection and try again.",
+                    style = MaterialTheme.typography.bodyMedium,
+                )
                 Button(onClick = { vm.load() }, modifier = Modifier.fillMaxWidth()) { Text("Retry") }
             }
             return@ScreenScaffold
@@ -364,9 +477,14 @@ fun HomeScreen(vm: HomeViewModel = hiltViewModel()) {
         }
 
         // Daily wellness check-in — shown only once today's is still unanswered
-        // (energy == null). The morning reminder fires after Health Connect sees
-        // you woke up; this is where you actually log it.
-        if (wellnessLoaded && wellnessToday?.energy == null) {
+        // (energy == null) AND last night's sleep has synced from Intervals.icu
+        // (rec.sleep present), so it surfaces when you actually wake up rather
+        // than at midnight. Fallback: if sleep still hasn't arrived by late
+        // morning (watch not worn / didn't sync), show it anyway so the check-in
+        // is never permanently locked out.
+        val sleptToday = rec?.sleep != null
+        val pastFallback = java.time.LocalTime.now() >= java.time.LocalTime.of(11, 0)
+        if (wellnessLoaded && wellnessToday?.energy == null && (sleptToday || pastFallback)) {
             WellnessCheckinCard(mod, busy = wellnessBusy) { e, sore -> vm.saveWellness(e, sore) }
         }
 
@@ -388,12 +506,18 @@ fun HomeScreen(vm: HomeViewModel = hiltViewModel()) {
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
-                GhostButton(onClick = { vm.undoSkip() }) { Text("Undo skip") }
-                feedbackStatus?.let { Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.primary) }
+                GhostButton(onClick = {
+                    haptics.performHapticFeedback(HapticFeedbackType.LongPress)
+                    vm.undoSkip()
+                }) { Text("Undo skip") }
                 return@SectionCard
             }
-            if (w != null) WorkoutDetail(w)
-            else Text("No workout planned yet.", style = MaterialTheme.typography.bodyMedium)
+            if (w != null) WorkoutDetail(w, profile)
+            else com.workoutmaker.app.ui.components.EmptyState(
+                title = "No workout planned yet",
+                subtitle = "Generate one below, or ask your coach to plan your day.",
+                icon = Icons.Filled.FitnessCenter,
+            )
 
             // Tweak field guides the (re)generation; the button sits below it and
             // regenerates WITH whatever you typed (no separate "Adjust").
@@ -420,15 +544,24 @@ fun HomeScreen(vm: HomeViewModel = hiltViewModel()) {
                 // #1: the rating appears only AFTER you say you did the workout.
                 when {
                     s.today_workout?.completed == true ->
-                        Text("✓ Completed today", style = MaterialTheme.typography.titleSmall, color = com.workoutmaker.app.ui.theme.Sage)
+                        Text("✓ Completed today", style = MaterialTheme.typography.titleSmall, color = MaterialTheme.colorScheme.primary)
                     else -> {
                         var didIt by remember(s.today_workout?.id) { mutableStateOf(false) }
                         if (!didIt) {
                             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                                Button(onClick = { didIt = true }, modifier = Modifier.weight(1f)) {
+                                Button(
+                                    onClick = {
+                                        haptics.performHapticFeedback(HapticFeedbackType.LongPress)
+                                        didIt = true
+                                    },
+                                    modifier = Modifier.weight(1f),
+                                ) {
                                     Text("✓ I did this workout")
                                 }
-                                GhostButton(onClick = { vm.skipToday() }) { Text("Skip") }
+                                GhostButton(onClick = {
+                                    haptics.performHapticFeedback(HapticFeedbackType.LongPress)
+                                    vm.skipToday()
+                                }) { Text("Skip") }
                             }
                         } else {
                             // RPE first (increasing-bars histogram), then the
@@ -446,7 +579,10 @@ fun HomeScreen(vm: HomeViewModel = hiltViewModel()) {
                             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                                 listOf("too_easy" to "Too easy", "just_right" to "Just right", "too_hard" to "Too hard").forEach { (k, label) ->
                                     GhostButton(
-                                        onClick = { vm.submitFeedback(k, rpe) },
+                                        onClick = {
+                                            haptics.performHapticFeedback(HapticFeedbackType.LongPress)
+                                            vm.submitFeedback(k, rpe)
+                                        },
                                         modifier = Modifier.weight(1f),
                                     ) { Text(label, style = MaterialTheme.typography.labelSmall) }
                                 }
@@ -454,11 +590,10 @@ fun HomeScreen(vm: HomeViewModel = hiltViewModel()) {
                         }
                     }
                 }
-                feedbackStatus?.let { Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.primary) }
             }
         }
 
-        fitness?.let { f -> FitnessSection(mod, f) }
+        fitness?.let { f -> FitnessSection(mod, f, onOpenActivity = { vm.openActivity(it) }) }
     }
 }
 
@@ -487,21 +622,26 @@ private fun WellnessCheckinCard(mod: Modifier, busy: Boolean, onSave: (Int, Int)
 // One 1–5 row: label, low/high anchor words, and five tap targets.
 @Composable
 private fun WellnessScale(label: String, low: String, high: String, selected: Int?, onSelect: (Int) -> Unit) {
+    val haptics = LocalHapticFeedback.current
     Column(Modifier.padding(top = 8.dp)) {
         Text(label, style = MaterialTheme.typography.labelLarge)
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
             (1..5).forEach { n ->
                 val active = selected == n
+                val bg by animateColorAsState(
+                    if (active) MaterialTheme.colorScheme.primary
+                    else MaterialTheme.colorScheme.surfaceContainerHigh,
+                    label = "wellnessTile",
+                )
                 Box(
                     Modifier
                         .weight(1f)
                         .size(width = 0.dp, height = 40.dp)
-                        .background(
-                            if (active) MaterialTheme.colorScheme.primary
-                            else MaterialTheme.colorScheme.surfaceContainerHigh,
-                            androidx.compose.foundation.shape.RoundedCornerShape(8.dp),
-                        )
-                        .clickable { onSelect(n) },
+                        .background(bg, androidx.compose.foundation.shape.RoundedCornerShape(8.dp))
+                        .clickable {
+                            haptics.performHapticFeedback(HapticFeedbackType.LongPress)
+                            onSelect(n)
+                        },
                     contentAlignment = Alignment.Center,
                 ) {
                     Text(
@@ -521,7 +661,11 @@ private fun WellnessScale(label: String, low: String, high: String, selected: In
 
 @OptIn(androidx.compose.foundation.layout.ExperimentalLayoutApi::class)
 @Composable
-private fun FitnessSection(mod: Modifier, f: com.workoutmaker.app.data.IntervalsStats) {
+private fun FitnessSection(
+    mod: Modifier,
+    f: com.workoutmaker.app.data.IntervalsStats,
+    onOpenActivity: (com.workoutmaker.app.data.IntervalsActivity) -> Unit = {},
+) {
     if (!f.connected) {
         SectionCard(mod, title = "Fitness (Intervals.icu)") {
             Text("Connect Intervals.icu in Settings to see your fitness curve, HR zones and recent activities here.",
@@ -531,7 +675,7 @@ private fun FitnessSection(mod: Modifier, f: com.workoutmaker.app.data.Intervals
     }
     if (f.error != null) {
         SectionCard(mod, title = "Fitness (Intervals.icu)") {
-            Text("Couldn't load Intervals data: ${f.error}", style = MaterialTheme.typography.bodySmall,
+            Text(com.workoutmaker.app.ui.components.friendlyError(f.error), style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.error)
         }
         return
@@ -541,8 +685,8 @@ private fun FitnessSection(mod: Modifier, f: com.workoutmaker.app.data.Intervals
         f.summary?.let { s ->
             Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                 Row(Modifier.weight(1f), horizontalArrangement = Arrangement.SpaceBetween) {
-                    FitnessStat("Fitness", "%.0f".format(s.ctl), "CTL", com.workoutmaker.app.ui.theme.Sage)
-                    FitnessStat("Fatigue", "%.0f".format(s.atl), "ATL", com.workoutmaker.app.ui.theme.Sand)
+                    FitnessStat("Fitness", "%.0f".format(s.ctl), "CTL", MaterialTheme.colorScheme.primary)
+                    FitnessStat("Fatigue", "%.0f".format(s.atl), "ATL", MaterialTheme.colorScheme.secondary)
                     FitnessStat("Form", "%+.0f".format(s.tsb), tsbLabel(s.tsb), tsbColor(s.tsb))
                     FitnessStat("Ramp", "%+.1f".format(s.ramp), "7d CTL", MaterialTheme.colorScheme.onSurfaceVariant)
                 }
@@ -553,13 +697,14 @@ private fun FitnessSection(mod: Modifier, f: com.workoutmaker.app.data.Intervals
         f.summary?.let { s -> LoadGuard(s) }
         if (f.fitness.size >= 2) {
             FitnessChart(f.fitness, Modifier.fillMaxWidth().padding(top = 4.dp))
+            val latest = f.fitness.last()
             Row(horizontalArrangement = Arrangement.spacedBy(14.dp)) {
-                LegendDot("Fitness (CTL)", com.workoutmaker.app.ui.theme.Sage)
-                LegendDot("Fatigue (ATL)", com.workoutmaker.app.ui.theme.Sand)
+                LegendDot("Fitness (CTL) ${"%.0f".format(latest.ctl)}", MaterialTheme.colorScheme.primary)
+                LegendDot("Fatigue (ATL) ${"%.0f".format(latest.atl)}", MaterialTheme.colorScheme.secondary)
             }
 
             // Form (TSB) over time on the Intervals.icu zone backdrop.
-            SectionLabel("Form (TSB)", color = MaterialTheme.colorScheme.onSurfaceVariant)
+            SectionLabel("Form (TSB) · now ${"%+.0f".format(latest.tsb)}", color = MaterialTheme.colorScheme.onSurfaceVariant)
             FormChart(f.fitness, Modifier.fillMaxWidth())
             androidx.compose.foundation.layout.FlowRow(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                 FORM_ZONES.forEach { z -> LegendDot(z.label, z.color) }
@@ -573,18 +718,28 @@ private fun FitnessSection(mod: Modifier, f: com.workoutmaker.app.data.Intervals
     if (f.activities.isNotEmpty()) {
         SectionCard(mod, title = "Recent activities") {
             f.activities.take(8).forEach { a ->
-                Column(Modifier.fillMaxWidth().padding(vertical = 2.dp)) {
-                    Text("${a.date} · ${a.name}", style = MaterialTheme.typography.labelMedium)
-                    val meta = buildString {
-                        a.distance_km?.let { append("%.1f km".format(it)) }
-                        a.duration_min?.let { if (isNotEmpty()) append(" · "); append("${it} min") }
-                        a.avg_hr?.let { if (isNotEmpty()) append(" · "); append("${it} bpm") }
-                        a.tss?.let { if (isNotEmpty()) append(" · "); append("${it.toInt()} TSS") }
+                Row(
+                    Modifier.fillMaxWidth().clickable { onOpenActivity(a) }.padding(vertical = 4.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Column(Modifier.weight(1f)) {
+                        Text("${a.date} · ${a.name}", style = MaterialTheme.typography.labelMedium)
+                        val meta = buildString {
+                            a.distance_km?.let { append("%.1f km".format(it)) }
+                            a.duration_min?.let { if (isNotEmpty()) append(" · "); append("${it} min") }
+                            a.avg_hr?.let { if (isNotEmpty()) append(" · "); append("${it} bpm") }
+                            a.tss?.let { if (isNotEmpty()) append(" · "); append("${it.toInt()} TSS") }
+                        }
+                        if (meta.isNotBlank()) {
+                            Text(meta, style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        }
                     }
-                    if (meta.isNotBlank()) {
-                        Text(meta, style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant)
-                    }
+                    Icon(
+                        Icons.Filled.KeyboardArrowRight,
+                        contentDescription = "Open details",
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
                 }
             }
         }
@@ -600,16 +755,16 @@ private fun LoadGuard(s: com.workoutmaker.app.data.FitnessSummary) {
     val ratio = s.atl / s.ctl
     val (color, headline, detail) = when {
         ratio >= 1.5 -> Triple(
-            com.workoutmaker.app.ui.theme.BandRed, "High overload risk",
+            MaterialTheme.colorScheme.error, "High overload risk",
             "Fatigue is well above your fitness (ratio %.2f). Take easy days — an injury/illness spike zone.".format(ratio))
         ratio >= 1.3 || s.ramp >= 8 -> Triple(
-            com.workoutmaker.app.ui.theme.BandAmber, "Ramping fast",
+            com.workoutmaker.app.ui.theme.amberAccent(), "Ramping fast",
             "Building quickly (ratio %.2f, ramp %+.1f). Fine short-term; don't hold it for many weeks.".format(ratio, s.ramp))
         ratio < 0.8 && s.ramp < 0 -> Triple(
-            com.workoutmaker.app.ui.theme.BandAmber, "Detraining / very fresh",
+            com.workoutmaker.app.ui.theme.amberAccent(), "Detraining / very fresh",
             "Load is low relative to fitness (ratio %.2f). Good for a taper; otherwise add volume.".format(ratio))
         else -> Triple(
-            com.workoutmaker.app.ui.theme.BandGreen, "Load well managed",
+            MaterialTheme.colorScheme.primary, "Load well managed",
             "Fatigue:fitness ratio %.2f sits in the productive 0.8–1.3 range.".format(ratio))
     }
     Row(
@@ -643,11 +798,12 @@ private fun LegendDot(label: String, color: Color) {
     }
 }
 
+@Composable
 private fun tsbColor(tsb: Double): Color = when {
-    tsb > 5 -> com.workoutmaker.app.ui.theme.BandGreen
-    tsb < -20 -> com.workoutmaker.app.ui.theme.BandRed
-    tsb < -10 -> com.workoutmaker.app.ui.theme.BandAmber
-    else -> com.workoutmaker.app.ui.theme.Sage
+    tsb > 5 -> MaterialTheme.colorScheme.primary
+    tsb < -20 -> MaterialTheme.colorScheme.error
+    tsb < -10 -> com.workoutmaker.app.ui.theme.amberAccent()
+    else -> MaterialTheme.colorScheme.primary
 }
 
 private fun tsbLabel(tsb: Double): String = when {
@@ -687,7 +843,7 @@ private val FORM_ZONES = listOf(
 // line reads clearly on top.
 @Composable
 private fun FormChart(points: List<com.workoutmaker.app.data.FitnessPoint>, modifier: Modifier) {
-    val grid = Color(0xFF333535)
+    val grid = MaterialTheme.colorScheme.surfaceVariant
     val lineColor = MaterialTheme.colorScheme.onSurface
     val last = points.last()
     androidx.compose.foundation.Canvas(modifier.size(width = 0.dp, height = 130.dp).fillMaxWidth()) {
@@ -697,10 +853,13 @@ private fun FormChart(points: List<com.workoutmaker.app.data.FitnessPoint>, modi
         val bottom = minOf(-40.0, dataMin - 4)
         val span = (top - bottom).coerceAtLeast(1.0)
         val w = size.width
+        val gutterLeft = 30.dp.toPx()
         val labelPad = 14.sp.toPx()
         val h = size.height - labelPad
+        val plotW = (w - gutterLeft).coerceAtLeast(1f)
         fun y(v: Double) = (h * (top - v) / span).toFloat().coerceIn(0f, h)
-        val stepX = if (points.size > 1) w / (points.size - 1) else w
+        val stepX = if (points.size > 1) plotW / (points.size - 1) else plotW
+        fun x(i: Int) = gutterLeft + stepX * i
 
         // Zone bands: each fills from the zone above (or the top) down to its min.
         FORM_ZONES.forEachIndexed { i, z ->
@@ -710,69 +869,84 @@ private fun FormChart(points: List<com.workoutmaker.app.data.FitnessPoint>, modi
             if (yL > yU) {
                 drawRect(
                     z.color.copy(alpha = 0.22f),
-                    topLeft = androidx.compose.ui.geometry.Offset(0f, yU),
-                    size = androidx.compose.ui.geometry.Size(w, yL - yU),
+                    topLeft = androidx.compose.ui.geometry.Offset(gutterLeft, yU),
+                    size = androidx.compose.ui.geometry.Size(plotW, yL - yU),
                 )
             }
         }
-        // Zero baseline + axis numbers.
-        drawLine(grid, androidx.compose.ui.geometry.Offset(0f, y(0.0)), androidx.compose.ui.geometry.Offset(w, y(0.0)), strokeWidth = 2f)
-        chartLabel("${top.toInt()}", 4f, y(top) + 11.sp.toPx())
-        chartLabel("0", 4f, y(0.0) - 4f)
-        chartLabel("${bottom.toInt()}", 4f, h - 4f)
-        chartLabel(points.first().date.takeLast(5), 0f, size.height - 2f)
+        // Zero baseline + axis numbers (in the left gutter).
+        drawLine(grid, androidx.compose.ui.geometry.Offset(gutterLeft, y(0.0)), androidx.compose.ui.geometry.Offset(w, y(0.0)), strokeWidth = 2f)
+        chartLabel("${top.toInt()}", gutterLeft - 6f, y(top) + 9.sp.toPx() * 0.6f, alignRight = true)
+        chartLabel("0", gutterLeft - 6f, y(0.0) - 3f, alignRight = true)
+        chartLabel("${bottom.toInt()}", gutterLeft - 6f, h - 2f, alignRight = true)
+        chartLabel(points.first().date.takeLast(5), gutterLeft, size.height - 2f)
         chartLabel(last.date.takeLast(5), w, size.height - 2f, alignRight = true)
 
-        // TSB line.
+        // TSB line — rounded, over the zone backdrop (no fill so the bands read).
         val path = androidx.compose.ui.graphics.Path()
         points.forEachIndexed { i, p ->
-            val px = stepX * i
+            val px = x(i)
             val py = y(p.tsb)
             if (i == 0) path.moveTo(px, py) else path.lineTo(px, py)
         }
-        drawPath(path, lineColor, style = androidx.compose.ui.graphics.drawscope.Stroke(width = 4f))
-        chartLabel("%+.0f".format(last.tsb), w, y(last.tsb) - 6f, alignRight = true, color = lineColor)
+        drawPath(
+            path, lineColor,
+            style = androidx.compose.ui.graphics.drawscope.Stroke(
+                width = 3.5f,
+                cap = androidx.compose.ui.graphics.StrokeCap.Round,
+                join = androidx.compose.ui.graphics.StrokeJoin.Round,
+            ),
+        )
     }
 }
 
 @Composable
 private fun FitnessChart(points: List<com.workoutmaker.app.data.FitnessPoint>, modifier: Modifier) {
-    val ctlColor = com.workoutmaker.app.ui.theme.Sage
-    val atlColor = com.workoutmaker.app.ui.theme.Sand
-    val grid = Color(0xFF333535)
+    val ctlColor = MaterialTheme.colorScheme.primary
+    val atlColor = MaterialTheme.colorScheme.secondary
+    val grid = MaterialTheme.colorScheme.surfaceVariant
     val last = points.last()
     androidx.compose.foundation.Canvas(modifier.size(width = 0.dp, height = 150.dp).fillMaxWidth()) {
         val maxV = (points.maxOf { maxOf(it.ctl, it.atl) }).coerceAtLeast(1.0)
         val w = size.width
-        val labelPad = 14.sp.toPx() // reserved at the bottom for the date axis
+        val gutterLeft = 34.dp.toPx() // room for the value axis on the left
+        val labelPad = 14.sp.toPx()   // room for the date axis at the bottom
         val h = size.height - labelPad
-        val stepX = if (points.size > 1) w / (points.size - 1) else w
+        val plotW = (w - gutterLeft).coerceAtLeast(1f)
+        val stepX = if (points.size > 1) plotW / (points.size - 1) else plotW
+        fun x(i: Int) = gutterLeft + stepX * i
         fun y(v: Double) = h - (v / maxV * h).toFloat()
 
         // Value scale: gridlines + numbers at max / half / 0 (TSS/day load).
-        hGridLine(y(maxV / 2))
-        drawLine(grid, androidx.compose.ui.geometry.Offset(0f, h), androidx.compose.ui.geometry.Offset(w, h), strokeWidth = 2f)
-        chartLabel("${maxV.toInt()} TSS/d", 4f, y(maxV) + 11.sp.toPx())
-        chartLabel("${(maxV / 2).toInt()}", 4f, y(maxV / 2) - 4f)
-        chartLabel("0", 4f, h - 4f)
+        hGridLine(y(maxV), gutterLeft, w)
+        hGridLine(y(maxV / 2), gutterLeft, w)
+        drawLine(grid, androidx.compose.ui.geometry.Offset(gutterLeft, h), androidx.compose.ui.geometry.Offset(w, h), strokeWidth = 2f)
+        chartLabel("${maxV.toInt()}", gutterLeft - 6f, y(maxV) + 9.sp.toPx() * 0.5f, alignRight = true)
+        chartLabel("${(maxV / 2).toInt()}", gutterLeft - 6f, y(maxV / 2) + 9.sp.toPx() * 0.35f, alignRight = true)
+        chartLabel("0", gutterLeft - 6f, h - 2f, alignRight = true)
         // Date range on the x axis (MM-DD).
-        chartLabel(points.first().date.takeLast(5), 0f, size.height - 2f)
+        chartLabel(points.first().date.takeLast(5), gutterLeft, size.height - 2f)
         chartLabel(last.date.takeLast(5), w, size.height - 2f, alignRight = true)
 
         fun line(sel: (com.workoutmaker.app.data.FitnessPoint) -> Double, color: Color) {
             val path = androidx.compose.ui.graphics.Path()
             points.forEachIndexed { i, p ->
-                val px = stepX * i
+                val px = x(i)
                 val py = y(sel(p))
                 if (i == 0) path.moveTo(px, py) else path.lineTo(px, py)
             }
-            drawPath(path, color, style = androidx.compose.ui.graphics.drawscope.Stroke(width = 4f))
+            fillUnderLine(path, color, h, 0f, x(0), x(points.size - 1))
+            drawPath(
+                path, color,
+                style = androidx.compose.ui.graphics.drawscope.Stroke(
+                    width = 3.5f,
+                    cap = androidx.compose.ui.graphics.StrokeCap.Round,
+                    join = androidx.compose.ui.graphics.StrokeJoin.Round,
+                ),
+            )
         }
         line({ it.atl }, atlColor)
         line({ it.ctl }, ctlColor)
-        // Current values at the line ends, in their own colors.
-        chartLabel("%.0f".format(last.ctl), w, y(last.ctl) - 6f, alignRight = true, color = ctlColor)
-        chartLabel("%.0f".format(last.atl), w, y(last.atl) + 13.sp.toPx(), alignRight = true, color = atlColor)
     }
 }
 
@@ -804,7 +978,7 @@ private fun GoalCard(mod: Modifier, g: com.workoutmaker.app.data.GoalProgress) {
         }
         // Periodization phase timeline — highlights the block you're in now.
         if (g.weeks_to_goal != null) PhaseStrip(g.phase)
-        Text(g.on_track, style = MaterialTheme.typography.bodyMedium, color = com.workoutmaker.app.ui.theme.Sage)
+        Text(g.on_track, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.primary)
     }
 }
 
@@ -818,8 +992,8 @@ private fun PhaseStrip(current: String) {
             val done = curIdx >= 0 && i < curIdx
             val c = when {
                 active -> MaterialTheme.colorScheme.primary
-                done -> com.workoutmaker.app.ui.theme.Sage.copy(alpha = 0.5f)
-                else -> Color(0xFF333535)
+                done -> MaterialTheme.colorScheme.primary.copy(alpha = 0.5f)
+                else -> MaterialTheme.colorScheme.surfaceVariant
             }
             Column(Modifier.weight(1f), horizontalAlignment = Alignment.CenterHorizontally) {
                 Box(Modifier.fillMaxWidth().size(width = 0.dp, height = 6.dp)
@@ -844,11 +1018,16 @@ internal fun rpeWord(n: Int): String = when {
 // bars 1..n (green → amber → red).
 @Composable
 internal fun RpeBars(selected: Int?, onSelect: (Int) -> Unit) {
+    // Capture theme colors here (a local fun can't invoke composables).
+    val easy = MaterialTheme.colorScheme.primary
+    val mid = com.workoutmaker.app.ui.theme.amberAccent()
+    val hard = MaterialTheme.colorScheme.error
     fun barColor(n: Int) = when {
-        n <= 5 -> com.workoutmaker.app.ui.theme.BandGreen
-        n <= 8 -> com.workoutmaker.app.ui.theme.BandAmber
-        else -> com.workoutmaker.app.ui.theme.BandRed
+        n <= 5 -> easy
+        n <= 8 -> mid
+        else -> hard
     }
+    val haptics = LocalHapticFeedback.current
     Row(
         Modifier.fillMaxWidth(),
         horizontalArrangement = Arrangement.spacedBy(4.dp),
@@ -856,15 +1035,19 @@ internal fun RpeBars(selected: Int?, onSelect: (Int) -> Unit) {
     ) {
         (1..10).forEach { n ->
             val active = selected != null && n <= selected
+            val bg by animateColorAsState(
+                if (active) barColor(n) else MaterialTheme.colorScheme.surfaceContainerHigh,
+                label = "rpeBar",
+            )
             Box(
                 Modifier
                     .weight(1f)
                     .size(width = 0.dp, height = (10 + n * 3).dp)
-                    .background(
-                        if (active) barColor(n) else MaterialTheme.colorScheme.surfaceContainerHigh,
-                        androidx.compose.foundation.shape.RoundedCornerShape(3.dp),
-                    )
-                    .clickable { onSelect(n) },
+                    .background(bg, androidx.compose.foundation.shape.RoundedCornerShape(3.dp))
+                    .clickable {
+                        haptics.performHapticFeedback(HapticFeedbackType.LongPress)
+                        onSelect(n)
+                    },
             )
         }
     }
@@ -873,13 +1056,14 @@ internal fun RpeBars(selected: Int?, onSelect: (Int) -> Unit) {
 @Composable
 fun ReadinessRing(score: Int, band: String) {
     val color = when (band) {
-        "green" -> com.workoutmaker.app.ui.theme.BandGreen
-        "amber" -> com.workoutmaker.app.ui.theme.BandAmber
-        else -> com.workoutmaker.app.ui.theme.BandRed
+        "green" -> MaterialTheme.colorScheme.primary
+        "amber" -> com.workoutmaker.app.ui.theme.amberAccent()
+        else -> MaterialTheme.colorScheme.error
     }
+    val track = MaterialTheme.colorScheme.surfaceVariant
     Box(Modifier.size(88.dp), Alignment.Center) {
         androidx.compose.foundation.Canvas(Modifier.size(88.dp)) {
-            drawArc(Color(0xFF333535), -90f, 360f, false, style = androidx.compose.ui.graphics.drawscope.Stroke(width = 18f))
+            drawArc(track, -90f, 360f, false, style = androidx.compose.ui.graphics.drawscope.Stroke(width = 18f))
             drawArc(color, -90f, 360f * (score / 100f), false, style = androidx.compose.ui.graphics.drawscope.Stroke(width = 18f, cap = androidx.compose.ui.graphics.StrokeCap.Round))
         }
         Text("$score", fontSize = 24.sp, color = MaterialTheme.colorScheme.onSurface)
@@ -920,14 +1104,17 @@ private fun TrendBadge(t: com.workoutmaker.app.data.RecoveryTrend, higherIsBette
     )
 }
 
+@Composable
 private fun readinessColor(band: String) = when (band) {
-    "green" -> com.workoutmaker.app.ui.theme.BandGreen
-    "amber" -> com.workoutmaker.app.ui.theme.BandAmber
-    else -> com.workoutmaker.app.ui.theme.BandRed
+    "green" -> MaterialTheme.colorScheme.primary
+    "amber" -> com.workoutmaker.app.ui.theme.amberAccent()
+    else -> MaterialTheme.colorScheme.error
 }
 
 @Composable
-fun WorkoutDetail(w: Workout) {
+fun WorkoutDetail(w: Workout, profile: com.workoutmaker.app.data.TrainingProfile? = null) {
+    val thresholdSecPerKm = profile?.threshold_pace_per_km?.let { com.workoutmaker.app.data.Zones.parsePace(it) }
+    val lthr = profile?.lthr
     Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
         Text(w.title, style = MaterialTheme.typography.titleMedium, fontWeight = androidx.compose.ui.text.font.FontWeight.SemiBold)
         ChipRow(
@@ -939,12 +1126,34 @@ fun WorkoutDetail(w: Workout) {
             ),
         )
         if (w.coach_note.isNotBlank()) QuoteBlock(w.coach_note)
-        w.sections.forEach { section -> WorkoutSectionItem(section) }
+        w.sections.forEach { section -> WorkoutSectionItem(section, thresholdSecPerKm, lthr) }
+
+        // "Your zones" peek — only for endurance days where thresholds are set.
+        val isEndurance = listOf("run", "ride", "bike", "cycl").any { w.type.contains(it, ignoreCase = true) }
+        val hasThresholds = profile != null && (profile.lthr != null || profile.threshold_pace_per_km != null || profile.ftp != null)
+        if (isEndurance && hasThresholds) {
+            var zonesOpen by remember { mutableStateOf(false) }
+            Text(
+                (if (zonesOpen) "▾ Your zones" else "▸ Your zones"),
+                Modifier.clickable { zonesOpen = !zonesOpen },
+                style = MaterialTheme.typography.labelLarge,
+                color = MaterialTheme.colorScheme.primary,
+            )
+            if (zonesOpen) ZoneTables(profile!!.lthr, profile.threshold_pace_per_km, profile.ftp)
+        }
     }
 }
 
 @Composable
-private fun WorkoutSectionItem(section: com.workoutmaker.app.data.WorkoutSection) {
+private fun WorkoutSectionItem(
+    section: com.workoutmaker.app.data.WorkoutSection,
+    thresholdSecPerKm: Int? = null,
+    lthr: Int? = null,
+) {
+    // Total work time for the section (duration-based steps × their repeats).
+    val sectionSec = section.exercises.sumOf { ex ->
+        (com.workoutmaker.app.data.Zones.parseDurationSec(ex.reps) ?: 0) * ex.sets.coerceAtLeast(1)
+    }
     Row(verticalAlignment = Alignment.Top) {
         Box(
             Modifier.size(30.dp)
@@ -959,20 +1168,44 @@ private fun WorkoutSectionItem(section: com.workoutmaker.app.data.WorkoutSection
             )
         }
         Column(Modifier.padding(start = 12.dp)) {
-            Text(section.name, style = MaterialTheme.typography.titleSmall, fontWeight = androidx.compose.ui.text.font.FontWeight.SemiBold)
+            Text(
+                section.name + if (sectionSec > 0) "  ·  ${com.workoutmaker.app.data.Zones.fmtDurationShort(sectionSec)}" else "",
+                style = MaterialTheme.typography.titleSmall,
+                fontWeight = androidx.compose.ui.text.font.FontWeight.SemiBold,
+            )
             section.exercises.forEach { ex ->
-                val meta = buildString {
-                    if (ex.sets > 0 && ex.reps.isNotEmpty()) append("${ex.sets}×${ex.reps}")
-                    ex.weight_kg?.let { append(" · ${it}kg") }
-                    ex.pace_zone?.let { append(" · pace $it") }
-                    ex.hr_zone?.let { append(" · HR $it") }
+                val durSec = com.workoutmaker.app.data.Zones.parseDurationSec(ex.reps)
+                val zoneLabel = (ex.pace_zone ?: ex.hr_zone)?.let { z ->
+                    com.workoutmaker.app.data.Zones.zoneNum(z)?.let { "Z$it" }
                 }
-                Text(
-                    "${ex.name}${if (meta.isNotBlank()) "  ·  $meta" else ""}",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
+                if (durSec != null || zoneLabel != null) {
+                    // Endurance step: "5× · 3 min · Z4 · 4:15–4:30 /km".
+                    val target = com.workoutmaker.app.data.Zones.targetRange(ex.pace_zone, ex.hr_zone, thresholdSecPerKm, lthr)
+                    val meta = listOfNotNull(
+                        "${ex.sets}×".takeIf { ex.sets > 1 },
+                        durSec?.let { com.workoutmaker.app.data.Zones.fmtDurationShort(it) },
+                        zoneLabel,
+                        target,
+                    ).joinToString(" · ")
+                    StepLine(ex.name, meta)
+                } else {
+                    // Strength / other step: keep the sets×reps · kg rendering.
+                    val meta = buildString {
+                        if (ex.sets > 0 && ex.reps.isNotEmpty()) append("${ex.sets}×${ex.reps}")
+                        ex.weight_kg?.let { append(" · ${it}kg") }
+                    }
+                    StepLine(ex.name, meta)
+                }
             }
         }
     }
+}
+
+@Composable
+private fun StepLine(name: String, meta: String) {
+    Text(
+        "$name${if (meta.isNotBlank()) "  ·  $meta" else ""}",
+        style = MaterialTheme.typography.bodySmall,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+    )
 }

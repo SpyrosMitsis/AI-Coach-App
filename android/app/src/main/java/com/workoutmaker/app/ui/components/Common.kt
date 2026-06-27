@@ -57,6 +57,10 @@ import androidx.compose.ui.unit.sp
 fun ScreenScaffold(
     title: String,
     subtitle: String? = null,
+    // Small uppercase kicker above the title. Each screen passes one that names
+    // its job (e.g. "DAILY READINESS") so the top bar is contextual, not a fixed
+    // brand stamp.
+    eyebrow: String = "BIO-METRICS",
     actions: @Composable () -> Unit = {},
     navigationIcon: @Composable () -> Unit = {},
     scrollable: Boolean = true,
@@ -67,11 +71,17 @@ fun ScreenScaffold(
     Scaffold(
         topBar = {
             TopAppBar(
+                // Roomier than the default 64.dp so the eyebrow/title/subtitle
+                // block isn't squashed.
+                expandedHeight = 84.dp,
                 navigationIcon = navigationIcon,
                 title = {
-                    Column {
+                    Column(
+                        Modifier.padding(vertical = 4.dp),
+                        verticalArrangement = Arrangement.spacedBy(2.dp),
+                    ) {
                         Text(
-                            "BIO-METRICS",
+                            eyebrow,
                             style = MaterialTheme.typography.labelSmall,
                             color = MaterialTheme.colorScheme.primary,
                             letterSpacing = 2.sp,
@@ -270,7 +280,7 @@ fun MetaChip(text: String) {
             .background(com.workoutmaker.app.ui.theme.Moss.copy(alpha = 0.45f))
             .padding(horizontal = 10.dp, vertical = 4.dp),
     ) {
-        Text(text, style = MaterialTheme.typography.labelMedium, color = com.workoutmaker.app.ui.theme.Sage)
+        Text(text, style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.primary)
     }
 }
 
@@ -301,6 +311,51 @@ fun InsetStat(label: String, value: String, modifier: Modifier = Modifier) {
     }
 }
 
+/**
+ * A single metric tile: small uppercase label above a prominent value, on an
+ * inset (recessed) background. Reads as a clean stat block — use several in a
+ * [StatTileGrid] instead of stacking full-width [InsetStat] rows.
+ */
+@Composable
+fun StatTile(label: String, value: String, modifier: Modifier = Modifier) {
+    Column(
+        modifier
+            .clip(RoundedCornerShape(12.dp))
+            .background(MaterialTheme.colorScheme.surfaceContainerLowest)
+            .padding(horizontal = 14.dp, vertical = 12.dp),
+        verticalArrangement = Arrangement.spacedBy(3.dp),
+    ) {
+        Text(
+            label.uppercase(),
+            style = MaterialTheme.typography.labelSmall,
+            letterSpacing = 0.6.sp,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        Text(value, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+    }
+}
+
+/**
+ * Lays metric tiles out in equal-width columns: a single row when there are ≤3
+ * stats, otherwise a 2-column grid. Trailing gaps keep tiles aligned.
+ */
+@Composable
+fun StatTileGrid(items: List<Pair<String, String>>, modifier: Modifier = Modifier) {
+    if (items.isEmpty()) return
+    val columns = if (items.size <= 3) items.size else 2
+    Column(modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        items.chunked(columns).forEach { row ->
+            androidx.compose.foundation.layout.Row(
+                Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                row.forEach { (l, v) -> StatTile(l, v, Modifier.weight(1f)) }
+                repeat(columns - row.size) { Box(Modifier.weight(1f)) }
+            }
+        }
+    }
+}
+
 /** Ghost (secondary) button: 1px warm-sand border, transparent fill. */
 @Composable
 fun GhostButton(onClick: () -> Unit, modifier: Modifier = Modifier, enabled: Boolean = true, content: @Composable androidx.compose.foundation.layout.RowScope.() -> Unit) {
@@ -309,7 +364,7 @@ fun GhostButton(onClick: () -> Unit, modifier: Modifier = Modifier, enabled: Boo
         modifier = modifier,
         enabled = enabled,
         shape = RoundedCornerShape(10.dp),
-        border = androidx.compose.foundation.BorderStroke(1.dp, com.workoutmaker.app.ui.theme.Sand.copy(alpha = 0.6f)),
+        border = androidx.compose.foundation.BorderStroke(1.dp, MaterialTheme.colorScheme.secondary.copy(alpha = 0.6f)),
         colors = androidx.compose.material3.ButtonDefaults.outlinedButtonColors(contentColor = MaterialTheme.colorScheme.onSurface),
         content = content,
     )

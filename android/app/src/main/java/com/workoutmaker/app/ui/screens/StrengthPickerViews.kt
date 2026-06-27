@@ -147,7 +147,7 @@ internal fun ExercisePickerView(vm: StrengthViewModel) {
             onDismissRequest = { confirmDeleteCustom = null },
             confirmButton = {
                 TextButton(onClick = { vm.deleteCustomExercise(name); selected.remove(name); confirmDeleteCustom = null }) {
-                    Text("Delete", color = BandRed)
+                    Text("Delete", color = MaterialTheme.colorScheme.error)
                 }
             },
             dismissButton = { TextButton(onClick = { confirmDeleteCustom = null }) { Text("Cancel") } },
@@ -225,7 +225,7 @@ internal fun ExercisePickerView(vm: StrengthViewModel) {
                         }
                         IconButton(onClick = { vm.toggleFavorite(ex.name) }) {
                             Icon(if (isFav) Icons.Filled.Star else Icons.Filled.StarBorder, "Favorite",
-                                tint = if (isFav) Sage else MaterialTheme.colorScheme.onSurfaceVariant)
+                                tint = if (isFav) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant)
                         }
                         if (replacing == null) {
                             Checkbox(checked = isSel, onCheckedChange = {
@@ -275,7 +275,11 @@ internal fun ExerciseStatsView(vm: StrengthViewModel, exercise: String) {
         val s = stats
         Column(Modifier.padding(padding).fillMaxWidth().padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
             if (s == null || !s.hasData) {
-                Text("No history yet. Log this exercise to see e1RM and PRs.")
+                EmptyState(
+                    title = "No history yet",
+                    subtitle = "Log this exercise to see e1RM and PRs.",
+                    icon = Icons.Filled.BarChart,
+                )
                 return@Column
             }
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
@@ -312,7 +316,7 @@ internal fun ExerciseStatsView(vm: StrengthViewModel, exercise: String) {
                 OneRepMax.table(s.bestE1rm).forEach { row ->
                     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
                         Text("${row.pct}% · ~${row.reps} reps", style = MaterialTheme.typography.bodySmall)
-                        Text("${trimKg(row.weightKg)} kg", style = MaterialTheme.typography.bodyMedium, color = Sage)
+                        Text("${trimKg(row.weightKg)} kg", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.primary)
                     }
                 }
             }
@@ -335,7 +339,7 @@ internal fun ExerciseStatsView(vm: StrengthViewModel, exercise: String) {
 @Composable
 internal fun Pr(label: String, value: String) {
     Column(horizontalAlignment = Alignment.CenterHorizontally) {
-        Text(value, style = MaterialTheme.typography.titleLarge, color = Sage)
+        Text(value, style = MaterialTheme.typography.titleLarge, color = MaterialTheme.colorScheme.primary)
         Text(label, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
     }
 }
@@ -343,40 +347,19 @@ internal fun Pr(label: String, value: String) {
 @Composable
 internal fun MetricChart(values: List<Double>, unit: String = "kg") {
     if (values.isEmpty()) {
-        Text("Not enough data yet.", style = MaterialTheme.typography.bodySmall,
+        Text("Log a few sessions to see your trend.", style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant)
         return
     }
-    val maxV = (values.maxOrNull() ?: 1.0).coerceAtLeast(1.0)
-    val minV = (values.minOrNull() ?: 0.0)
-    val span = (maxV - minV).coerceAtLeast(1.0)
-    androidx.compose.foundation.Canvas(Modifier.fillMaxWidth().height(140.dp).padding(vertical = 6.dp)) {
-        val pad = 8f
-        val h = size.height - pad * 2
-        fun yOf(v: Double) = pad + (h - ((v - minV) / span * h)).toFloat()
-        // Value scale: top/mid/bottom with the unit so the line means something.
-        hGridLine(yOf(minV + span / 2))
-        drawLine(Sage.copy(alpha = 0.25f), androidx.compose.ui.geometry.Offset(0f, size.height - pad),
-            androidx.compose.ui.geometry.Offset(size.width, size.height - pad), strokeWidth = 2f)
-        chartLabel("${maxV.toInt()} $unit", 4f, yOf(maxV) + 12.sp.toPx())
-        chartLabel("${(minV + span / 2).toInt()}", 4f, yOf(minV + span / 2) - 4f)
-        chartLabel("${minV.toInt()}", 4f, size.height - pad - 4f)
-        if (values.size < 2) {
-            drawCircle(Sage, radius = 7f, center = androidx.compose.ui.geometry.Offset(size.width / 2, yOf(values.first())))
-            return@Canvas
-        }
-        val stepX = size.width / (values.size - 1)
-        val path = androidx.compose.ui.graphics.Path()
-        values.forEachIndexed { i, v ->
-            val x = stepX * i
-            val y = yOf(v)
-            if (i == 0) path.moveTo(x, y) else path.lineTo(x, y)
-        }
-        drawPath(path, Sage, style = androidx.compose.ui.graphics.drawscope.Stroke(width = 5f))
-        values.forEachIndexed { i, v -> drawCircle(Sage, radius = 4f, center = androidx.compose.ui.geometry.Offset(stepX * i, yOf(v))) }
-        // Latest value tagged at the line's end.
-        chartLabel(
-            "${values.last().toInt()}", size.width - 8f, yOf(values.last()) - 8f, alignRight = true, color = Sage,
-        )
-    }
+    // The latest value + unit is shown in the caption below the chart, so the
+    // chart itself stays clean: a filled, rounded progression line with a dot
+    // per session. (unit kept for source compatibility.)
+    com.workoutmaker.app.ui.components.LineChart(
+        t = values.indices.map { it.toDouble() },
+        values = values.map { it as Double? },
+        color = MaterialTheme.colorScheme.primary,
+        formatY = { "${it.toInt()}" },
+        showPoints = true,
+        height = 140.dp,
+    )
 }
