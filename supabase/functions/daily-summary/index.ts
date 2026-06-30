@@ -27,17 +27,26 @@ Deno.serve(async (req) => {
     const qDate = new URL(req.url).searchParams.get("date");
     const clientDate = [body?.date, qDate].find((d) => typeof d === "string" && ISO_DATE.test(d));
     const today = (clientDate as string | undefined) ?? new Date().toISOString().slice(0, 10);
-    const since14 = new Date(Date.now() - 14 * DAY).toISOString().slice(0, 10);
-    const since7 = new Date(Date.now() - 7 * DAY).toISOString().slice(0, 10);
+    // Anchor every "recent" window on the REQUESTED day, not on the wall clock, so
+    // paging back to a past date shows the dashboard AS IT WAS then (readiness,
+    // load, Form). Noon-UTC keeps the date arithmetic off DST/tz edges. All the
+    // recent-data queries are also capped at `<= today` so a past view never pulls
+    // in data from after that day.
+    const anchorMs = new Date(today + "T12:00:00Z").getTime();
+    const since14 = new Date(anchorMs - 14 * DAY).toISOString().slice(0, 10);
+    const since7 = new Date(anchorMs - 7 * DAY).toISOString().slice(0, 10);
+    const since90 = new Date(anchorMs - 90 * DAY).toISOString().slice(0, 10);
 
-    const [{ data: profile }, { data: wellness }, { data: activities }, { data: planned }] =
+    const [{ data: profile }, { data: wellness }, { data: activities }, { data: planned }, { data: plannedWeek }] =
       await Promise.all([
         admin.from("user_profiles").select("onboarding, active_llm_provider").eq("id", userId).single(),
         admin.from("wellness_checkins").select("date, energy, soreness, zepp_sleep_minutes")
-          .eq("user_id", userId).gte("date", since14).order("date", { ascending: false }),
-        admin.from("completed_activities").select("date, distance_m, tss, ctl, atl, data_json")
-          .eq("user_id", userId).gte("date", since14).order("date", { ascending: true }),
+          .eq("user_id", userId).gte("date", since14).lte("date", today).order("date", { ascending: false }),
+        admin.from("completed_activities").select("date, type, distance_m, tss, ctl, atl, data_json")
+          .eq("user_id", userId).gte("date", since14).lte("date", today).order("date", { ascending: true }),
         admin.from("planned_workouts").select("*").eq("user_id", userId).eq("date", today),
+        admin.from("planned_workouts").select("date, type, workout_json, completed")
+          .eq("user_id", userId).gte("date", since7).lte("date", today).neq("type", "rest"),
       ]);
 
     // When today holds several sessions, pick the SAME "primary" the calendar
@@ -63,17 +72,22 @@ Deno.serve(async (req) => {
     // raw Intervals wellness in completed_activities.data_json only if the
     // mirror hasn't run yet. Queried best-effort (works pre-migration-8).
     const isNum = (v: unknown): v is number => typeof v === "number";
-    let hcHrv: number[] = [];
-    let hcRhr: number[] = [];
+    // Dated points (oldest→newest) so computeRecovery can pick TODAY's reading
+    // specifically — a not-yet-synced day reads as missing, not as yesterday's.
+    type DatedNum = { date?: string; value: number };
+    let hcHrv: DatedNum[] = [];
+    let hcRhr: DatedNum[] = [];
     {
       // sleep_score (migration 28) selected here best-effort so a pre-migration
       // DB never breaks the dashboard; merged onto wells for full-res recovery.
       const { data, error } = await admin.from("wellness_checkins")
         .select("date, hrv_rmssd, resting_hr, sleep_score")
-        .eq("user_id", userId).gte("date", since14).order("date", { ascending: true });
+        .eq("user_id", userId).gte("date", since14).lte("date", today).order("date", { ascending: true });
       if (!error && data) {
-        hcHrv = data.map((w) => (w as { hrv_rmssd?: number }).hrv_rmssd).filter(isNum);
-        hcRhr = data.map((w) => (w as { resting_hr?: number }).resting_hr).filter(isNum);
+        hcHrv = data.filter((w) => isNum((w as { hrv_rmssd?: number }).hrv_rmssd))
+          .map((w) => ({ date: (w as { date?: string }).date, value: (w as { hrv_rmssd: number }).hrv_rmssd }));
+        hcRhr = data.filter((w) => isNum((w as { resting_hr?: number }).resting_hr))
+          .map((w) => ({ date: (w as { date?: string }).date, value: (w as { resting_hr: number }).resting_hr }));
         const scoreByDate = new Map<string, number>();
         for (const r of data as { date: string; sleep_score?: number }[]) {
           if (isNum(r.sleep_score)) scoreByDate.set(r.date, r.sleep_score);
@@ -84,12 +98,29 @@ Deno.serve(async (req) => {
         }
       }
     }
-    const ivHrv = acts.map((a) => (a.data_json as { hrv?: number })?.hrv).filter(isNum);
-    const ivRhr = acts.map((a) => (a.data_json as { restingHR?: number })?.restingHR).filter(isNum);
+    const ivHrv: DatedNum[] = acts.filter((a) => isNum((a.data_json as { hrv?: number })?.hrv))
+      .map((a) => ({ date: a.date, value: (a.data_json as { hrv: number }).hrv }));
+    const ivRhr: DatedNum[] = acts.filter((a) => isNum((a.data_json as { restingHR?: number })?.restingHR))
+      .map((a) => ({ date: a.date, value: (a.data_json as { restingHR: number }).restingHR }));
     const hrvSeries = hcHrv.length >= 2 ? hcHrv : ivHrv;
     const rhrSeries = hcRhr.length >= 2 ? hcRhr : ivRhr;
 
-    const recovery = computeRecovery(wells, hrvSeries, rhrSeries);
+    // Data freshness: the most recent day (≤ requested date) with ANY objective
+    // recovery signal — HRV/RHR (mirror or Intervals) or sleep (minutes/score).
+    // Powers the "last synced" line so missing data reads as "stale", not absent.
+    const objectiveDates: string[] = [];
+    for (const p of [...hcHrv, ...hcRhr, ...ivHrv, ...ivRhr]) if (p.date) objectiveDates.push(p.date);
+    for (const w of wells) {
+      if (w.date && (isNum(w.zepp_sleep_minutes) || isNum((w as { sleep_score?: number }).sleep_score))) {
+        objectiveDates.push(w.date);
+      }
+    }
+    const recoverySyncedDate = objectiveDates.length
+      ? objectiveDates.reduce((a, b) => (a > b ? a : b))
+      : null;
+
+    // Anchor on the requested day so a missing today reads as missing.
+    const recovery = computeRecovery(wells, hrvSeries, rhrSeries, today);
     const readiness = recovery.score;
     const band = recovery.band;
 
@@ -98,9 +129,8 @@ Deno.serve(async (req) => {
     // Best-effort — works whether or not the vo2max column migration is applied.
     let vo2max: { value: number; change: number | null } | null = null;
     try {
-      const since90 = new Date(Date.now() - 90 * DAY).toISOString().slice(0, 10);
       const { data, error } = await admin.from("wellness_checkins")
-        .select("date, vo2max").eq("user_id", userId).gte("date", since90).order("date", { ascending: true });
+        .select("date, vo2max").eq("user_id", userId).gte("date", since90).lte("date", today).order("date", { ascending: true });
       if (!error && data) {
         const series = data.map((r) => (r as { vo2max?: number }).vo2max).filter(isNum);
         if (series.length) {
@@ -120,6 +150,48 @@ Deno.serve(async (req) => {
     const weeklyTss = acts.filter((a) => a.date >= since7).reduce((s, a) => s + (a.tss ?? 0), 0);
     const targetWeeklyTss = (profile?.onboarding as { weekly_tss_target?: number })?.weekly_tss_target ?? 350;
 
+    // --- week in review (deterministic; no LLM — the coach voice on Home comes
+    // from coach-brief). Adherence, load trend vs last week, sport split, and the
+    // standout session over the last 7 days. ---------------------------------
+    const prevWeekStart = since14; // the 7 days before this week's window
+    const sportOf = (t?: string | null): string => {
+      const s = (t ?? "").toLowerCase();
+      if (s.includes("run")) return "run";
+      if (s.includes("ride") || s.includes("cycl") || s.includes("bike") || s.includes("velo")) return "ride";
+      if (s.includes("swim")) return "swim";
+      if (s.includes("weight") || s.includes("strength") || s.includes("gym")) return "strength";
+      return "other";
+    };
+    const week7 = acts.filter((a) => a.date >= since7);
+    const prevWeek = acts.filter((a) => a.date >= prevWeekStart && a.date < since7);
+    const prevTss = prevWeek.reduce((s, a) => s + (a.tss ?? 0), 0);
+    const bySport = new Map<string, number>();
+    for (const a of week7) bySport.set(sportOf(a.type), (bySport.get(sportOf(a.type)) ?? 0) + (a.tss ?? 0));
+    const completedDates = new Set(week7.map((a) => a.date));
+    const plannedNonRest = (plannedWeek ?? []);
+    const doneCount = plannedNonRest.filter((p) => p.completed || completedDates.has(p.date)).length;
+    const standout = [...week7].sort((a, b) => (b.tss ?? 0) - (a.tss ?? 0))[0] ?? null;
+    const weekReview = {
+      adherence: {
+        done: doneCount,
+        planned: plannedNonRest.length,
+        pct: plannedNonRest.length ? Math.round((doneCount / plannedNonRest.length) * 100) : null,
+      },
+      load: {
+        tss: Math.round(weeklyTss),
+        target: targetWeeklyTss,
+        prev_tss: Math.round(prevTss),
+        delta_pct: prevTss > 0 ? Math.round(((weeklyTss - prevTss) / prevTss) * 100) : null,
+      },
+      by_sport: [...bySport.entries()]
+        .map(([sport, tss]) => ({ sport, tss: Math.round(tss) }))
+        .sort((a, b) => b.tss - a.tss),
+      sessions: week7.length,
+      standout: standout
+        ? { date: standout.date, sport: sportOf(standout.type), tss: Math.round(standout.tss ?? 0) }
+        : null,
+    };
+
     // --- goal tracking ------------------------------------------------------
     const onboard = (profile?.onboarding ?? {}) as { goal?: string; goal_date?: string };
     let goal = null as null | {
@@ -129,7 +201,7 @@ Deno.serve(async (req) => {
     if (onboard.goal || onboard.goal_date) {
       let weeksToGoal: number | null = null;
       if (onboard.goal_date) {
-        const wk = (new Date(onboard.goal_date).getTime() - Date.now()) / (7 * 86_400_000);
+        const wk = (new Date(onboard.goal_date).getTime() - anchorMs) / (7 * 86_400_000);
         weeksToGoal = wk >= 0 ? Math.round(wk) : null;
       }
       const phase = weeksToGoal == null ? "General / maintenance"
@@ -154,10 +226,12 @@ Deno.serve(async (req) => {
         },
       },
       recovery,
+      recovery_synced_date: recoverySyncedDate,
       vo2max,
       today_workout: todayWorkout,
       tsb_sparkline: tsbSparkline,
       weekly_load: { tss: Math.round(weeklyTss), target: targetWeeklyTss },
+      week_review: weekReview,
       active_llm_provider: profile?.active_llm_provider ?? "groq",
       goal,
     });

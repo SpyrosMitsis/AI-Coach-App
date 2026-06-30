@@ -71,7 +71,7 @@ import com.workoutmaker.app.ui.components.ScreenScaffold
 import com.workoutmaker.app.ui.components.SectionCard
 import com.workoutmaker.app.ui.components.SectionLabel
 import com.workoutmaker.app.ui.theme.BandRed
-import com.workoutmaker.app.ui.theme.Moss
+import com.workoutmaker.app.ui.theme.mossAccent
 import com.workoutmaker.app.ui.theme.Sage
 import com.workoutmaker.app.ui.theme.Sand
 import dagger.hilt.android.lifecycle.HiltViewModel
@@ -141,7 +141,7 @@ internal fun WeekSummaryCard(
             ) {
                 if (easy > 0) Box(Modifier.weight(easy.toFloat()).fillMaxHeight().background(MaterialTheme.colorScheme.primary))
                 if (moderate > 0) Box(Modifier.weight(moderate.toFloat()).fillMaxHeight().background(MaterialTheme.colorScheme.secondary))
-                if (hard > 0) Box(Modifier.weight(hard.toFloat()).fillMaxHeight().background(Moss))
+                if (hard > 0) Box(Modifier.weight(hard.toFloat()).fillMaxHeight().background(mossAccent()))
             }
             Text(
                 "$easyPct% easy/aerobic · target ~80%",
@@ -325,6 +325,7 @@ internal fun looksLike(plannedType: String, actualType: String?): Boolean {
     return when (plannedType.lowercase()) {
         "run" -> a.contains("run") || a.contains("walk")
         "ride" -> a.contains("ride") || a.contains("bike") || a.contains("cycl")
+        "swim" -> a.contains("swim")
         "strength" -> a.contains("weight") || a.contains("strength") || a.contains("workout") || a.contains("gym")
         else -> a.isNotEmpty()
     }

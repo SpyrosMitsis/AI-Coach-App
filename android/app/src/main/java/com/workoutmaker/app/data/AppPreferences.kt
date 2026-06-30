@@ -27,6 +27,17 @@ enum class ThemeMode(val label: String) {
     }
 }
 
+// Selectable colour palette (the actual colours live in ui/theme/Theme.kt; this
+// is just the persisted choice). SERENE is the locked baseline.
+enum class ThemePalette(val label: String) {
+    SERENE("Serene Vanguard"), EMBER("Ember"), TIDAL("Tidal"),
+    NOCTURNE("Nocturne"), BLOOM("Bloom"), SOLSTICE("Solstice");
+
+    companion object {
+        fun fromName(n: String?): ThemePalette = entries.firstOrNull { it.name == n } ?: SERENE
+    }
+}
+
 enum class WeightUnit(val label: String, val suffix: String) {
     KG("Kilograms", "kg"),
     LB("Pounds", "lb");
@@ -47,6 +58,10 @@ data class AppSettings(
     val restNotify: Boolean = true,
     val keepScreenOn: Boolean = true,
     val themeMode: ThemeMode = ThemeMode.SYSTEM,
+    val themePalette: ThemePalette = ThemePalette.SERENE,
+    // Soft monthly AI-spend cap (USD). 0 = no cap; Diagnostics warns when 30-day
+    // estimated spend crosses it.
+    val spendCapUsd: Double = 0.0,
 )
 
 private val Context.dataStore by preferencesDataStore(name = "app_prefs")
@@ -63,8 +78,10 @@ class AppPreferences @Inject constructor(
         val restNotify = booleanPreferencesKey("rest_notify")
         val keepScreenOn = booleanPreferencesKey("keep_screen_on")
         val themeMode = stringPreferencesKey("theme_mode")
+        val themePalette = stringPreferencesKey("theme_palette")
         val onboardingComplete = booleanPreferencesKey("onboarding_complete")
         val customsCleanupV1 = booleanPreferencesKey("customs_cleanup_v1")
+        val spendCap = doublePreferencesKey("spend_cap_usd")
     }
 
     // One-time migration guard: collapse reworded custom exercises onto their
@@ -90,6 +107,8 @@ class AppPreferences @Inject constructor(
             restNotify = p[Keys.restNotify] ?: true,
             keepScreenOn = p[Keys.keepScreenOn] ?: true,
             themeMode = ThemeMode.fromName(p[Keys.themeMode]),
+            themePalette = ThemePalette.fromName(p[Keys.themePalette]),
+            spendCapUsd = p[Keys.spendCap] ?: 0.0,
         )
     }
 
@@ -100,6 +119,8 @@ class AppPreferences @Inject constructor(
     suspend fun setRestNotify(on: Boolean) = edit { it[Keys.restNotify] = on }
     suspend fun setKeepScreenOn(on: Boolean) = edit { it[Keys.keepScreenOn] = on }
     suspend fun setThemeMode(m: ThemeMode) = edit { it[Keys.themeMode] = m.name }
+    suspend fun setThemePalette(p: ThemePalette) = edit { it[Keys.themePalette] = p.name }
+    suspend fun setSpendCap(usd: Double) = edit { it[Keys.spendCap] = usd.coerceIn(0.0, 1000.0) }
 
     private suspend fun edit(block: (androidx.datastore.preferences.core.MutablePreferences) -> Unit) {
         context.dataStore.edit(block)

@@ -72,7 +72,7 @@ import com.workoutmaker.app.ui.components.ScreenScaffold
 import com.workoutmaker.app.ui.components.SectionCard
 import com.workoutmaker.app.ui.components.SectionLabel
 import com.workoutmaker.app.ui.theme.BandRed
-import com.workoutmaker.app.ui.theme.Moss
+import com.workoutmaker.app.ui.theme.mossAccent
 import com.workoutmaker.app.ui.theme.Sage
 import com.workoutmaker.app.ui.theme.Sand
 import dagger.hilt.android.lifecycle.HiltViewModel
@@ -96,9 +96,10 @@ internal fun primaryFirst(sessions: List<PlannedWorkout>): List<PlannedWorkout> 
 
 @Composable
 internal fun typeColor(type: String) = when {
-    type.contains("run", true) || type.contains("ride", true) || type.contains("bike", true) -> MaterialTheme.colorScheme.primary
+    type.contains("run", true) || type.contains("ride", true) || type.contains("bike", true) ||
+        type.contains("swim", true) -> MaterialTheme.colorScheme.primary
     type.contains("strength", true) || type.contains("gym", true) || type.contains("weight", true) -> MaterialTheme.colorScheme.secondary
-    else -> Moss
+    else -> mossAccent()
 }
 
 @OptIn(ExperimentalMaterial3Api::class)

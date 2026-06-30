@@ -14,7 +14,7 @@
 // ============================================================================
 
 import type { Workout, WorkoutExercise } from "./types.ts";
-import { EXERCISE_CATALOG } from "./exercise_catalog.ts";
+import { allowedCategories, categoryOfExercise, EXERCISE_CATALOG } from "./exercise_catalog.ts";
 
 export interface MainLift {
   exercise: string;
@@ -34,6 +34,12 @@ export interface ReviewContext {
   // Free-text injuries/constraints (onboarding.injury_history + coach_knowledge)
   // — parsed into structured movement blocks by the safety engine below.
   injuries?: string;
+  // Today's recovery/readiness score (0-100). Low readiness + a hard session →
+  // the intensity ceiling caps it deterministically (not just a flag).
+  readiness?: number;
+  // The athlete's equipment tier (onboarding.equipment) — strength lifts whose
+  // catalog category isn't available get stripped.
+  equipment?: string;
 }
 
 export interface ReviewResult {
@@ -197,6 +203,25 @@ export function reviewWorkout(w: Workout, ctx: ReviewContext): ReviewResult {
     corrected.sections = corrected.sections.filter((s) => s.exercises.length > 0);
   }
 
+  // EQUIPMENT — never serve a strength lift the athlete can't perform with their
+  // gear. Only KNOWN catalog lifts are filtered (reworded/unknown names pass), and
+  // only when the equipment tier is recognised (else fail open). Flagged too, so
+  // the caller's repair pass regenerates an equipment-appropriate session.
+  const allowed = allowedCategories(ctx.equipment);
+  if (allowed && w.type === "strength") {
+    for (const sec of corrected.sections) {
+      sec.exercises = sec.exercises.filter((ex) => {
+        const cat = categoryOfExercise(ex.name);
+        if (cat && !allowed.has(cat)) {
+          violations.push(`${ex.name}: needs ${cat}, not in the athlete's equipment (${ctx.equipment}) — removed`);
+          return false;
+        }
+        return true;
+      });
+    }
+    corrected.sections = corrected.sections.filter((s) => s.exercises.length > 0);
+  }
+
   if (w.type === "strength") {
     const liftByName = new Map(ctx.mainLifts.map((l) => [norm(l.exercise), l]));
     const prescribedSetsByMuscle: Record<string, number> = {};
@@ -256,6 +281,27 @@ export function reviewWorkout(w: Workout, ctx: ReviewContext): ReviewResult {
     if (ctx.daysSinceLastHard <= 1) {
       violations.push(`hard session ${ctx.daysSinceLastHard}d after the last hard effort — back-to-back quality`);
     }
+  }
+
+  // INTENSITY CEILING — a hard endurance session on a wrecked athlete is CAPPED,
+  // not just flagged: when readiness is low or TSB deeply negative, downgrade hard
+  // zones to easy and cap effort. Final deterministic safety, even if the model
+  // (and the repair pass) ignored the readiness signal. Runs before the TSS
+  // cross-check below so the recompute reflects the downgraded zones.
+  const wrecked = (typeof ctx.readiness === "number" && ctx.readiness < 35) || ctx.tsb < -20;
+  if (wrecked && isHardSession(corrected)) {
+    for (const sec of corrected.sections) {
+      for (const ex of sec.exercises) {
+        if (zoneIsHard(zoneOf(ex))) {
+          if (ex.hr_zone) ex.hr_zone = "Z2";
+          if (ex.pace_zone) ex.pace_zone = "Z2";
+        }
+      }
+    }
+    if (corrected.rpe_target > 5) corrected.rpe_target = 5;
+    violations.push(
+      `low readiness (${ctx.readiness ?? "?"}/100) / TSB ${ctx.tsb.toFixed(0)} — capped to easy aerobic (Z2, RPE ≤5)`,
+    );
   }
 
   // TSS cross-check — ENDURANCE ONLY. The zone × duration model is a defensible

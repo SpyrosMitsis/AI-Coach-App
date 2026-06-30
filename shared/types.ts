@@ -4,7 +4,7 @@
 // Keep in sync with supabase/functions/_shared/types.ts.
 // ============================================================================
 
-export type LlmProvider = "anthropic" | "deepseek" | "openai" | "gemini" | "groq";
+export type LlmProvider = "anthropic" | "deepseek" | "openai" | "gemini" | "groq" | "openrouter";
 
 export const PROVIDER_LABELS: Record<LlmProvider, string> = {
   anthropic: "Anthropic",
@@ -12,6 +12,7 @@ export const PROVIDER_LABELS: Record<LlmProvider, string> = {
   openai: "OpenAI",
   gemini: "Google Gemini",
   groq: "Groq",
+  openrouter: "OpenRouter",
 };
 
 export const PROVIDER_MODELS: Record<LlmProvider, string> = {
@@ -20,6 +21,7 @@ export const PROVIDER_MODELS: Record<LlmProvider, string> = {
   openai: "gpt-5-mini",
   gemini: "gemini-2.5-flash",
   groq: "llama-3.3-70b-versatile",
+  openrouter: "openrouter/auto",
 };
 
 export const PROVIDER_FREE_KEY_URL: Record<LlmProvider, string> = {
@@ -28,15 +30,18 @@ export const PROVIDER_FREE_KEY_URL: Record<LlmProvider, string> = {
   openai: "https://platform.openai.com/api-keys",
   gemini: "https://aistudio.google.com/app/apikey",
   groq: "https://console.groq.com/keys",
+  openrouter: "https://openrouter.ai/keys",
 };
 
 // ~USD per 1M tokens (input/output) for the per-generation cost estimate.
+// OpenRouter pricing depends on the chosen model, so it shows ~$0 here.
 export const PROVIDER_PRICING: Record<LlmProvider, { inputPer1M: number; outputPer1M: number }> = {
   anthropic: { inputPer1M: 5.0, outputPer1M: 25.0 },
   deepseek: { inputPer1M: 0.28, outputPer1M: 0.42 },
   openai: { inputPer1M: 0.25, outputPer1M: 2.0 },
   gemini: { inputPer1M: 0.3, outputPer1M: 2.5 },
   groq: { inputPer1M: 0.59, outputPer1M: 0.79 },
+  openrouter: { inputPer1M: 0, outputPer1M: 0 },
 };
 
 export interface WorkoutExercise {
@@ -177,7 +182,8 @@ export interface StrengthLog {
 }
 
 export interface RecoveryTrend {
-  latest: number;
+  // null = today's reading hasn't synced yet (shown explicitly, not back-filled).
+  latest: number | null;
   baseline: number;
   deltaPct: number;
 }
@@ -188,7 +194,7 @@ export interface Recovery {
   wellness: number;
   hrv?: RecoveryTrend | null;
   rhr?: RecoveryTrend | null;
-  sleep?: { hours: number; avgHours?: number | null } | null;
+  sleep?: { hours: number | null; avgHours?: number | null } | null;
   summary: string;
 }
 

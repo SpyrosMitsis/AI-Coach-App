@@ -11,7 +11,7 @@
 import { handleOptions, json } from "../_shared/cors.ts";
 import { adminClient, getUserId } from "../_shared/supabase.ts";
 import { llmAccess } from "../_shared/llm_keys.ts";
-import { estimateCostUsd, extractJson, llmGenerateWithFallback } from "../_shared/llm.ts";
+import { customPriceFromProfile, estimateCostUsd, extractJson, llmGenerateWithFallback } from "../_shared/llm.ts";
 import {
   buildWeekPrompt,
   trainingPhase,
@@ -121,11 +121,51 @@ async function planForUser(admin: SupabaseClient, userId: string, start: string,
     [...lockedByDate.entries()].map(([d, r]) =>
       `- ${d} (${weekdayOf(d)}): ${(r.workout_json as Workout)?.title ?? r.type} [${r.type}]`).join("\n");
 
+  // Athlete's modalities + strength split → constrain and shape the week.
+  const sportsList: string[] = Array.isArray(onboarding.sports) ? onboarding.sports as string[] : [];
+  const splitStyle = (onboarding.split_style as string | undefined) ?? "";
+  const sportsBlock = sportsList.length
+    ? `\n\nSPORTS THE ATHLETE DOES: ${sportsList.join(", ")}. ONLY schedule these modalities (plus rest days). Do NOT introduce a sport they did not list.`
+    : "";
+  const splitBlock = splitStyle && !/^auto$/i.test(splitStyle)
+    ? `\n\nSTRENGTH SPLIT: the athlete follows a ${splitStyle} split — sequence the week's strength days to follow that rotation (e.g. push/pull/legs across three days, or alternating upper/lower), each session built around that day's focus and spaced for ≥48h muscle recovery.`
+    : "";
+
+  // Opt-in periodization: track build weeks via week_plans.focus history and
+  // schedule an automatic deload. Off → no block, exactly today's behavior.
+  let periodizationBlock = "";
+  if (onboarding.periodized === true) {
+    const { data: recentWeeks } = await admin
+      .from("week_plans").select("start_date, focus")
+      .eq("user_id", userId).lt("start_date", start)
+      .order("start_date", { ascending: false }).limit(6);
+    let buildWeeks = 0;
+    for (const w of recentWeeks ?? []) {
+      if (/deload|recovery/i.test((w.focus ?? "") as string)) break;
+      buildWeeks++;
+    }
+    const DELOAD_AFTER = 4;
+    const lastWeekStart = addDays(start, -7);
+    const lastWeekTss = Math.round(
+      acts28.filter((a) => (a.date ?? "") >= lastWeekStart && (a.date ?? "") < start)
+        .reduce((s, a) => s + (a.tss ?? 0), 0),
+    );
+    if (buildWeeks >= DELOAD_AFTER) {
+      periodizationBlock =
+        `\n\nPERIODIZATION — DELOAD WEEK: ${buildWeeks} build weeks since the last deload. Make THIS a recovery/deload week — cut total volume ~40% (fewer sets / shorter sessions), keep a little intensity to stay sharp, and set "week_focus" to "Recovery/Deload".`;
+    } else {
+      const targetTss = lastWeekTss > 0 ? Math.round(lastWeekTss * 1.08) : Math.round(weeklyTssTarget);
+      periodizationBlock =
+        `\n\nPERIODIZATION — BUILD WEEK ${buildWeeks + 1} of ~${DELOAD_AFTER}: progress gently on last week (~${lastWeekTss} TSS) — aim for ~${targetTss} TSS via small volume/intensity increases, not a jump. Keep 80/20 and recovery spacing; a deload is due after ${DELOAD_AFTER} build weeks.`;
+    }
+  }
+
   const contextBlocks =
     memoryDocsBlock(memoryFromProfile(profile)) + phys.block +
     await adherenceBlock(admin, userId, since14, start, acts28) +
     await executionBlock(admin, userId, since14) +
     goalBlock(onboarding, weeksToGoal, phase, acts28) + lockedBlock +
+    sportsBlock + splitBlock + periodizationBlock +
     await exerciseCatalogBlock(admin, userId);
 
   const dayList = dates.map((d) => ({
@@ -148,7 +188,7 @@ async function planForUser(admin: SupabaseClient, userId: string, start: string,
   // "re-plan failed" in the app is diagnosable from the logs table.
   const logFailure = async (provider: string | null, raw: string | null, error: string) => {
     await admin.from("generation_logs").insert({
-      user_id: userId, provider, system_prompt: WEEK_SYSTEM_PROMPT,
+      user_id: userId, feature: "plan", provider, system_prompt: WEEK_SYSTEM_PROMPT,
       user_prompt: userPrompt, raw_response: raw, parsed_ok: false, error,
     }).then(() => {}, () => {});
   };
@@ -249,7 +289,7 @@ async function planForUser(admin: SupabaseClient, userId: string, start: string,
       try {
         const ev = await createEvent(profile.intervals_athlete_id, phys.apiKey, {
           date: row.date, name: session.title, description: renderIntervalsWorkout(session),
-          type: session.type === "run" ? "Run" : session.type === "ride" ? "Ride" : "WeightTraining",
+          type: session.type === "run" ? "Run" : session.type === "ride" ? "Ride" : session.type === "swim" ? "Swim" : "WeightTraining",
         });
         pushed++;
         if (id) await admin.from("planned_workouts").update({ intervals_event_id: ev.id, pushed_at: new Date().toISOString() }).eq("id", id);
@@ -257,9 +297,9 @@ async function planForUser(admin: SupabaseClient, userId: string, start: string,
     }
   }
 
-  const cost = estimateCostUsd(outcome.provider, outcome.promptTokens, outcome.completionTokens);
+  const cost = estimateCostUsd(outcome.provider, outcome.promptTokens, outcome.completionTokens, customPriceFromProfile(outcome.provider, profile));
   await admin.from("generation_logs").insert({
-    user_id: userId, provider: outcome.provider, model: outcome.model,
+    user_id: userId, feature: "plan", provider: outcome.provider, model: outcome.model,
     prompt_tokens: outcome.promptTokens, completion_tokens: outcome.completionTokens,
     estimated_cost_usd: cost, system_prompt: WEEK_SYSTEM_PROMPT, user_prompt: userPrompt,
     raw_response: outcome.text, parsed_ok: true,

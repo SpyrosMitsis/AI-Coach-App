@@ -3,11 +3,15 @@ package com.workoutmaker.app.ui.screens
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
@@ -15,16 +19,20 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.ui.draw.clip
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.activity.compose.BackHandler
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.FitnessCenter
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.KeyboardArrowDown
+import androidx.compose.material.icons.filled.KeyboardArrowLeft
 import androidx.compose.material.icons.filled.KeyboardArrowRight
 import androidx.compose.material.icons.filled.KeyboardArrowUp
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -70,12 +78,17 @@ class HomeViewModel @Inject constructor(
     private val repo: WorkoutRepository,
     private val strength: com.workoutmaker.app.strength.StrengthRepository,
     private val location: com.workoutmaker.app.data.LocationProvider,
+    private val player: com.workoutmaker.app.data.WorkoutPlayerHolder,
 ) : ViewModel() {
     val summary = MutableStateFlow<DailySummary?>(null)
     val fitness = MutableStateFlow<com.workoutmaker.app.data.IntervalsStats?>(null)
     // Thresholds for turning a planned step's zone into a concrete target range.
     val profile = MutableStateFlow<com.workoutmaker.app.data.TrainingProfile?>(null)
     val loading = MutableStateFlow(true)
+    // A pull-to-refresh in progress — distinct from `loading` because it first
+    // forces an Intervals.icu re-sync (which can take a few seconds) before the
+    // dashboard reload, and we want the refresh spinner up for that whole time.
+    val refreshing = MutableStateFlow(false)
     val generating = MutableStateFlow(false)
     val error = MutableStateFlow<String?>(null)
 
@@ -89,9 +102,55 @@ class HomeViewModel @Inject constructor(
     val wellnessLoaded = MutableStateFlow(false)
     val wellnessBusy = MutableStateFlow(false)
 
+    // The coach's proactive daily note. Null until it streams in (it's a separate,
+    // possibly-slow generation) or when the briefing is disabled / offline — Home
+    // falls back to its static readiness headline in that case.
+    val brief = MutableStateFlow<String?>(null)
+
+    // The coach's weekly recap (one LLM call/week, cached). Today-only, streams in
+    // after the dashboard like the brief; null → the card shows just its stats.
+    val weekReviewNote = MutableStateFlow<String?>(null)
+
+    // Home can page back through past days to see that day's dashboard as it was
+    // (readiness, planned/completed workout, load). Capped at today — no future.
+    // Today-only controls (wellness check-in, generate, RPE) hide on past days.
+    val selectedDate = MutableStateFlow(java.time.LocalDate.now())
+    val isViewingToday get() = selectedDate.value == java.time.LocalDate.now()
+
+    fun goToDay(date: java.time.LocalDate) {
+        val capped = if (date.isAfter(java.time.LocalDate.now())) java.time.LocalDate.now() else date
+        if (capped == selectedDate.value) return
+        selectedDate.value = capped
+        // A different day's data is unrelated to what's on screen — clear it so we
+        // don't flash the previous day's cards while the new day loads.
+        summary.value = null
+        brief.value = null
+        weekReviewNote.value = null
+        wellnessToday.value = null
+        wellnessLoaded.value = false
+        load()
+    }
+    fun prevDay() = goToDay(selectedDate.value.minusDays(1))
+    fun nextDay() = goToDay(selectedDate.value.plusDays(1))
+    fun goToToday() = goToDay(java.time.LocalDate.now())
+
+    // Dates that have a completed activity — drawn as dots in the calendar picker
+    // so it's obvious which past days have something to look at. Loaded once.
+    val markedDates = MutableStateFlow<Set<java.time.LocalDate>>(emptySet())
+    private fun loadMarks() = viewModelScope.launch {
+        val from = java.time.LocalDate.now().minusDays(400).toString()
+        runCatching { repo.completedActivities(from) }.onSuccess { acts ->
+            markedDates.value = acts
+                .mapNotNull { runCatching { java.time.LocalDate.parse(it.date) }.getOrNull() }
+                .toSet()
+        }
+    }
+
     fun load() = viewModelScope.launch {
         loading.value = true
-        runCatching { repo.dailySummary() }
+        val date = selectedDate.value
+        val viewingToday = date == java.time.LocalDate.now()
+        runCatching { repo.dailySummary(date) }
             .onSuccess {
                 summary.value = it
                 lastSyncAt.value = System.currentTimeMillis()
@@ -100,8 +159,9 @@ class HomeViewModel @Inject constructor(
             .onFailure { e ->
                 error.value = e.message
                 // Offline (incl. cold start): serve the last cached dashboard
-                // with the time it was fetched, instead of a bare error.
-                if (summary.value == null) {
+                // with the time it was fetched, instead of a bare error. Only for
+                // today — the cache holds the latest day, not arbitrary history.
+                if (viewingToday && summary.value == null) {
                     repo.cachedDailySummary()?.let { (cached, fetchedAt) ->
                         summary.value = cached
                         lastSyncAt.value = fetchedAt.takeIf { it > 0 }
@@ -109,11 +169,51 @@ class HomeViewModel @Inject constructor(
                 }
                 offline.value = summary.value != null
             }
-        runCatching { repo.wellnessCheckin(java.time.LocalDate.now().toString()) }
+        runCatching { repo.wellnessCheckin(date.toString()) }
             .onSuccess { wellnessToday.value = it; wellnessLoaded.value = true }
         if (profile.value == null) runCatching { repo.loadProfile() }.onSuccess { profile.value = it }
         runCatching { repo.intervalsStats() }.onSuccess { fitness.value = it }
         loading.value = false
+        // The briefing is today-only — it's a live coaching note, and we never
+        // spend an LLM call generating one for a historical day. Streams in
+        // separately so it never holds up the dashboard; cached per-day.
+        if (viewingToday) {
+            viewModelScope.launch { runCatching { repo.coachBrief() }.onSuccess { brief.value = it } }
+            viewModelScope.launch {
+                val now = java.time.LocalDate.now()
+                val monday = now.minusDays((now.dayOfWeek.value - 1).toLong())
+                runCatching { repo.weekReview(monday.toString()) }.onSuccess { weekReviewNote.value = it }
+            }
+        }
+        if (markedDates.value.isEmpty()) loadMarks()
+    }
+
+    // Pull-to-refresh: actually re-pull from Intervals.icu (HRV/sleep/fitness) and
+    // THEN reload the dashboard — so a day showing "No reading today" has a way to
+    // fix itself, rather than just re-reading the same stale server cache. Only on
+    // today; history days have nothing new to sync. sync failures are swallowed —
+    // the reload still runs so the user at least gets the latest server state.
+    fun refresh() = viewModelScope.launch {
+        if (!isViewingToday) { load(); return@launch }
+        refreshing.value = true
+        runCatching { repo.syncIntervals() }
+        load().join()
+        refreshing.value = false
+    }
+
+    // Manual HRV / resting-HR / sleep entry for a day the watch didn't sync.
+    // Writes onto today's wellness row and refreshes so the score/drivers update.
+    fun saveManualRecovery(hrvMs: Double?, restingHr: Int?, sleepMinutes: Int?) = viewModelScope.launch {
+        runCatching { repo.upsertManualRecovery(selectedDate.value.toString(), hrvMs, restingHr, sleepMinutes) }
+            .onSuccess { load() }
+            .onFailure { error.value = it.message }
+    }
+
+    // Hand today's workout to the guided player; returns false if there's none.
+    fun playToday(): Boolean {
+        val w = summary.value?.today_workout?.workout_json ?: return false
+        player.workout.value = w
+        return true
     }
 
     fun saveWellness(energy: Int, soreness: Int) = viewModelScope.launch {
@@ -267,11 +367,17 @@ class HomeViewModel @Inject constructor(
     }
 }
 
+@OptIn(androidx.compose.foundation.layout.ExperimentalLayoutApi::class)
 @Composable
-fun HomeScreen(vm: HomeViewModel = hiltViewModel()) {
+fun HomeScreen(
+    onOpenRecoveryHistory: () -> Unit = {},
+    onStartWorkout: () -> Unit = {},
+    vm: HomeViewModel = hiltViewModel(),
+) {
     val summary by vm.summary.collectAsStateSafe()
     val fitness by vm.fitness.collectAsStateSafe()
     val loading by vm.loading.collectAsStateSafe()
+    val refreshing by vm.refreshing.collectAsStateSafe()
     val generating by vm.generating.collectAsStateSafe()
     val adjusting by vm.adjusting.collectAsStateSafe()
     val feedbackStatus by vm.feedbackStatus.collectAsStateSafe()
@@ -279,6 +385,8 @@ fun HomeScreen(vm: HomeViewModel = hiltViewModel()) {
     val wellnessToday by vm.wellnessToday.collectAsStateSafe()
     val wellnessLoaded by vm.wellnessLoaded.collectAsStateSafe()
     val wellnessBusy by vm.wellnessBusy.collectAsStateSafe()
+    val brief by vm.brief.collectAsStateSafe()
+    val weekReviewNote by vm.weekReviewNote.collectAsStateSafe()
     val profile by vm.profile.collectAsStateSafe()
     val haptics = LocalHapticFeedback.current
 
@@ -328,17 +436,27 @@ fun HomeScreen(vm: HomeViewModel = hiltViewModel()) {
         else locLauncher.launch(android.Manifest.permission.ACCESS_COARSE_LOCATION)
     }
 
-    val today = java.time.LocalDate.now().toString()
+    val selectedDate by vm.selectedDate.collectAsStateSafe()
+    val isToday = selectedDate == java.time.LocalDate.now()
+    val dateStr = selectedDate.format(java.time.format.DateTimeFormatter.ofPattern("EEE, d MMM"))
     val lastSyncAt by vm.lastSyncAt.collectAsStateSafe()
     val offline by vm.offline.collectAsStateSafe()
     fun hhmm(epoch: Long) = java.time.Instant.ofEpochMilli(epoch)
         .atZone(java.time.ZoneId.systemDefault()).toLocalDateTime()
         .format(java.time.format.DateTimeFormatter.ofPattern("HH:mm"))
     val syncNote = when {
-        offline -> "$today · offline" +
+        !isToday -> "$dateStr · history"
+        offline -> "$dateStr · offline" +
             (lastSyncAt?.let { " — data from ${hhmm(it)}" } ?: " — showing last data")
-        lastSyncAt != null -> "$today · synced ${hhmm(lastSyncAt!!)}"
-        else -> today
+        lastSyncAt != null -> "$dateStr · synced ${hhmm(lastSyncAt!!)}"
+        else -> dateStr
+    }
+    // "Today" / "Yesterday" / "N days ago" headline for the page.
+    val daysBack = java.time.temporal.ChronoUnit.DAYS.between(selectedDate, java.time.LocalDate.now())
+    val titleLabel = when (daysBack) {
+        0L -> "Today"
+        1L -> "Yesterday"
+        else -> "$daysBack days ago"
     }
     // Full-screen detail overlay when a recent activity is tapped — reuses the
     // same page as Calendar/History.
@@ -365,13 +483,41 @@ fun HomeScreen(vm: HomeViewModel = hiltViewModel()) {
         return
     }
 
+    // The date headline itself is the control: tap it to open the month calendar;
+    // the ‹ › arrows in the top bar step a day. No separate date row.
+    var showCalendar by remember { mutableStateOf(false) }
+    val marked by vm.markedDates.collectAsStateSafe()
+
     ScreenScaffold(
-        title = "Today",
+        title = titleLabel,
         subtitle = syncNote,
         eyebrow = "DAILY READINESS",
-        isRefreshing = loading,
-        onRefresh = { vm.load() },
+        onTitleClick = { showCalendar = true },
+        actions = {
+            IconButton(onClick = { vm.prevDay() }) {
+                Icon(Icons.Filled.KeyboardArrowLeft, contentDescription = "Previous day")
+            }
+            IconButton(onClick = { vm.nextDay() }, enabled = !isToday) {
+                Icon(
+                    Icons.Filled.KeyboardArrowRight,
+                    contentDescription = "Next day",
+                    tint = if (isToday) MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.3f)
+                    else MaterialTheme.colorScheme.onSurface,
+                )
+            }
+        },
+        isRefreshing = refreshing,
+        onRefresh = { vm.refresh() },
     ) { mod ->
+        if (showCalendar) {
+            DayPickerDialog(
+                selected = selectedDate,
+                marked = marked,
+                onPick = { vm.goToDay(it); showCalendar = false },
+                onToday = { vm.goToToday(); showCalendar = false },
+                onDismiss = { showCalendar = false },
+            )
+        }
         if (loading && summary == null) {
             Column(mod, verticalArrangement = Arrangement.spacedBy(12.dp)) {
                 SkeletonCard(lines = 3)
@@ -401,7 +547,27 @@ fun HomeScreen(vm: HomeViewModel = hiltViewModel()) {
         val score = rec?.score ?: s.readiness.score
         val wellnessVal = rec?.wellness ?: s.readiness.components.wellness
         var showDetails by remember { mutableStateOf(false) }
+        var showManualEntry by remember { mutableStateOf(false) }
+        if (showManualEntry) {
+            ManualRecoveryDialog(
+                onDismiss = { showManualEntry = false },
+                onSave = { hrv, rhr, sleepMin ->
+                    vm.saveManualRecovery(hrv, rhr, sleepMin)
+                    showManualEntry = false
+                },
+            )
+        }
+        // Watch-freshness check: distinguish "synced today, no HRV yet" from "the
+        // watch hasn't reported in days" — the latter gets a loud banner since the
+        // whole readiness read is then running blind on the objective signals.
+        val staleDays = s.recovery_synced_date?.let {
+            runCatching {
+                java.time.temporal.ChronoUnit.DAYS.between(java.time.LocalDate.parse(it), java.time.LocalDate.now())
+            }.getOrNull()
+        }
+        val isStale = isToday && (s.recovery_synced_date == null || (staleDays != null && staleDays >= 2L))
         SectionCard(mod) {
+            if (isStale) RecoveryStaleBanner(s.recovery_synced_date)
             Row(verticalAlignment = Alignment.CenterVertically) {
                 ReadinessRing(score, band)
                 Column(
@@ -423,6 +589,11 @@ fun HomeScreen(vm: HomeViewModel = hiltViewModel()) {
                 }
             }
 
+            // The coach's proactive note for today — the human voice on top of the
+            // numbers. Streams in after the dashboard; absent → the static headline
+            // above already carries the readiness read, so nothing extra shows.
+            brief?.takeIf { it.isNotBlank() }?.let { QuoteBlock(it) }
+
             // Drill-in toggle. Collapsed by default — the signals are one tap away.
             androidx.compose.material3.TextButton(
                 onClick = { showDetails = !showDetails },
@@ -439,13 +610,29 @@ fun HomeScreen(vm: HomeViewModel = hiltViewModel()) {
 
             androidx.compose.animation.AnimatedVisibility(visible = showDetails) {
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    // Why the score is what it is — compact chips ("HRV ↑", "Sleep ↓").
+                    rec?.drivers?.takeIf { it.isNotEmpty() }?.let { ds ->
+                        androidx.compose.foundation.layout.FlowRow(
+                            horizontalArrangement = Arrangement.spacedBy(6.dp),
+                            verticalArrangement = Arrangement.spacedBy(6.dp),
+                        ) { ds.forEach { RecoveryDriverChip(it) } }
+                    }
                     // Recovery signals + load — every field is the same width; the
                     // trailing 48dp slot holds a trend badge, an info ⓘ, or nothing.
-                    rec?.hrv?.let { MetricRow("HRV", "${"%.0f".format(it.latest)} ms") { TrendBadge(it, higherIsBetter = true) } }
-                    rec?.rhr?.let { MetricRow("Resting HR", "${"%.0f".format(it.latest)} bpm") { TrendBadge(it, higherIsBetter = false) } }
+                    // latest == null → today's reading hasn't synced from Intervals;
+                    // say so explicitly rather than showing yesterday's number.
+                    rec?.hrv?.let { h ->
+                        if (h.latest != null) MetricRow("HRV", "${"%.0f".format(h.latest)} ms") { TrendBadge(h, higherIsBetter = true) }
+                        else MetricRow("HRV", "No reading today")
+                    }
+                    rec?.rhr?.let { r ->
+                        if (r.latest != null) MetricRow("Resting HR", "${"%.0f".format(r.latest)} bpm") { TrendBadge(r, higherIsBetter = false) }
+                        else MetricRow("Resting HR", "No reading today")
+                    }
                     rec?.sleep?.let { sl ->
                         val avg = sl.avgHours?.let { " · avg ${hoursToHm(it)}" } ?: ""
-                        MetricRow("Sleep", "${hoursToHm(sl.hours)}$avg")
+                        if (sl.hours != null) MetricRow("Sleep", "${hoursToHm(sl.hours)}$avg")
+                        else MetricRow("Sleep", "No data today$avg")
                     }
                     rec?.sleep?.score?.let { sc ->
                         MetricRow("Sleep score", "${sc.toInt()} / 100") {
@@ -471,8 +658,50 @@ fun HomeScreen(vm: HomeViewModel = hiltViewModel()) {
                             }
                         }
                     }
+                    // Utility actions — manual entry (today only) + the trends screen.
+                    Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                        if (isToday) {
+                            androidx.compose.material3.TextButton(
+                                onClick = { showManualEntry = true },
+                                contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 4.dp, vertical = 2.dp),
+                            ) { Text("Log manually", style = MaterialTheme.typography.labelLarge) }
+                        }
+                        androidx.compose.material3.TextButton(
+                            onClick = onOpenRecoveryHistory,
+                            contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 4.dp, vertical = 2.dp),
+                        ) { Text("Trends →", style = MaterialTheme.typography.labelLarge) }
+                    }
                 }
             }
+
+            // Data freshness — so a missing HRV/sleep reads as "watch hasn't
+            // synced", not "nothing's wrong". Relative for today; dated for history.
+            val syncedLabel = run {
+                val synced = s.recovery_synced_date
+                when {
+                    synced == null -> "No recovery data synced"
+                    !isToday -> "Recovery data through ${friendlyDate(synced)}"
+                    else -> {
+                        val days = runCatching {
+                            java.time.temporal.ChronoUnit.DAYS.between(
+                                java.time.LocalDate.parse(synced), java.time.LocalDate.now(),
+                            )
+                        }.getOrNull()
+                        when {
+                            days == null -> "Synced ${friendlyDate(synced)}"
+                            days <= 0L -> "Recovery synced today"
+                            days == 1L -> "Recovery last synced yesterday"
+                            else -> "Recovery last synced $days days ago"
+                        }
+                    }
+                }
+            }
+            Text(
+                syncedLabel,
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+
             SectionLabel("AI · ${s.active_llm_provider}", color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
 
@@ -482,17 +711,23 @@ fun HomeScreen(vm: HomeViewModel = hiltViewModel()) {
         // than at midnight. Fallback: if sleep still hasn't arrived by late
         // morning (watch not worn / didn't sync), show it anyway so the check-in
         // is never permanently locked out.
-        val sleptToday = rec?.sleep != null
+        // Gate on TODAY's sleep specifically (hours != null) — not just any sleep
+        // object — so the card waits for this morning's sync instead of firing at
+        // midnight on yesterday's data.
+        val sleptToday = rec?.sleep?.hours != null
         val pastFallback = java.time.LocalTime.now() >= java.time.LocalTime.of(11, 0)
-        if (wellnessLoaded && wellnessToday?.energy == null && (sleptToday || pastFallback)) {
+        if (isToday && wellnessLoaded && wellnessToday?.energy == null && (sleptToday || pastFallback)) {
             WellnessCheckinCard(mod, busy = wellnessBusy) { e, sore -> vm.saveWellness(e, sore) }
         }
 
         s.goal?.let { g -> GoalCard(mod, g) }
 
-        SectionCard(mod, title = "Today's Workout") {
+        s.week_review?.let { wr -> WeekReviewCard(mod, wr, if (isToday) weekReviewNote else null) }
+
+        SectionCard(mod, title = if (isToday) "Today's Workout" else "Workout") {
             val tw = s.today_workout
             val w = tw?.workout_json
+            val isRest = w?.type == "rest"
             if (w != null && tw.skipped && !tw.completed) {
                 // Skipped: collapse to one line + Undo instead of the full card.
                 Text(
@@ -502,11 +737,12 @@ fun HomeScreen(vm: HomeViewModel = hiltViewModel()) {
                     textDecoration = androidx.compose.ui.text.style.TextDecoration.LineThrough,
                 )
                 Text(
-                    "Skipped — rest matters too. The plan will adapt and rebuild gradually.",
+                    if (isToday) "Skipped — rest matters too. The plan will adapt and rebuild gradually."
+                    else "Skipped that day.",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
-                GhostButton(onClick = {
+                if (isToday) GhostButton(onClick = {
                     haptics.performHapticFeedback(HapticFeedbackType.LongPress)
                     vm.undoSkip()
                 }) { Text("Undo skip") }
@@ -514,37 +750,65 @@ fun HomeScreen(vm: HomeViewModel = hiltViewModel()) {
             }
             if (w != null) WorkoutDetail(w, profile)
             else com.workoutmaker.app.ui.components.EmptyState(
-                title = "No workout planned yet",
-                subtitle = "Generate one below, or ask your coach to plan your day.",
+                title = if (isToday) "No workout planned yet" else "Nothing was planned",
+                subtitle = if (isToday) "Generate one below, or ask your coach to plan your day."
+                else "No workout was on the plan for this day.",
                 icon = Icons.Filled.FitnessCenter,
             )
 
-            // Tweak field guides the (re)generation; the button sits below it and
-            // regenerates WITH whatever you typed (no separate "Adjust").
-            var instruction by remember { mutableStateOf("") }
-            if (w != null) {
-                androidx.compose.material3.OutlinedTextField(
-                    value = instruction,
-                    onValueChange = { instruction = it },
+            // The generate/tweak/rating controls only make sense for today — past
+            // days are read-only history.
+            if (isToday) {
+                // Launch the guided, timed player for today's session.
+                if (w != null && !isRest && s.today_workout?.completed != true) {
+                    Button(
+                        onClick = { if (vm.playToday()) onStartWorkout() },
+                        modifier = Modifier.fillMaxWidth(),
+                    ) { Text("▶  Start workout") }
+                }
+                // Tweak field guides the (re)generation; the button sits below it and
+                // regenerates WITH whatever you typed (no separate "Adjust").
+                var instruction by remember { mutableStateOf("") }
+                if (w != null) {
+                    androidx.compose.material3.OutlinedTextField(
+                        value = instruction,
+                        onValueChange = { instruction = it },
+                        modifier = Modifier.fillMaxWidth(),
+                        label = { Text("Tweak the regenerate (optional)") },
+                        placeholder = { Text("e.g. shorter, I'm sore, add hills, make it easy") },
+                    )
+                }
+                Button(
+                    onClick = {
+                        if (w == null) startGenerate()
+                        else { vm.regenerate(instruction.trim()); instruction = "" }
+                    },
+                    enabled = !generating,
                     modifier = Modifier.fillMaxWidth(),
-                    label = { Text("Tweak the regenerate (optional)") },
-                    placeholder = { Text("e.g. shorter, I'm sore, add hills, make it easy") },
-                )
+                ) { Text(if (generating) "Generating…" else if (w != null) "Regenerate" else "Generate workout") }
             }
-            Button(
-                onClick = {
-                    if (w == null) startGenerate()
-                    else { vm.regenerate(instruction.trim()); instruction = "" }
-                },
-                enabled = !generating,
-                modifier = Modifier.fillMaxWidth(),
-            ) { Text(if (generating) "Generating…" else if (w != null) "Regenerate" else "Generate workout") }
 
             if (w != null) {
                 // #1: the rating appears only AFTER you say you did the workout.
                 when {
                     s.today_workout?.completed == true ->
-                        Text("✓ Completed today", style = MaterialTheme.typography.titleSmall, color = MaterialTheme.colorScheme.primary)
+                        Text(
+                            if (isRest) (if (isToday) "✓ Rested today" else "✓ Rested")
+                            else (if (isToday) "✓ Completed today" else "✓ Completed"),
+                            style = MaterialTheme.typography.titleSmall, color = MaterialTheme.colorScheme.primary,
+                        )
+                    !isToday ->
+                        Text("Not logged as done.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    // Rest days don't need RPE/difficulty — one quiet tap to mark it.
+                    isRest -> {
+                        GhostButton(
+                            onClick = {
+                                haptics.performHapticFeedback(HapticFeedbackType.LongPress)
+                                vm.submitFeedback("just_right", null)
+                            },
+                            modifier = Modifier.fillMaxWidth(),
+                        ) { Text("Mark rest taken") }
+                    }
                     else -> {
                         var didIt by remember(s.today_workout?.id) { mutableStateOf(false) }
                         if (!didIt) {
@@ -597,6 +861,52 @@ fun HomeScreen(vm: HomeViewModel = hiltViewModel()) {
     }
 }
 
+// Manual recovery entry for a day the watch didn't sync. All three fields are
+// optional — saving any one writes it onto today's wellness row.
+@Composable
+private fun ManualRecoveryDialog(onDismiss: () -> Unit, onSave: (Double?, Int?, Int?) -> Unit) {
+    var hrv by remember { mutableStateOf("") }
+    var rhr by remember { mutableStateOf("") }
+    var sleepH by remember { mutableStateOf("") }
+    val hrvVal = hrv.trim().toDoubleOrNull()
+    val rhrVal = rhr.trim().toIntOrNull()
+    val sleepMin = sleepH.trim().toDoubleOrNull()?.let { (it * 60).roundToInt() }
+    val canSave = hrvVal != null || rhrVal != null || sleepMin != null
+    androidx.compose.material3.AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Log recovery manually") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                Text(
+                    "Fill in what you know — leave the rest blank. Saved for today.",
+                    style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                androidx.compose.material3.OutlinedTextField(
+                    value = hrv, onValueChange = { hrv = it }, label = { Text("HRV (ms)") },
+                    singleLine = true, modifier = Modifier.fillMaxWidth(),
+                    keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(keyboardType = androidx.compose.ui.text.input.KeyboardType.Decimal),
+                )
+                androidx.compose.material3.OutlinedTextField(
+                    value = rhr, onValueChange = { rhr = it }, label = { Text("Resting HR (bpm)") },
+                    singleLine = true, modifier = Modifier.fillMaxWidth(),
+                    keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(keyboardType = androidx.compose.ui.text.input.KeyboardType.Number),
+                )
+                androidx.compose.material3.OutlinedTextField(
+                    value = sleepH, onValueChange = { sleepH = it }, label = { Text("Sleep (hours, e.g. 7.5)") },
+                    singleLine = true, modifier = Modifier.fillMaxWidth(),
+                    keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(keyboardType = androidx.compose.ui.text.input.KeyboardType.Decimal),
+                )
+            }
+        },
+        confirmButton = {
+            androidx.compose.material3.TextButton(onClick = { onSave(hrvVal, rhrVal, sleepMin) }, enabled = canSave) { Text("Save") }
+        },
+        dismissButton = {
+            androidx.compose.material3.TextButton(onClick = onDismiss) { Text("Cancel") }
+        },
+    )
+}
+
 // Morning wellness check-in: two 1–5 scales (energy, soreness) that feed today's
 // readiness score. Sleep is pulled automatically from Intervals.icu, so it's no
 // longer asked here. Appears only when today is unanswered.
@@ -636,9 +946,9 @@ private fun WellnessScale(label: String, low: String, high: String, selected: In
                 Box(
                     Modifier
                         .weight(1f)
-                        .size(width = 0.dp, height = 40.dp)
+                        .size(width = 0.dp, height = 48.dp)
                         .background(bg, androidx.compose.foundation.shape.RoundedCornerShape(8.dp))
-                        .clickable {
+                        .clickable(onClickLabel = "Set $label to $n of 5") {
                             haptics.performHapticFeedback(HapticFeedbackType.LongPress)
                             onSelect(n)
                         },
@@ -706,6 +1016,7 @@ private fun FitnessSection(
             // Form (TSB) over time on the Intervals.icu zone backdrop.
             SectionLabel("Form (TSB) · now ${"%+.0f".format(latest.tsb)}", color = MaterialTheme.colorScheme.onSurfaceVariant)
             FormChart(f.fitness, Modifier.fillMaxWidth())
+            SectionLabel("Tap a point for its date & value", color = MaterialTheme.colorScheme.onSurfaceVariant)
             androidx.compose.foundation.layout.FlowRow(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                 FORM_ZONES.forEach { z -> LegendDot(z.label, z.color) }
             }
@@ -830,12 +1141,14 @@ private fun sleepScoreBand(score: Double): String = when {
 // Intervals.icu "Form" (TSB) zones, top→bottom. Each is (lower bound, label,
 // colour); a band fills from its bound up to the next one.
 private data class FormZone(val min: Double, val label: String, val color: Color)
+// Vivid fixed zone hues (matching the ChartHr/Pace/Power palette) so the Form
+// backdrop and its legend dots read boldly across every theme.
 private val FORM_ZONES = listOf(
-    FormZone(25.0, "Transition", Color(0xFF8D6E4A)),
-    FormZone(5.0, "Fresh", Color(0xFF4A6D8D)),
-    FormZone(-10.0, "Grey zone", Color(0xFF55585A)),
-    FormZone(-30.0, "Optimal", Color(0xFF3E6B4E)),
-    FormZone(-100.0, "High risk", Color(0xFF8D4A4A)),
+    FormZone(25.0, "Transition", Color(0xFFFF9F0A)),  // amber
+    FormZone(5.0, "Fresh", Color(0xFF0A84FF)),        // blue
+    FormZone(-10.0, "Grey zone", Color(0xFF8E8E93)),  // grey
+    FormZone(-30.0, "Optimal", Color(0xFF30D158)),    // green
+    FormZone(-100.0, "High risk", Color(0xFFFF453A)), // red
 )
 
 // Form chart: the TSB line over time on a fixed zone backdrop (mirrors the
@@ -844,9 +1157,25 @@ private val FORM_ZONES = listOf(
 @Composable
 private fun FormChart(points: List<com.workoutmaker.app.data.FitnessPoint>, modifier: Modifier) {
     val grid = MaterialTheme.colorScheme.surfaceVariant
-    val lineColor = MaterialTheme.colorScheme.onSurface
+    val marker = MaterialTheme.colorScheme.onSurface
     val last = points.last()
-    androidx.compose.foundation.Canvas(modifier.size(width = 0.dp, height = 130.dp).fillMaxWidth()) {
+    // Tap a point to pin its date + TSB; tap it again (or another) to move/clear.
+    var selected by remember(points) { mutableStateOf<Int?>(null) }
+    val gutterDp = 30.dp
+    androidx.compose.foundation.Canvas(
+        modifier
+            .size(width = 0.dp, height = 130.dp)
+            .fillMaxWidth()
+            .pointerInput(points) {
+                val gl = gutterDp.toPx()
+                val plotW = (size.width - gl).coerceAtLeast(1f)
+                val step = if (points.size > 1) plotW / (points.size - 1) else plotW
+                detectTapGestures { off ->
+                    val idx = ((off.x - gl) / step).roundToInt().coerceIn(0, points.size - 1)
+                    selected = if (selected == idx) null else idx
+                }
+            },
+    ) {
         val dataMax = points.maxOf { it.tsb }
         val dataMin = points.minOf { it.tsb }
         val top = maxOf(30.0, dataMax + 4)
@@ -868,7 +1197,7 @@ private fun FormChart(points: List<com.workoutmaker.app.data.FitnessPoint>, modi
             val yL = y(z.min.coerceIn(bottom, top))
             if (yL > yU) {
                 drawRect(
-                    z.color.copy(alpha = 0.22f),
+                    z.color.copy(alpha = 0.30f),
                     topLeft = androidx.compose.ui.geometry.Offset(gutterLeft, yU),
                     size = androidx.compose.ui.geometry.Size(plotW, yL - yU),
                 )
@@ -882,21 +1211,50 @@ private fun FormChart(points: List<com.workoutmaker.app.data.FitnessPoint>, modi
         chartLabel(points.first().date.takeLast(5), gutterLeft, size.height - 2f)
         chartLabel(last.date.takeLast(5), w, size.height - 2f, alignRight = true)
 
-        // TSB line — rounded, over the zone backdrop (no fill so the bands read).
-        val path = androidx.compose.ui.graphics.Path()
-        points.forEachIndexed { i, p ->
-            val px = x(i)
-            val py = y(p.tsb)
-            if (i == 0) path.moveTo(px, py) else path.lineTo(px, py)
+        // TSB line, coloured by the zone each part falls in — the stretch inside
+        // the green band is green, inside red is red, and so on. Each segment is
+        // split exactly at the zone boundaries it crosses so the colour flips on
+        // the band edge rather than at a data point.
+        fun zoneColorOf(v: Double): Color =
+            FORM_ZONES.firstOrNull { v >= it.min }?.color ?: FORM_ZONES.last().color
+        val boundaries = FORM_ZONES.dropLast(1).map { it.min } // 25, 5, -10, -30
+        for (i in 0 until points.size - 1) {
+            val v0 = points[i].tsb
+            val v1 = points[i + 1].tsb
+            val x0 = x(i)
+            val x1 = x(i + 1)
+            // Fractions (0..1) along this segment where it crosses a zone edge.
+            val cuts = boundaries.mapNotNull { b ->
+                if ((v0 < b && v1 > b) || (v0 > b && v1 < b)) (b - v0) / (v1 - v0) else null
+            }.sorted()
+            val ts = listOf(0.0) + cuts + listOf(1.0)
+            for (k in 0 until ts.size - 1) {
+                val ta = ts[k]
+                val tb = ts[k + 1]
+                if (tb <= ta) continue
+                val mid = v0 + (v1 - v0) * (ta + tb) / 2
+                drawLine(
+                    zoneColorOf(mid),
+                    androidx.compose.ui.geometry.Offset((x0 + (x1 - x0) * ta).toFloat(), y(v0 + (v1 - v0) * ta)),
+                    androidx.compose.ui.geometry.Offset((x0 + (x1 - x0) * tb).toFloat(), y(v0 + (v1 - v0) * tb)),
+                    strokeWidth = 3.5f,
+                    cap = androidx.compose.ui.graphics.StrokeCap.Round,
+                )
+            }
         }
-        drawPath(
-            path, lineColor,
-            style = androidx.compose.ui.graphics.drawscope.Stroke(
-                width = 3.5f,
-                cap = androidx.compose.ui.graphics.StrokeCap.Round,
-                join = androidx.compose.ui.graphics.StrokeJoin.Round,
-            ),
-        )
+
+        // Pinned point: a vertical guide, a dot, and a "MM-DD · +5" callout. Drawn
+        // last so it sits on top of the bands and the line.
+        selected?.let { sel ->
+            val p = points[sel]
+            val px = x(sel)
+            val py = y(p.tsb)
+            drawLine(marker.copy(alpha = 0.4f), androidx.compose.ui.geometry.Offset(px, 0f), androidx.compose.ui.geometry.Offset(px, h), strokeWidth = 1.5f)
+            drawCircle(marker, radius = 4f, center = androidx.compose.ui.geometry.Offset(px, py))
+            val txt = "${p.date.takeLast(5)} · ${"%+.0f".format(p.tsb)}"
+            val nearRight = px > size.width * 0.6f
+            chartLabel(txt, if (nearRight) px - 6f else px + 6f, (y(top) + 9.sp.toPx()).coerceAtLeast(11.sp.toPx()), alignRight = nearRight, color = marker)
+        }
     }
 }
 
@@ -947,6 +1305,176 @@ private fun FitnessChart(points: List<com.workoutmaker.app.data.FitnessPoint>, m
         }
         line({ it.atl }, atlColor)
         line({ it.ctl }, ctlColor)
+    }
+}
+
+// Month calendar picker: jump to any past day. Future days are disabled; days
+// with a completed activity get a dot; today and the selected day are marked.
+@Composable
+private fun DayPickerDialog(
+    selected: java.time.LocalDate,
+    marked: Set<java.time.LocalDate>,
+    onPick: (java.time.LocalDate) -> Unit,
+    onToday: () -> Unit,
+    onDismiss: () -> Unit,
+) {
+    val today = java.time.LocalDate.now()
+    var month by remember { mutableStateOf(java.time.YearMonth.from(selected)) }
+    val canGoNextMonth = month.isBefore(java.time.YearMonth.from(today))
+    androidx.compose.ui.window.Dialog(onDismissRequest = onDismiss) {
+        androidx.compose.material3.Surface(
+            shape = androidx.compose.foundation.shape.RoundedCornerShape(22.dp),
+            color = MaterialTheme.colorScheme.surfaceContainer,
+        ) {
+            Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                // Header: Today shortcut · month nav · close.
+                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                    androidx.compose.material3.TextButton(onClick = onToday) {
+                        Text("TODAY", color = MaterialTheme.colorScheme.primary,
+                            style = MaterialTheme.typography.labelLarge)
+                    }
+                    Spacer(Modifier.weight(1f))
+                    IconButton(onClick = { month = month.minusMonths(1) }) {
+                        Icon(Icons.Filled.KeyboardArrowLeft, contentDescription = "Previous month")
+                    }
+                    Text(
+                        month.format(java.time.format.DateTimeFormatter.ofPattern("MMMM yyyy")).uppercase(),
+                        style = MaterialTheme.typography.titleSmall,
+                        fontWeight = androidx.compose.ui.text.font.FontWeight.SemiBold,
+                    )
+                    IconButton(onClick = { if (canGoNextMonth) month = month.plusMonths(1) }, enabled = canGoNextMonth) {
+                        Icon(
+                            Icons.Filled.KeyboardArrowRight, contentDescription = "Next month",
+                            tint = if (canGoNextMonth) MaterialTheme.colorScheme.onSurface
+                            else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.3f),
+                        )
+                    }
+                    Spacer(Modifier.weight(1f))
+                    IconButton(onClick = onDismiss) { Icon(Icons.Filled.Close, contentDescription = "Close") }
+                }
+                // Weekday header (Sunday-first, matching the grid).
+                Row(Modifier.fillMaxWidth()) {
+                    listOf("SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT").forEach { d ->
+                        Text(d, Modifier.weight(1f), textAlign = androidx.compose.ui.text.style.TextAlign.Center,
+                            style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
+                }
+                // 6×7 grid. First cell = the Sunday on/before the 1st.
+                val first = month.atDay(1)
+                val lead = first.dayOfWeek.value % 7 // Mon=1..Sun=7 → Sun=0 offset
+                val firstCell = first.minusDays(lead.toLong())
+                for (week in 0 until 6) {
+                    Row(Modifier.fillMaxWidth()) {
+                        for (dow in 0 until 7) {
+                            val d = firstCell.plusDays((week * 7 + dow).toLong())
+                            DayCell(
+                                day = d,
+                                inMonth = d.monthValue == month.monthValue,
+                                isToday = d == today,
+                                isSelected = d == selected,
+                                isFuture = d.isAfter(today),
+                                marked = d in marked,
+                                onClick = { if (!d.isAfter(today)) onPick(d) },
+                                modifier = Modifier.weight(1f),
+                            )
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun DayCell(
+    day: java.time.LocalDate,
+    inMonth: Boolean,
+    isToday: Boolean,
+    isSelected: Boolean,
+    isFuture: Boolean,
+    marked: Boolean,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    Column(
+        modifier
+            .aspectRatio(1f)
+            .clip(androidx.compose.foundation.shape.CircleShape)
+            .clickable(enabled = !isFuture, onClick = onClick),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.Center,
+    ) {
+        Box(
+            Modifier
+                .size(34.dp)
+                .clip(androidx.compose.foundation.shape.CircleShape)
+                .background(if (isSelected) MaterialTheme.colorScheme.primary else Color.Transparent),
+            contentAlignment = Alignment.Center,
+        ) {
+            Text(
+                "${day.dayOfMonth}",
+                style = MaterialTheme.typography.bodyMedium,
+                fontWeight = if (isToday || isSelected) androidx.compose.ui.text.font.FontWeight.Bold else androidx.compose.ui.text.font.FontWeight.Normal,
+                color = when {
+                    isSelected -> MaterialTheme.colorScheme.onPrimary
+                    isFuture || !inMonth -> MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.4f)
+                    isToday -> MaterialTheme.colorScheme.primary
+                    else -> MaterialTheme.colorScheme.onSurface
+                },
+            )
+        }
+        // Activity dot under days with a completed session (hidden on the
+        // selected day, where it'd clash with the filled circle).
+        Box(
+            Modifier.size(5.dp).clip(androidx.compose.foundation.shape.CircleShape)
+                .background(if (marked && !isSelected) MaterialTheme.colorScheme.primary else Color.Transparent),
+        )
+    }
+}
+
+// Deterministic last-7-day recap: adherence, load vs target with a trend arrow
+// vs last week, the sport split, and the standout session. The coach-voice take
+// lives in the briefing at the top; this is the at-a-glance scoreboard.
+@Composable
+private fun WeekReviewCard(mod: Modifier, wr: com.workoutmaker.app.data.WeekReview, note: String? = null) {
+    fun sportLabel(s: String) = when (s) {
+        "run" -> "Run"; "ride" -> "Ride"; "swim" -> "Swim"; "strength" -> "Strength"; else -> "Other"
+    }
+    SectionCard(mod, title = "This week") {
+        // The coach's voice on the week, above the deterministic scoreboard.
+        note?.takeIf { it.isNotBlank() }?.let { QuoteBlock(it) }
+        if (wr.sessions == 0 && wr.adherence.planned == 0) {
+            Text(
+                "No sessions logged yet this week — it fills in as you train.",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            return@SectionCard
+        }
+        if (wr.adherence.planned > 0) {
+            InsetStat(
+                "Adherence",
+                "${wr.adherence.done}/${wr.adherence.planned} sessions" +
+                    (wr.adherence.pct?.let { " · $it%" } ?: ""),
+            )
+        }
+        // Load vs target, with the week-over-week trend arrow (Quick win 5).
+        val trend = wr.load.delta_pct?.let { d ->
+            val arrow = if (d > 0) "↑" else if (d < 0) "↓" else "→"
+            "  $arrow${kotlin.math.abs(d)}% vs last wk"
+        } ?: ""
+        InsetStat("Load", "${wr.load.tss} / ${wr.load.target} TSS$trend")
+        // Sport split — where the load went this week.
+        if (wr.by_sport.isNotEmpty()) {
+            ChipRow(wr.by_sport.filter { it.tss > 0 }.map { "${sportLabel(it.sport)} ${it.tss}" })
+        }
+        wr.standout?.let { st ->
+            Text(
+                "Biggest session: ${sportLabel(st.sport)} on ${st.date} · ${st.tss} TSS",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
     }
 }
 
@@ -1044,7 +1572,7 @@ internal fun RpeBars(selected: Int?, onSelect: (Int) -> Unit) {
                     .weight(1f)
                     .size(width = 0.dp, height = (10 + n * 3).dp)
                     .background(bg, androidx.compose.foundation.shape.RoundedCornerShape(3.dp))
-                    .clickable {
+                    .clickable(onClickLabel = "RPE $n, ${rpeWord(n)}") {
                         haptics.performHapticFeedback(HapticFeedbackType.LongPress)
                         onSelect(n)
                     },
@@ -1085,6 +1613,57 @@ private fun MetricRow(label: String, value: String, trailing: @Composable () -> 
         Box(Modifier.width(48.dp), contentAlignment = Alignment.Center) { trailing() }
     }
 }
+
+// Loud banner when the watch hasn't reported in a while — the readiness read is
+// then running blind on objective signals, so it shouldn't look business-as-usual.
+@Composable
+private fun RecoveryStaleBanner(syncedDate: String?) {
+    val color = com.workoutmaker.app.ui.theme.amberAccent()
+    val msg = if (syncedDate == null) {
+        "No recovery data has synced yet. Pull down to sync your watch."
+    } else {
+        "Watch hasn't synced since ${friendlyDate(syncedDate)} — today's HRV, resting HR " +
+            "and sleep may be missing. Pull down to refresh."
+    }
+    Row(
+        Modifier.fillMaxWidth()
+            .background(color.copy(alpha = 0.15f), androidx.compose.foundation.shape.RoundedCornerShape(12.dp))
+            .padding(12.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Box(Modifier.size(10.dp).background(color, androidx.compose.foundation.shape.CircleShape))
+        Text(
+            msg,
+            Modifier.padding(start = 10.dp),
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+    }
+}
+
+// One readiness driver as a tinted pill ("HRV ↑", "Sleep ↓"); colour = tone.
+@Composable
+private fun RecoveryDriverChip(d: com.workoutmaker.app.data.RecoveryDriver) {
+    val color = when (d.tone) {
+        "good" -> MaterialTheme.colorScheme.primary
+        "bad" -> MaterialTheme.colorScheme.error
+        else -> MaterialTheme.colorScheme.onSurfaceVariant
+    }
+    val arrow = when (d.dir) { "up" -> "↑"; "down" -> "↓"; else -> "→" }
+    Box(
+        Modifier
+            .background(color.copy(alpha = 0.13f), androidx.compose.foundation.shape.RoundedCornerShape(8.dp))
+            .padding(horizontal = 8.dp, vertical = 4.dp),
+    ) {
+        Text("${d.label} $arrow", style = MaterialTheme.typography.labelMedium, color = color)
+    }
+}
+
+// "2026-06-28" → "28 Jun"; falls back to the raw string if unparseable.
+private fun friendlyDate(iso: String): String =
+    runCatching {
+        java.time.LocalDate.parse(iso).format(java.time.format.DateTimeFormatter.ofPattern("d MMM"))
+    }.getOrDefault(iso)
 
 // 7.5 → "7h 30m", 8.083 → "8h 05m".
 private fun hoursToHm(hours: Double): String {

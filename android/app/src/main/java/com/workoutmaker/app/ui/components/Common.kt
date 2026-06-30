@@ -32,7 +32,9 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.material3.pulltorefresh.PullToRefreshBox
+import androidx.compose.foundation.clickable
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.outlined.Info
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Icon
@@ -61,6 +63,9 @@ fun ScreenScaffold(
     // its job (e.g. "DAILY READINESS") so the top bar is contextual, not a fixed
     // brand stamp.
     eyebrow: String = "BIO-METRICS",
+    // When set, the title becomes a tappable control (gets a small caret) — used
+    // by Home to turn the date headline into a date picker.
+    onTitleClick: (() -> Unit)? = null,
     actions: @Composable () -> Unit = {},
     navigationIcon: @Composable () -> Unit = {},
     scrollable: Boolean = true,
@@ -90,13 +95,29 @@ fun ScreenScaffold(
                         // One line each: the app bar has a fixed height, so a long
                         // title (e.g. a workout name) wrapping would get clipped by
                         // the content below instead of ellipsized.
-                        Text(
-                            title,
-                            style = MaterialTheme.typography.headlineSmall,
-                            fontWeight = FontWeight.Bold,
-                            maxLines = 1,
-                            overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
-                        )
+                        androidx.compose.foundation.layout.Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            modifier = if (onTitleClick != null) {
+                                Modifier.clip(RoundedCornerShape(8.dp)).clickable { onTitleClick() }
+                                    .padding(end = 6.dp)
+                            } else Modifier,
+                        ) {
+                            Text(
+                                title,
+                                style = MaterialTheme.typography.headlineSmall,
+                                fontWeight = FontWeight.Bold,
+                                maxLines = 1,
+                                overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
+                            )
+                            if (onTitleClick != null) {
+                                Icon(
+                                    Icons.Filled.KeyboardArrowDown,
+                                    contentDescription = "Change date",
+                                    modifier = Modifier.size(22.dp).padding(start = 2.dp),
+                                    tint = MaterialTheme.colorScheme.primary,
+                                )
+                            }
+                        }
                         if (subtitle != null) {
                             Text(
                                 subtitle,
@@ -277,7 +298,7 @@ fun MetaChip(text: String) {
     Box(
         Modifier
             .clip(RoundedCornerShape(50))
-            .background(com.workoutmaker.app.ui.theme.Moss.copy(alpha = 0.45f))
+            .background(com.workoutmaker.app.ui.theme.mossAccent().copy(alpha = 0.45f))
             .padding(horizontal = 10.dp, vertical = 4.dp),
     ) {
         Text(text, style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.primary)
@@ -346,10 +367,13 @@ fun StatTileGrid(items: List<Pair<String, String>>, modifier: Modifier = Modifie
     Column(modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(8.dp)) {
         items.chunked(columns).forEach { row ->
             androidx.compose.foundation.layout.Row(
-                Modifier.fillMaxWidth(),
+                // Match every tile in a row to the tallest one, so a stat whose
+                // label fits on one line (e.g. "Form (TSB)") isn't shorter than its
+                // two-line neighbours ("Fitness (CTL)").
+                Modifier.fillMaxWidth().height(androidx.compose.foundation.layout.IntrinsicSize.Max),
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
             ) {
-                row.forEach { (l, v) -> StatTile(l, v, Modifier.weight(1f)) }
+                row.forEach { (l, v) -> StatTile(l, v, Modifier.weight(1f).fillMaxHeight()) }
                 repeat(columns - row.size) { Box(Modifier.weight(1f)) }
             }
         }

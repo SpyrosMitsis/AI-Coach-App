@@ -187,21 +187,29 @@ export default function DashboardPage() {
           {showDetails && (
             <div className="space-y-1.5 pt-1">
               {rec?.hrv && (
-                <MetricRow
-                  label="HRV" value={`${rec.hrv.latest.toFixed(0)} ms`}
-                  trendLabel={`${rec.hrv.deltaPct >= 0 ? "↑" : "↓"}${Math.abs(rec.hrv.deltaPct * 100).toFixed(0)}%`}
-                  good={rec.hrv.deltaPct >= 0}
-                />
+                rec.hrv.latest != null ? (
+                  <MetricRow
+                    label="HRV" value={`${rec.hrv.latest.toFixed(0)} ms`}
+                    trendLabel={`${rec.hrv.deltaPct >= 0 ? "↑" : "↓"}${Math.abs(rec.hrv.deltaPct * 100).toFixed(0)}%`}
+                    good={rec.hrv.deltaPct >= 0}
+                  />
+                ) : (
+                  <MetricRow label="HRV" value="No reading today" />
+                )
               )}
               {rec?.rhr && (
-                <MetricRow
-                  label="Resting HR" value={`${rec.rhr.latest.toFixed(0)} bpm`}
-                  trendLabel={`${rec.rhr.deltaPct >= 0 ? "↑" : "↓"}${Math.abs(rec.rhr.deltaPct * 100).toFixed(0)}%`}
-                  good={rec.rhr.deltaPct <= 0}
-                />
+                rec.rhr.latest != null ? (
+                  <MetricRow
+                    label="Resting HR" value={`${rec.rhr.latest.toFixed(0)} bpm`}
+                    trendLabel={`${rec.rhr.deltaPct >= 0 ? "↑" : "↓"}${Math.abs(rec.rhr.deltaPct * 100).toFixed(0)}%`}
+                    good={rec.rhr.deltaPct <= 0}
+                  />
+                ) : (
+                  <MetricRow label="Resting HR" value="No reading today" />
+                )
               )}
               {rec?.sleep && (
-                <MetricRow label="Sleep" value={hoursToHm(rec.sleep.hours) + (rec.sleep.avgHours ? ` · avg ${hoursToHm(rec.sleep.avgHours)}` : "")} />
+                <MetricRow label="Sleep" value={(rec.sleep.hours != null ? hoursToHm(rec.sleep.hours) : "No data today") + (rec.sleep.avgHours ? ` · avg ${hoursToHm(rec.sleep.avgHours)}` : "")} />
               )}
               <MetricRow label="Wellness" value={`${(rec?.wellness ?? d.readiness.components.wellness).toFixed(1)} / 5`} />
               <MetricRow label="Weekly load" value={`${d.weekly_load.tss} / ${d.weekly_load.target} TSS`} />

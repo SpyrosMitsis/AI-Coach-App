@@ -107,6 +107,11 @@ internal val DURATIONS_MAX = listOf(45, 60, 75, 90, 120)
 
 internal val LEVELS = listOf("Beginner", "Intermediate", "Advanced")
 
+internal val SPLIT_STYLES = listOf("Auto", "Full body", "Upper / lower", "Push / pull / legs")
+
+// Canonical sport keys (stored); UI capitalizes them. Match workout `type` values.
+internal val SPORTS = listOf("run", "ride", "swim", "strength")
+
 internal val BAR_WEIGHTS = listOf(20.0, 15.0, 10.0, 7.0)
 
 @HiltViewModel
@@ -182,6 +187,8 @@ class SettingsViewModel @Inject constructor(
     fun setRestNotify(on: Boolean) = viewModelScope.launch { prefs.setRestNotify(on) }
     fun setKeepScreenOn(on: Boolean) = viewModelScope.launch { prefs.setKeepScreenOn(on) }
     fun setThemeMode(m: com.workoutmaker.app.data.ThemeMode) = viewModelScope.launch { prefs.setThemeMode(m) }
+    fun setThemePalette(p: com.workoutmaker.app.data.ThemePalette) = viewModelScope.launch { prefs.setThemePalette(p) }
+    fun setSpendCap(usd: Double) = viewModelScope.launch { prefs.setSpendCap(usd) }
 
     // Q11: build a Strong-compatible CSV of all strength history for the user to save.
     suspend fun buildExportCsv(): String = strength.exportCsv()
@@ -240,6 +247,8 @@ class SettingsViewModel @Inject constructor(
     // Intervals.icu (athlete id + key hint) and per-provider LLM key rows.
     val intervalsSaved = MutableStateFlow<Pair<String, String?>?>(null)
     val llmKeys = MutableStateFlow<Map<String, com.workoutmaker.app.data.LlmKeyRow>>(emptyMap())
+    // Custom (BYO) provider per-1M-token prices, so its cost isn't shown as $0.
+    val customPrice = MutableStateFlow<Pair<Double?, Double?>>(null to null)
 
     fun load() = viewModelScope.launch {
         repo.loadProfile()?.let { profile.value = it }
@@ -253,6 +262,14 @@ class SettingsViewModel @Inject constructor(
         runCatching { repo.thresholdTests() }.onSuccess { thresholdTests.value = it }
         runCatching { repo.intervalsConnection() }.onSuccess { intervalsSaved.value = it }
         runCatching { repo.llmKeyRows() }.onSuccess { rows -> llmKeys.value = rows.associateBy { it.provider } }
+        runCatching { repo.customLlmPricing() }.onSuccess { customPrice.value = it }
+    }
+
+    fun setCustomPricing(inputPer1M: Double?, outputPer1M: Double?) = viewModelScope.launch {
+        runCatching {
+            repo.setCustomLlmPricing(inputPer1M, outputPer1M)
+            customPrice.value = inputPer1M to outputPer1M
+        }
     }
 
     fun addRace(r: com.workoutmaker.app.data.Race, setAsGoal: Boolean) = viewModelScope.launch {

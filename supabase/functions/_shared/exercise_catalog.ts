@@ -139,6 +139,28 @@ export const CATEGORIES = [
 const normName = (s: string) => s.toLowerCase().replace(/[^a-z0-9]/g, "");
 const catalogByNorm = new Map(EXERCISE_CATALOG.map((e) => [normName(e.name), e]));
 
+// Map the athlete's equipment preference (onboarding.equipment) to the catalog
+// CATEGORIES they can actually train with. Returns null for an unknown/blank
+// value → callers then DON'T filter (fail open). Equipment tiers are inclusive.
+const EQUIPMENT_CATEGORIES: Record<string, string[]> = {
+  "bodyweight": ["Bodyweight"],
+  "dumbbells": ["Bodyweight", "Dumbbell", "Kettlebell"],
+  "barbell + rack": ["Bodyweight", "Dumbbell", "Kettlebell", "Barbell"],
+  "full gym": ["Barbell", "Dumbbell", "Machine", "Cable", "Bodyweight", "Kettlebell", "Cardio"],
+};
+
+export function allowedCategories(equipment: string | null | undefined): Set<string> | null {
+  if (!equipment || !equipment.trim()) return null;
+  const cats = EQUIPMENT_CATEGORIES[equipment.trim().toLowerCase()];
+  return cats ? new Set(cats) : null;
+}
+
+// The catalog category for a (possibly reworded) exercise name, or null if the
+// name isn't a known catalog lift — unknown names are not equipment-filtered.
+export function categoryOfExercise(name: string): string | null {
+  return catalogByNorm.get(normName(name))?.category ?? null;
+}
+
 // Fuzzy form: drop equipment/grip qualifier words so an invented name like
 // "Machine Lat Pulldown" / "Cable Lat Pulldown" collapses onto the catalog's
 // "Lat Pulldown". Equipment words DO distinguish real catalog entries (Barbell

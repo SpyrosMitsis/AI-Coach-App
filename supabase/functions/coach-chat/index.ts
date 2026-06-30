@@ -13,10 +13,12 @@
 // finalize → returns { template } (structured JSON) and optionally saves it.
 
 import { handleOptions, json } from "../_shared/cors.ts";
+import { logger } from "../_shared/log.ts";
 import { adminClient, getUserId } from "../_shared/supabase.ts";
 import { llmAccess } from "../_shared/llm_keys.ts";
 import {
   type ChatMessage,
+  customPriceFromProfile,
   estimateCostUsd,
   extractJson,
   llmGenerateWithFallback,
@@ -44,11 +46,13 @@ RULES:
 - Before giving training advice or a plan, READ the relevant data first (get_fitness, get_planned_week, get_recent_activities, get_strength_summary, get_readiness, get_execution_analysis, get_profile). Ground every claim in what you read.
 - NEVER ask the athlete to describe past workouts, sessions, or numbers you can look up yourself. Questions like "how did my last workouts go?" mean: call get_recent_activities and get_execution_analysis (plus get_strength_summary for lifting), then answer from the data.
 - DRIVE the task to completion in this turn. When the athlete's message already asks for or agrees to an action (e.g. "plan my week and put it on my calendar", "make me today's workout", "apply that"), TAKE the action (plan_week, generate_workout, move_workout, set_goal_race) now — don't stop to ask "shall I?" again. Then confirm what you did and why.
-- Only pause to ask first when the action is ambiguous or destructive (overwriting an existing planned week, changing a goal race date) AND the athlete hasn't already signalled they want it. When you do ask, ask once and propose a specific default.
+- NEVER promise an action instead of performing it. There is only THIS turn — the athlete cannot grant you a "next turn", so phrases like "I'll adjust your plan", "let me review your week", "I will proceed with these adjustments", "I'm going to update…", or "give me a moment" are FORBIDDEN unless you call the matching tool in this same turn. If you intend to change the plan, call plan_week / generate_workout / move_workout / set_goal_race NOW, read back the result, and report what you DID in the past tense — never what you will do.
+- A request that signals intent IS consent to act. "I have an exam until June 30, adjust my plan", "lighten this week", "move my long run" all mean: do it now. Don't re-ask. For a destructive overwrite (regenerating an existing/partly-locked week, changing a goal-race date) just give a one-line heads-up of what you replaced as part of the report — don't stop to ask first.
+- Only pause to ask first when the action is genuinely ambiguous AND unsignalled. When you do ask, ask once and propose a specific default.
 - Don't end a turn by handing trivial work back ("want me to schedule it?") when the request already implied yes — just do it and report.
 - Call remember when the athlete shares a durable preference, constraint, or injury.
 - Be efficient: a few targeted reads, then act/answer. You have at most 6 tool calls per turn.
-- Final messages are warm but concise — reference the actual numbers, and end with what you did or one clear next step.`;
+- Final messages are warm but concise, and sound like a human coach — NOT a stats readout. Translate the data into plain language ("you're a bit run-down", "you're fresh"); don't recite raw metrics like "CTL 7, ATL 14, TSB -7, readiness 57/100". Quote a number only when it's directly actionable (a target pace, a working weight). End with what you did or one clear next step.`;
 
 // System prompt suffix when the provider has native tool calling.
 const NATIVE_TOOL_PREAMBLE = `
@@ -87,6 +91,30 @@ function cleanReply(text: string): string {
   return t;
 }
 
+// Tools that mutate the athlete's plan/calendar. The anti-stall guard uses this
+// to tell "the coach actually acted" from "the coach only talked about acting".
+const WRITE_TOOLS = new Set(["plan_week", "generate_workout", "move_workout", "set_goal_race"]);
+
+// A reply "stalls" when it promises a plan change in the future tense or asks the
+// athlete to wait, instead of calling the tool. Two cheap gates keep false
+// positives bounded (worst case: one wasted corrective turn): an explicit stall
+// phrase, OR a future-intent marker sitting next to a plan-action verb.
+const STALL_PHRASES =
+  /\b(let me (?:review|check|look|take a look|pull up|analyz|see)|give me a (?:moment|sec|minute)|one (?:moment|sec)|hold on|bear with me|i'?ll get (?:back|right back)|i'?ll proceed|i will proceed|i'?ll go ahead)\b/i;
+const FUTURE_INTENT = /\b(i'?ll|i will|i'?m going to|i am going to|let me|going to)\b/i;
+const PLAN_VERB =
+  /\b(adjust|updat|chang|modif|revis|re-?plan|plan|schedul|reschedul|mov|shift|push|reduc|lower|cut|increas|build|creat|generat|put together|draft|design|tweak|swap|regenerat|tailor|rework)\w*/i;
+function looksLikeStall(text: string): boolean {
+  if (!text) return false;
+  if (STALL_PHRASES.test(text)) return true;
+  return FUTURE_INTENT.test(text) && PLAN_VERB.test(text);
+}
+
+const STALL_NUDGE =
+  "You described an action but did not perform it — no tool was called this turn. " +
+  "If you intend to change the plan, call the tool NOW (plan_week / generate_workout / move_workout / set_goal_race), read the result, and report what you DID in the past tense. " +
+  "If no change is actually needed, answer plainly without promising any future work.";
+
 // Supabase Edge runtime keeps the worker alive for promises passed to
 // EdgeRuntime.waitUntil even if the client disconnects mid-stream — without it
 // the post-stream thread save can be killed on disconnect.
@@ -108,6 +136,8 @@ const trimThread = (msgs: ChatMessage[]): ChatMessage[] => compressThread(msgs).
 const KNOWLEDGE_HINTS =
   /\b(injur|hurt|pain|sore|tendin|strain|sprain|knee|shoulder|back|hip|ankle|wrist|elbow|equipment|dumbbell|barbell|kettlebell|machine|rack|gym|home|treadmill|don'?t have|no access|only have|prefer|hate|dislike|avoid|can'?t|cannot|unable|allerg|vegan|schedule|mornings?|evenings?|nights?|work|travel|busy|recover)/i;
 
+const log = logger("coach-chat");
+
 Deno.serve(async (req) => {
   const pre = handleOptions(req);
   if (pre) return pre;
@@ -121,11 +151,12 @@ Deno.serve(async (req) => {
     const messages: ChatMessage[] = Array.isArray(body.messages) ? body.messages : [];
     const mode: string = body.mode ?? "chat";
     if (!messages.length) return json({ error: "messages required" }, 400);
+    log.info("request", { mode, turns: messages.length, purpose: body.purpose, finalizeKind: body.finalizeKind });
 
     // --- athlete context so the coach grounds advice in real data ----------
     const { data: profile } = await admin
       .from("user_profiles")
-      .select("display_name, onboarding, active_llm_provider, llm_fallback_chain, coach_knowledge, training_memory, coach_soul, coach_soul_updated_at")
+      .select("display_name, onboarding, active_llm_provider, llm_fallback_chain, coach_knowledge, training_memory, coach_soul, coach_soul_updated_at, llm_custom_input_per_1m, llm_custom_output_per_1m")
       .eq("id", userId)
       .single();
     const onboarding = (profile?.onboarding ?? {}) as Record<string, unknown>;
@@ -205,7 +236,7 @@ Deno.serve(async (req) => {
     });
 
     const context =
-      `ATHLETE CONTEXT (use it, don't restate it verbatim):
+      `ATHLETE CONTEXT (background for YOUR reasoning — interpret it in plain language; never read these numbers back to the athlete as a list):
 - Name: ${profile?.display_name ?? "athlete"}; today is ${today}
 - Goal: ${onboarding.goal ?? "not set"}; experience: ${onboarding.experience ?? "unknown"}
 - Available days: ${(onboarding.days as string[] | undefined)?.join(", ") ?? "unknown"}; session length: ${onboarding.session_duration ?? "?"} min
@@ -240,68 +271,128 @@ Deno.serve(async (req) => {
       const runAgentic = async (onTool?: (name: string) => void) => {
         const toolsUsed: string[] = [];
         let provider: LlmProvider | string = chain[0] ?? "";
-        let replyText = "";
+        // Token usage summed across every LLM call this turn made (native loop +
+        // JSON-protocol steps + the anti-stall retry) → logged for cost tracking.
+        let promptTokens = 0;
+        let completionTokens = 0;
+        let model = "";
         const exec = (name: string, targs: Record<string, unknown>) => {
           toolsUsed.push(name);
           try { onTool?.(name); } catch { /* never block on UI events */ }
           return executeTool(admin, userId, auth, name, targs);
         };
 
-        // Prefer the provider's NATIVE tool-calling API when available — far
-        // more reliable than the JSON action protocol. Gemini (no adapter yet)
-        // and any native-loop error fall through to the JSON protocol below.
+        // Resolve the native-tool provider once — independent of the thread, so
+        // the stall retry reuses it without re-resolving keys.
         let keyedProvider: LlmProvider | null = null;
         let keyedKey: string | null = null;
         for (const pr of chain) {
           const k = await resolveKey(pr);
           if (k) { keyedProvider = pr; keyedKey = k; break; }
         }
-        if (keyedProvider && keyedKey && supportsNativeTools(keyedProvider)) {
-          try {
-            const out = await runNativeToolLoop({
-              provider: keyedProvider,
-              apiKey: keyedKey,
-              model: resolveModel(keyedProvider),
-              systemPrompt: `${COACH_SYSTEM_PROMPT}\n\n${context}${NATIVE_TOOL_PREAMBLE}`,
-              messages: trimThread(messages),
-              tools: nativeToolDefs(),
-              exec,
-              maxSteps: 6,
-            });
-            provider = keyedProvider;
-            replyText = out.text;
-          } catch { /* fall back to the JSON protocol */ }
-        }
 
-        const chatSystem = `${COACH_SYSTEM_PROMPT}\n\n${context}${TOOL_PROTOCOL}`;
-        const work: ChatMessage[] = trimThread(messages);
+        // One full agentic pass over a thread → the model's reply text. Prefers
+        // the provider's NATIVE tool-calling API (far more reliable than the JSON
+        // action protocol); Gemini/custom and any native-loop error fall through
+        // to the JSON protocol. Tool side effects accumulate into toolsUsed.
+        const generateOnce = async (thread: ChatMessage[]): Promise<string> => {
+          let replyText = "";
+          if (keyedProvider && keyedKey && supportsNativeTools(keyedProvider)) {
+            try {
+              const out = await runNativeToolLoop({
+                provider: keyedProvider,
+                apiKey: keyedKey,
+                model: resolveModel(keyedProvider),
+                systemPrompt: `${COACH_SYSTEM_PROMPT}\n\n${context}${NATIVE_TOOL_PREAMBLE}`,
+                messages: trimThread(thread),
+                tools: nativeToolDefs(),
+                exec,
+                maxSteps: 6,
+              });
+              provider = keyedProvider;
+              replyText = out.text;
+              promptTokens += out.promptTokens;
+              completionTokens += out.completionTokens;
+              model = out.model;
+            } catch { /* fall back to the JSON protocol */ }
+          }
 
-        for (let step = 0; !replyText.trim() && step < 6; step++) {
-          const step_out = await llmGenerateWithFallback(
-            chain, { messages: work, systemPrompt: chatSystem, jsonMode: true }, resolveKey, resolveModel, resolveBaseUrl,
-          );
-          provider = step_out.provider;
-          let parsed: Record<string, unknown> | null = null;
-          try { parsed = extractJson<Record<string, unknown>>(step_out.text); } catch { parsed = null; }
+          const chatSystem = `${COACH_SYSTEM_PROMPT}\n\n${context}${TOOL_PROTOCOL}`;
+          const work: ChatMessage[] = trimThread(thread);
+          for (let step = 0; !replyText.trim() && step < 6; step++) {
+            const step_out = await llmGenerateWithFallback(
+              chain, { messages: work, systemPrompt: chatSystem, jsonMode: true }, resolveKey, resolveModel, resolveBaseUrl,
+            );
+            provider = step_out.provider;
+            promptTokens += step_out.promptTokens;
+            completionTokens += step_out.completionTokens;
+            model = step_out.model;
+            let parsed: Record<string, unknown> | null = null;
+            try { parsed = extractJson<Record<string, unknown>>(step_out.text); } catch { parsed = null; }
 
-          // Model replied (or returned non-JSON prose) → that's the answer.
-          if (!parsed || parsed.action === "final" || typeof parsed.message === "string") {
-            replyText = (parsed?.message as string) ?? (parsed?.reply as string) ?? step_out.text;
+            // Model replied (or returned non-JSON prose) → that's the answer.
+            if (!parsed || parsed.action === "final" || typeof parsed.message === "string") {
+              replyText = (parsed?.message as string) ?? (parsed?.reply as string) ?? step_out.text;
+              break;
+            }
+            // Tool call → run it and feed back the observation.
+            if (parsed.action === "tool" && typeof parsed.tool === "string") {
+              const obs = await exec(parsed.tool, (parsed.args ?? {}) as Record<string, unknown>);
+              work.push({ role: "assistant", content: JSON.stringify(parsed) });
+              work.push({ role: "user", content: `OBSERVATION from ${parsed.tool}: ${obs}` });
+              continue;
+            }
+            // Unknown shape — surface whatever text came back.
+            replyText = step_out.text;
             break;
           }
-          // Tool call → run it and feed back the observation.
-          if (parsed.action === "tool" && typeof parsed.tool === "string") {
-            const obs = await exec(parsed.tool, (parsed.args ?? {}) as Record<string, unknown>);
-            work.push({ role: "assistant", content: JSON.stringify(parsed) });
-            work.push({ role: "user", content: `OBSERVATION from ${parsed.tool}: ${obs}` });
-            continue;
-          }
-          // Unknown shape — surface whatever text came back.
-          replyText = step_out.text;
-          break;
+          return replyText;
+        };
+
+        let replyText = await generateOnce(messages);
+
+        // Anti-stall guard: the model sometimes PROMISES a change ("I'll adjust
+        // your plan", "let me review…") and ends the turn without calling any
+        // write tool — exactly the "it talks but never does it" failure. Give it
+        // ONE corrective turn to act now or finalize cleanly. Capped at a single
+        // retry and gated on no write-tool having run, so it can't loop or pile
+        // onto rate limits.
+        if (!toolsUsed.some((t) => WRITE_TOOLS.has(t)) && looksLikeStall(replyText)) {
+          const corrected: ChatMessage[] = [
+            ...messages,
+            { role: "assistant", content: replyText },
+            { role: "user", content: STALL_NUDGE },
+          ];
+          const retry = await generateOnce(corrected);
+          if (retry.trim()) replyText = retry;
         }
+
         replyText = cleanReply(replyText);
         if (!replyText.trim()) replyText = "I gathered your data but need a bit more to act — what would you like me to do?";
+
+        // Log this turn's LLM spend (feature=chat) — the agentic loop's calls were
+        // previously invisible in the diagnostics. Background; never blocks the reply.
+        if (promptTokens + completionTokens > 0) {
+          const cost = estimateCostUsd(
+            provider as LlmProvider, promptTokens, completionTokens,
+            customPriceFromProfile(provider, profile),
+          );
+          waitUntil((async () => {
+            try {
+              await admin.from("generation_logs").insert({
+                user_id: userId,
+                feature: "chat",
+                provider,
+                model,
+                prompt_tokens: promptTokens,
+                completion_tokens: completionTokens,
+                estimated_cost_usd: cost,
+                tools_used: toolsUsed.length ? toolsUsed : null,
+                parsed_ok: true,
+              });
+            } catch { /* best effort */ }
+          })());
+        }
         return { replyText, toolsUsed, provider };
       };
 
@@ -377,7 +468,21 @@ Deno.serve(async (req) => {
       resolveModel,
       resolveBaseUrl,
     );
-    const cost = estimateCostUsd(outcome.provider, outcome.promptTokens, outcome.completionTokens);
+    const cost = estimateCostUsd(outcome.provider, outcome.promptTokens, outcome.completionTokens, customPriceFromProfile(outcome.provider, profile));
+    waitUntil((async () => {
+      try {
+        await admin.from("generation_logs").insert({
+          user_id: userId,
+          feature: mode === "finalize" ? "finalize" : "chat",
+          provider: outcome.provider,
+          model: outcome.model,
+          prompt_tokens: outcome.promptTokens,
+          completion_tokens: outcome.completionTokens,
+          estimated_cost_usd: cost,
+          parsed_ok: true,
+        });
+      } catch { /* best effort */ }
+    })());
 
     // --- persist the conversation thread -----------------------------------
     const fullThread = [...messages, { role: "assistant", content: outcome.text }];
@@ -437,6 +542,7 @@ Deno.serve(async (req) => {
       estimated_cost_usd: cost,
     });
   } catch (e) {
+    log.error("failed", { err: e instanceof Error ? e.message : String(e) });
     return json({ error: e instanceof Error ? e.message : String(e) }, 500);
   }
 });

@@ -3,6 +3,8 @@ package com.workoutmaker.app.ui.screens
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.foundation.background
+import androidx.compose.foundation.text.BasicTextField
+import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.clickable
@@ -560,14 +562,22 @@ internal fun ExerciseCard(vm: StrengthViewModel, ux: UiExercise) {
             Text("🎯 Target ${trimKg(s.weightKg)}kg × ${s.reps} · ${s.note}",
                 style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.primary)
         }
-        // column headers — cardio logs minutes only (no load, no rep count)
-        Row(Modifier.fillMaxWidth().padding(top = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+        // Column headers share the SetRow grid exactly so labels sit over their
+        // fields. Inputs are flexible (weight); cardio's single MIN fills the area.
+        Row(
+            Modifier.fillMaxWidth().padding(top = 4.dp),
+            horizontalArrangement = Arrangement.spacedBy(6.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            HCell("SET", Modifier.width(30.dp)); HCell("PREV", Modifier.width(56.dp))
             if (ux.isCardio) {
-                HCell("SET", 34.dp); HCell("PREV", 72.dp); HCell("MIN", 76.dp)
+                HCell("MIN", Modifier.weight(1f))
             } else {
-                HCell("SET", 34.dp); HCell("PREV", 72.dp); HCell("KG", 76.dp); HCell("REPS", 64.dp)
+                HCell("KG", Modifier.weight(1f)); HCell("REPS", Modifier.weight(1f))
             }
-            Spacer(Modifier.weight(1f)); HCell("✓", 40.dp)
+            // Reserve the note + check columns (no labels) so the weighted headers
+            // line up with the fields above the icons.
+            Spacer(Modifier.width(36.dp)); Spacer(Modifier.width(40.dp))
         }
         // Working-set numbering: warm-ups show "W" and don't consume a number.
         var working = 0
@@ -586,7 +596,9 @@ internal fun ExerciseCard(vm: StrengthViewModel, ux: UiExercise) {
                 )
             }
         }
-        TextButton(onClick = { vm.addSet(ux) }) { Icon(Icons.Filled.Add, null); Text(" Add set") }
+        TextButton(onClick = { vm.addSet(ux) }, modifier = Modifier.fillMaxWidth()) {
+            Icon(Icons.Filled.Add, null); Text(" Add set")
+        }
     }
 }
 
@@ -659,9 +671,22 @@ internal fun ExerciseInsightSheet(vm: StrengthViewModel, exercise: String, onDis
 }
 
 @Composable
-internal fun HCell(text: String, w: androidx.compose.ui.unit.Dp) {
-    Text(text, Modifier.width(w), style = MaterialTheme.typography.labelSmall,
+internal fun HCell(text: String, modifier: Modifier) {
+    Text(text, modifier, style = MaterialTheme.typography.labelSmall,
         color = MaterialTheme.colorScheme.onSurfaceVariant, textAlign = TextAlign.Center)
+}
+
+// Greedy per-side plate breakdown for a loaded barbell. Empty when the weight
+// doesn't clear the bar (dumbbell / machine / bodyweight work needs no plates).
+private val PLATE_SIZES = listOf(25.0, 20.0, 15.0, 10.0, 5.0, 2.5, 1.25)
+internal fun platesPerSide(totalKg: Double, barKg: Double = 20.0): List<Double> {
+    var perSide = (totalKg - barKg) / 2.0
+    if (perSide <= 0.0) return emptyList()
+    val out = mutableListOf<Double>()
+    for (p in PLATE_SIZES) {
+        while (perSide >= p - 1e-6) { out.add(p); perSide -= p }
+    }
+    return out
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -711,10 +736,14 @@ internal fun SetRow(
             }
         },
     ) {
-    Column(Modifier.fillMaxWidth().background(rowBg, RoundedCornerShape(8.dp)).padding(vertical = 2.dp)) {
-        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+    Column(Modifier.fillMaxWidth().background(rowBg, RoundedCornerShape(8.dp)).padding(vertical = 6.dp)) {
+        Row(
+            Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(6.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
             // working-set number / warmup toggle
-            Box(Modifier.width(34.dp), contentAlignment = Alignment.Center) {
+            Box(Modifier.width(30.dp), contentAlignment = Alignment.Center) {
                 Text(
                     label,
                     Modifier.clickable { s.warmup = !s.warmup },
@@ -725,7 +754,7 @@ internal fun SetRow(
             // Tap a previous result to copy it straight into this set's fields.
             Text(
                 prev?.let { if (cardio) "${it.reps} min" else "${it.weightKg.toInt()}×${it.reps}" } ?: "—",
-                Modifier.width(64.dp)
+                Modifier.width(56.dp)
                     .then(
                         if (prev != null) Modifier.clickable {
                             if (!cardio) s.weight = trimKg(prev.weightKg)
@@ -738,14 +767,13 @@ internal fun SetRow(
                 textAlign = TextAlign.Center,
             )
             if (cardio) {
-                // Minutes live in the reps slot; no load to enter.
-                CompactField(s.reps, { s.reps = it; onEdit() }, 72.dp, decimal = false, placeholder = s.suggestedReps)
+                // Minutes live in the reps slot; no load to enter. Fills the row.
+                CompactField(s.reps, { s.reps = it; onEdit() }, Modifier.weight(1f), decimal = false, placeholder = s.suggestedReps)
             } else {
-                CompactField(s.weight, { s.weight = it; onEdit() }, 72.dp, decimal = true, placeholder = s.suggestedWeight)
-                CompactField(s.reps, { s.reps = it; onEdit() }, 60.dp, decimal = false, placeholder = s.suggestedReps)
+                CompactField(s.weight, { s.weight = it; onEdit() }, Modifier.weight(1f), decimal = true, placeholder = s.suggestedWeight)
+                CompactField(s.reps, { s.reps = it; onEdit() }, Modifier.weight(1f), decimal = false, placeholder = s.suggestedReps)
             }
-            Spacer(Modifier.weight(1f))
-            IconButton(onClick = { showNote = !showNote }, modifier = Modifier.size(34.dp)) {
+            IconButton(onClick = { showNote = !showNote }, modifier = Modifier.size(36.dp)) {
                 Icon(Icons.AutoMirrored.Filled.NoteAdd, "Note",
                     tint = if (s.note.isNotBlank()) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
                     modifier = Modifier.size(18.dp))
@@ -756,50 +784,104 @@ internal fun SetRow(
                     onToggle()
                     if (becomingDone) haptics.performHapticFeedback(HapticFeedbackType.LongPress)
                 },
-                modifier = Modifier.size(38.dp),
+                modifier = Modifier.size(40.dp),
             ) {
                 Icon(Icons.Filled.Check, "Done", tint = if (s.done) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant)
             }
         }
+        // Loaded-barbell plate math — only when the entered weight clears the bar.
+        if (!cardio) {
+            val plates = s.weight.toDoubleOrNull()?.let { platesPerSide(it) }
+            if (!plates.isNullOrEmpty()) {
+                Text(
+                    "per side: ${plates.joinToString(" + ") { trimKg(it) }}",
+                    Modifier.padding(start = 36.dp, top = 2.dp),
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        }
         if (showNote) {
-            OutlinedTextField(
-                value = s.note, onValueChange = { s.note = it; onEdit() },
-                modifier = Modifier.fillMaxWidth().padding(start = 34.dp, end = 8.dp, bottom = 4.dp),
-                placeholder = { Text("Note (e.g. felt easy, left knee)") },
-                singleLine = true, textStyle = MaterialTheme.typography.bodySmall,
-            )
+            Spacer(Modifier.height(8.dp))
+            NoteField(s.note, { s.note = it; onEdit() })
         }
     }
     }
 }
 
+// Borderless, filled note field matching the cell style; full-width with a touch
+// of inset so it sits clearly below the set's row rather than cramping it.
+@Composable
+private fun NoteField(value: String, onChange: (String) -> Unit) {
+    Box(
+        Modifier.fillMaxWidth().padding(start = 30.dp, end = 4.dp)
+            .clip(RoundedCornerShape(10.dp))
+            .background(MaterialTheme.colorScheme.surfaceContainerLowest)
+            .padding(horizontal = 12.dp, vertical = 10.dp),
+    ) {
+        BasicTextField(
+            value = value, onValueChange = onChange,
+            modifier = Modifier.fillMaxWidth(),
+            singleLine = true,
+            textStyle = MaterialTheme.typography.bodySmall.copy(color = MaterialTheme.colorScheme.onSurface),
+            cursorBrush = SolidColor(MaterialTheme.colorScheme.primary),
+            decorationBox = { inner ->
+                Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.CenterStart) {
+                    if (value.isEmpty()) {
+                        Text("Note (e.g. felt easy, left knee)",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f))
+                    }
+                    inner()
+                }
+            },
+        )
+    }
+}
+
+// Borderless, filled input cell: a recessed (darker than the card) rounded box
+// with centered text. No outline. The greyed placeholder is the AI/last-time
+// suggestion and disappears the moment the user types.
 @Composable
 internal fun CompactField(
     value: String,
     onChange: (String) -> Unit,
-    w: androidx.compose.ui.unit.Dp,
+    modifier: Modifier,
     decimal: Boolean,
     placeholder: String = "",
 ) {
-    OutlinedTextField(
-        value = value,
-        onValueChange = onChange,
-        modifier = Modifier.width(w),
-        singleLine = true,
-        textStyle = MaterialTheme.typography.bodyMedium.copy(textAlign = TextAlign.Center),
-        // Greyed AI/last-time suggestion; vanishes the moment the user types.
-        placeholder = if (placeholder.isBlank()) null else {
-            {
-                Text(
-                    placeholder,
-                    style = MaterialTheme.typography.bodyMedium.copy(textAlign = TextAlign.Center),
-                    color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.55f),
-                    modifier = Modifier.fillMaxWidth(),
-                )
-            }
-        },
-        keyboardOptions = KeyboardOptions(keyboardType = if (decimal) KeyboardType.Decimal else KeyboardType.Number),
-    )
+    val centered = MaterialTheme.typography.bodyMedium.copy(textAlign = TextAlign.Center)
+    Box(
+        modifier
+            .height(44.dp)
+            .clip(RoundedCornerShape(10.dp))
+            .background(MaterialTheme.colorScheme.surfaceContainerLowest)
+            .padding(horizontal = 6.dp),
+        contentAlignment = Alignment.Center,
+    ) {
+        BasicTextField(
+            value = value,
+            onValueChange = onChange,
+            modifier = Modifier.fillMaxWidth(),
+            singleLine = true,
+            textStyle = centered.copy(color = MaterialTheme.colorScheme.onSurface),
+            cursorBrush = SolidColor(MaterialTheme.colorScheme.primary),
+            keyboardOptions = KeyboardOptions(keyboardType = if (decimal) KeyboardType.Decimal else KeyboardType.Number),
+            decorationBox = { inner ->
+                Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
+                    if (value.isEmpty() && placeholder.isNotBlank()) {
+                        Text(
+                            placeholder,
+                            style = centered,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.55f),
+                            modifier = Modifier.fillMaxWidth(),
+                        )
+                    }
+                    inner()
+                }
+            },
+        )
+    }
 }
 
 @Composable

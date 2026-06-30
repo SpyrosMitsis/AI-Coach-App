@@ -17,6 +17,14 @@ import androidx.compose.ui.unit.sp
 val ChartGridColor = Color(0x33888B86)
 val ChartLabelColor = Color(0xFF8E938E)
 
+// Vibrant, FIXED chart-series colors — these are data semantics, not brand, so
+// they stay constant across every theme (like ChartGridColor). HR is ALWAYS red
+// by requirement; the rest are punchy hues chosen to read on both dark + light.
+val ChartHr = Color(0xFFFF3B30)      // heart rate — always red
+val ChartPace = Color(0xFF30D158)    // pace — vivid green
+val ChartCadence = Color(0xFFBF5AF2) // cadence — vivid violet
+val ChartPower = Color(0xFFFF9F0A)   // power — vivid amber
+
 // Shared chart geometry so every plot leaves room for its axis text in the
 // margins (gutters) instead of drawing labels over the line.
 object ChartDims {

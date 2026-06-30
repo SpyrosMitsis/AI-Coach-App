@@ -92,6 +92,23 @@ export const TOOL_CATALOG: ToolDef[] = [
     description: "Move a planned workout to another date (the watch event moves with it). Identify it by workout_id from get_planned_week, or just by its current date.",
   },
   {
+    name: "set_rest_day", kind: "act", args: "{ date: 'YYYY-MM-DD' }",
+    schema: {
+      type: "object",
+      properties: { date: { type: "string", description: "Day to clear to rest, YYYY-MM-DD" } },
+      required: ["date"],
+    },
+    description: "Turn a day into a rest day — removes any planned session on that date (the watch event is removed too). Use when the athlete needs a day off.",
+  },
+  {
+    name: "make_easier", kind: "act", args: "{ date?: 'YYYY-MM-DD' }",
+    schema: {
+      type: "object",
+      properties: { date: { type: "string", description: "Day to ease off; defaults to today" } },
+    },
+    description: "Regenerate a day's workout noticeably easier — lower intensity and volume, aerobic/recovery focus. Use when the athlete feels rough or wants to back off without skipping entirely.",
+  },
+  {
     name: "set_goal_race", kind: "act", args: "{ name: string, date: 'YYYY-MM-DD', target_pace?: string }",
     schema: {
       type: "object",
@@ -271,6 +288,29 @@ export async function executeTool(
         if (!workoutId) return "error: no workout found — pass workout_id (see get_planned_week) or date";
         const r = await callFunction(auth, "move-workout", { workout_id: workoutId, new_date: newDate }) as Record<string, unknown>;
         return JSON.stringify({ ok: !r.error, old_date: r.old_date ?? null, new_date: r.new_date ?? newDate, event_moved: r.event_moved ?? null, error: r.error ?? null });
+      }
+      case "set_rest_day": {
+        const d = String(args.date ?? "");
+        if (!/^\d{4}-\d{2}-\d{2}$/.test(d)) return "error: date (YYYY-MM-DD) is required";
+        // Clear every non-rest planned session that day; delete-workout removes the
+        // watch event too (same path the app's delete uses).
+        const { data: rows } = await admin.from("planned_workouts")
+          .select("id, type").eq("user_id", userId).eq("date", d).neq("type", "rest");
+        let cleared = 0;
+        for (const row of rows ?? []) {
+          await callFunction(auth, "delete-workout", { workout_id: row.id });
+          cleared++;
+        }
+        return JSON.stringify({ ok: true, date: d, cleared });
+      }
+      case "make_easier": {
+        const r = await callFunction(auth, "generate-workout", {
+          date: args.date, type: "auto",
+          request: "Make this day noticeably easier — lower the intensity and volume, keep it aerobic/recovery.",
+          push: true,
+        }) as Record<string, unknown>;
+        const w = r.workout as { title?: string } | undefined;
+        return JSON.stringify({ ok: !!r.workout_id, title: w?.title ?? null, date: args.date ?? "today", error: r.error ?? null });
       }
       case "plan_week": {
         const r = await callFunction(auth, "plan-week", { start_date: args.start_date }) as Record<string, unknown>;

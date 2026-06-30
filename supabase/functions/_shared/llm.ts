@@ -11,6 +11,9 @@
 // ============================================================================
 
 import type { LlmProvider, LlmResult } from "./types.ts";
+import { logger } from "./log.ts";
+
+const log = logger("llm");
 
 export interface ProviderSpec {
   label: string;
@@ -57,6 +60,17 @@ export const PROVIDERS: Record<LlmProvider, ProviderSpec> = {
     outputPer1M: 0.79,
     getFreeKeyUrl: "https://console.groq.com/keys",
   },
+  openrouter: {
+    // OpenAI-compatible aggregator at a fixed endpoint. Default model is the
+    // auto-router; the user can override with any OpenRouter model id. Pricing
+    // varies per underlying model, so cost shows ~$0 unless a price override is
+    // set (customPriceFromProfile also covers openrouter).
+    label: "OpenRouter",
+    model: "openrouter/auto",
+    inputPer1M: 0,
+    outputPer1M: 0,
+    getFreeKeyUrl: "https://openrouter.ai/keys",
+  },
   custom: {
     // User-supplied OpenAI-compatible endpoint. No fixed model (the user types
     // it) and no pricing (self-hosted/unknown → cost shows ~$0).
@@ -68,16 +82,44 @@ export const PROVIDERS: Record<LlmProvider, ProviderSpec> = {
   },
 };
 
+// Per-1M-token prices to use instead of the provider's defaults — set for the
+// custom (BYO) provider, which has no fixed pricing.
+export interface PriceOverride {
+  inputPer1M: number;
+  outputPer1M: number;
+}
+
 export function estimateCostUsd(
   provider: LlmProvider,
   promptTokens: number,
   completionTokens: number,
+  override?: PriceOverride,
 ): number {
   const p = PROVIDERS[provider];
+  const inputPer1M = override?.inputPer1M ?? p.inputPer1M;
+  const outputPer1M = override?.outputPer1M ?? p.outputPer1M;
   return (
-    (promptTokens / 1_000_000) * p.inputPer1M +
-    (completionTokens / 1_000_000) * p.outputPer1M
+    (promptTokens / 1_000_000) * inputPer1M +
+    (completionTokens / 1_000_000) * outputPer1M
   );
+}
+
+// Build a price override from the user's profile for the providers with no
+// fixed pricing (custom BYO endpoint + OpenRouter, whose cost depends on the
+// chosen model), so their cost isn't hardcoded $0. Returns undefined for the
+// built-in providers (known pricing) or when the user hasn't entered prices.
+export function customPriceFromProfile(
+  provider: LlmProvider | string,
+  profile:
+    | { llm_custom_input_per_1m?: number | null; llm_custom_output_per_1m?: number | null }
+    | null
+    | undefined,
+): PriceOverride | undefined {
+  if ((provider !== "custom" && provider !== "openrouter") || !profile) return undefined;
+  const inp = profile.llm_custom_input_per_1m;
+  const out = profile.llm_custom_output_per_1m;
+  if (typeof inp !== "number" && typeof out !== "number") return undefined;
+  return { inputPer1M: inp ?? 0, outputPer1M: out ?? 0 };
 }
 
 // Rough token estimate when a provider doesn't return usage (~4 chars/token).
@@ -136,6 +178,14 @@ export function openAiModernParams(provider: LlmProvider, model: string): boolea
   return provider === "openai" && /^(gpt-5|o\d|chatgpt)/i.test(model);
 }
 
+// Optional ranking/attribution headers OpenRouter uses for its app leaderboard.
+// Purely informational — calls work without them; ignored by every other base.
+function openRouterHeaders(provider: LlmProvider): Record<string, string> {
+  return provider === "openrouter"
+    ? { "HTTP-Referer": "https://github.com/workout-maker", "X-Title": "Workout Maker" }
+    : {};
+}
+
 async function openAiCompatible(
   provider: LlmProvider,
   baseUrl: string,
@@ -164,6 +214,7 @@ async function openAiCompatible(
     headers: {
       "Content-Type": "application/json",
       Authorization: `Bearer ${args.apiKey}`,
+      ...openRouterHeaders(provider),
     },
     body: JSON.stringify(body),
   });
@@ -294,10 +345,11 @@ export async function llmStream(
   const model = args.model ?? PROVIDERS[provider].model;
   let full = "";
 
-  if (provider === "openai" || provider === "deepseek" || provider === "groq" || provider === "custom") {
+  if (provider === "openai" || provider === "deepseek" || provider === "groq" || provider === "openrouter" || provider === "custom") {
     if (provider === "custom" && !args.baseUrl) throw new Error("custom provider: base URL not configured");
     const base = provider === "openai" ? "https://api.openai.com/v1"
       : provider === "deepseek" ? "https://api.deepseek.com/v1"
+      : provider === "openrouter" ? "https://openrouter.ai/api/v1"
       : provider === "custom" ? args.baseUrl!
       : "https://api.groq.com/openai/v1";
     const body: Record<string, unknown> = {
@@ -313,7 +365,7 @@ export async function llmStream(
     }
     const res = await fetch(`${base}/chat/completions`, {
       method: "POST",
-      headers: { "Content-Type": "application/json", Authorization: `Bearer ${args.apiKey}` },
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${args.apiKey}`, ...openRouterHeaders(provider) },
       body: JSON.stringify(body),
     });
     if (!res.ok) throw new Error(`${provider} HTTP ${res.status}: ${await res.text()}`);
@@ -377,24 +429,36 @@ export async function llmGenerate(
   provider: LlmProvider,
   args: GenArgs,
 ): Promise<LlmResult> {
-  switch (provider) {
-    case "openai":
-      return openAiCompatible("openai", "https://api.openai.com/v1", args);
-    case "deepseek":
-      return openAiCompatible("deepseek", "https://api.deepseek.com/v1", args);
-    case "groq":
-      return openAiCompatible("groq", "https://api.groq.com/openai/v1", args);
-    case "anthropic":
-      return anthropic(args);
-    case "gemini":
-      return gemini(args);
-    case "custom":
-      if (!args.baseUrl) throw new Error("custom provider: base URL not configured");
-      if (!args.model) throw new Error("custom provider: model id not configured");
-      return openAiCompatible("custom", args.baseUrl, args);
-    default:
-      throw new Error(`unknown provider: ${provider}`);
-  }
+  const dispatch = (): Promise<LlmResult> => {
+    switch (provider) {
+      case "openai":
+        return openAiCompatible("openai", "https://api.openai.com/v1", args);
+      case "deepseek":
+        return openAiCompatible("deepseek", "https://api.deepseek.com/v1", args);
+      case "groq":
+        return openAiCompatible("groq", "https://api.groq.com/openai/v1", args);
+      case "openrouter":
+        return openAiCompatible("openrouter", "https://openrouter.ai/api/v1", args);
+      case "anthropic":
+        return anthropic(args);
+      case "gemini":
+        return gemini(args);
+      case "custom":
+        if (!args.baseUrl) throw new Error("custom provider: base URL not configured");
+        if (!args.model) throw new Error("custom provider: model id not configured");
+        return openAiCompatible("custom", args.baseUrl, args);
+      default:
+        throw new Error(`unknown provider: ${provider}`);
+    }
+  };
+  // One structured line per call: provider, model, latency, token usage (or the
+  // error body on failure) — this is the LLM path's only observability surface.
+  return log.time("generate", dispatch(), (r) => ({
+    provider,
+    model: r.model || args.model,
+    promptTokens: r.promptTokens,
+    completionTokens: r.completionTokens,
+  }));
 }
 
 export interface FallbackKeyResolver {

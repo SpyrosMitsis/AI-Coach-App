@@ -148,10 +148,10 @@ export function recoveryBlock(
 ): string {
   if (!recovery) return "";
   const guide = recovery.band === "red"
-    ? "RED: the athlete is under-recovered — cap intensity, prefer easy aerobic/technique or an active-recovery session, and trim volume."
+    ? `RED (${recovery.score}/100): the athlete is under-recovered — cap at RPE 4, easy aerobic/technique or active-recovery only, and trim volume.`
     : recovery.band === "amber"
-    ? "AMBER: recovery is moderate — keep quality modest; avoid stacking a second hard day."
-    : "GREEN: well recovered — a quality/intensity session is appropriate if the plan calls for it.";
+    ? `AMBER (${recovery.score}/100): recovery is only moderate — cap today at RPE 6, keep it aerobic/technique (NO intervals, threshold or PR attempts), don't stack a second hard day, and trim a quality session's planned TSS by ~20-30%.`
+    : `GREEN (${recovery.score}/100): well recovered — a quality/intensity session is appropriate if the plan calls for it.`;
   return `\n\nRECOVERY TODAY: ${recovery.score}/100 (${recovery.band}). ${recovery.summary}\n${guide}`;
 }
 

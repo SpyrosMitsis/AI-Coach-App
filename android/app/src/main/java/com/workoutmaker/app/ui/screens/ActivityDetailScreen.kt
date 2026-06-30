@@ -28,6 +28,7 @@ import androidx.compose.material.icons.filled.ChevronLeft
 import androidx.compose.material.icons.filled.ChevronRight
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.EditCalendar
+import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material.icons.filled.FitnessCenter
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.LockOpen
@@ -74,8 +75,12 @@ import com.workoutmaker.app.ui.components.StatTileGrid
 import com.workoutmaker.app.ui.components.ScreenScaffold
 import com.workoutmaker.app.ui.components.SectionCard
 import com.workoutmaker.app.ui.components.SectionLabel
+import com.workoutmaker.app.ui.components.ChartCadence
+import com.workoutmaker.app.ui.components.ChartHr
+import com.workoutmaker.app.ui.components.ChartPace
+import com.workoutmaker.app.ui.components.ChartPower
 import com.workoutmaker.app.ui.theme.BandRed
-import com.workoutmaker.app.ui.theme.Moss
+import com.workoutmaker.app.ui.theme.mossAccent
 import com.workoutmaker.app.ui.theme.Sage
 import com.workoutmaker.app.ui.theme.Sand
 import dagger.hilt.android.lifecycle.HiltViewModel
@@ -160,7 +165,7 @@ fun ActivityDetailScreen(activity: CompletedActivity, planned: PlannedWorkout?, 
         // 7. Planned vs actual on this date.
         planned?.let { p ->
             SectionCard {
-                SectionLabel("On the plan that day", color = Moss)
+                SectionLabel("On the plan that day", color = mossAccent())
                 Text(p.workout_json.title, style = MaterialTheme.typography.titleSmall)
                 Text(
                     if (looksLike(p.type, activity.type)) "✓ You did your planned ${p.type}."
@@ -332,11 +337,11 @@ private fun ActivityChartsSection(
                 "Pace · /km" + (a.target?.takeIf { it.pace_lo != null }?.let { t ->
                     " · target ${t.zones} ${fmtPaceSec(t.pace_lo!!.toInt())}–${fmtPaceSec(t.pace_hi!!.toInt())}"
                 } ?: ""),
-                color = MaterialTheme.colorScheme.primary,
+                color = ChartPace,
             )
             PaceChart(series, a.target)
             Row(horizontalArrangement = Arrangement.spacedBy(14.dp)) {
-                LegendDotSmall("Actual pace", MaterialTheme.colorScheme.primary)
+                LegendDotSmall("Actual pace", ChartPace)
                 if (a.target?.pace_lo != null) LegendDotSmall("Target band", MaterialTheme.colorScheme.secondary)
             }
         }
@@ -345,16 +350,16 @@ private fun ActivityChartsSection(
         SectionCard {
             SectionLabel(
                 "Heart rate · bpm" + (a.target?.takeIf { it.hr_lo != null }?.let { " · target ${it.hr_lo}–${it.hr_hi}" } ?: ""),
-                color = MaterialTheme.colorScheme.secondary,
+                color = ChartHr,
             )
             HrChart(series, a.target)
         }
     }
     if (series.cadence.any { it != null }) {
         SectionCard {
-            SectionLabel("Cadence · spm", color = Moss)
+            SectionLabel("Cadence · spm", color = ChartCadence)
             com.workoutmaker.app.ui.components.LineChart(
-                t = series.t, values = series.cadence, color = Moss,
+                t = series.t, values = series.cadence, color = ChartCadence,
                 formatY = { "${it.toInt()}" }, xLabels = timeAxis(series.t),
                 formatX = { fmtClock(it.toInt()) }, height = 120.dp,
             )
@@ -362,9 +367,9 @@ private fun ActivityChartsSection(
     }
     if (series.power.any { it != null }) {
         SectionCard {
-            SectionLabel("Power · W", color = com.workoutmaker.app.ui.theme.BandAmber)
+            SectionLabel("Power · W", color = ChartPower)
             com.workoutmaker.app.ui.components.LineChart(
-                t = series.t, values = series.power, color = com.workoutmaker.app.ui.theme.BandAmber,
+                t = series.t, values = series.power, color = ChartPower,
                 formatY = { "${it.toInt()}" }, xLabels = timeAxis(series.t),
                 formatX = { fmtClock(it.toInt()) }, height = 120.dp,
             )
@@ -390,7 +395,7 @@ private fun SplitsCard(
     SectionCard {
         SectionLabel(
             "Splits" + if (banded > 0) " · $onTarget/$banded on target" else "",
-            color = Moss,
+            color = mossAccent(),
         )
         a.splits.forEach { s ->
             // Tint the pace by whether the km landed in the planned target band.
@@ -406,8 +411,14 @@ private fun SplitsCard(
                 Text("${fmtPaceSec(s.sec)} /km", style = MaterialTheme.typography.bodyMedium, color = paceColor)
                 s.in_band?.let { Text(if (it) "  ✓" else "  ✗", style = MaterialTheme.typography.bodySmall, color = paceColor) }
                 Spacer(Modifier.weight(1f))
-                s.avg_hr?.let { Text("♥ $it", style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant) }
+                s.avg_hr?.let {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Icon(Icons.Filled.Favorite, contentDescription = "Heart rate",
+                            modifier = Modifier.size(13.dp), tint = ChartHr)
+                        Text(" $it", style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
+                }
             }
         }
     }
@@ -465,7 +476,7 @@ private fun HrZoneCard(zoneTimes: List<Int>) {
     val zones = zoneTimes.dropLastWhile { it == 0 }
     if (zones.isEmpty()) return
     val total = zones.sum().coerceAtLeast(1)
-    val zoneColors = listOf(Moss, MaterialTheme.colorScheme.primary, MaterialTheme.colorScheme.secondary, com.workoutmaker.app.ui.theme.BandAmber, MaterialTheme.colorScheme.error)
+    val zoneColors = listOf(mossAccent(), MaterialTheme.colorScheme.primary, MaterialTheme.colorScheme.secondary, com.workoutmaker.app.ui.theme.amberAccent(), MaterialTheme.colorScheme.error)
     SectionCard {
         SectionLabel("Time in HR zones", color = MaterialTheme.colorScheme.secondary)
         zones.forEachIndexed { i, secs ->
@@ -514,7 +525,7 @@ private fun PaceChart(
     com.workoutmaker.app.ui.components.LineChart(
         t = series.t,
         values = series.pace,
-        color = MaterialTheme.colorScheme.primary,
+        color = ChartPace,
         formatY = { com.workoutmaker.app.data.Zones.formatPace(it.toInt().coerceAtLeast(0)) },
         xLabels = timeAxis(series.t),
         formatX = { fmtClock(it.toInt()) },
@@ -537,7 +548,8 @@ internal fun HrChart(
     com.workoutmaker.app.ui.components.LineChart(
         t = series.t,
         values = series.hr,
-        color = MaterialTheme.colorScheme.secondary,
+        // Hard requirement: the HR line is ALWAYS red, regardless of theme.
+        color = ChartHr,
         formatY = { "${it.toInt()}" },
         xLabels = timeAxis(series.t),
         formatX = { fmtClock(it.toInt()) },

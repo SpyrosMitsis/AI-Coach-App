@@ -380,16 +380,24 @@ internal fun StrengthAnalysisSection(
             }
         }
 
-        if (!a.feedback.isNullOrBlank()) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Icon(
-                    Icons.Filled.AutoAwesome, null,
-                    Modifier.size(16.dp), tint = MaterialTheme.colorScheme.primary,
-                )
-                Spacer(Modifier.width(6.dp))
-                SectionLabel("Coach feedback" + (a.feedback_provider?.let { " · $it" } ?: ""), color = MaterialTheme.colorScheme.primary)
+    }
+
+    // Coach's narrative takeaway — its own card so the strength detail reads like
+    // the run/ride one: the score on top, the planned-vs-lifted data, then the AI
+    // feedback in a separate block below.
+    a?.let { an ->
+        if (!an.feedback.isNullOrBlank()) {
+            SectionCard {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(
+                        Icons.Filled.AutoAwesome, null,
+                        Modifier.size(16.dp), tint = MaterialTheme.colorScheme.primary,
+                    )
+                    Spacer(Modifier.width(6.dp))
+                    SectionLabel("Coach feedback" + (an.feedback_provider?.let { " · $it" } ?: ""), color = MaterialTheme.colorScheme.primary)
+                }
+                Text(an.feedback!!, style = MaterialTheme.typography.bodyMedium)
             }
-            Text(a.feedback!!, style = MaterialTheme.typography.bodyMedium)
         }
     }
 
@@ -397,7 +405,7 @@ internal fun StrengthAnalysisSection(
     a?.series?.let { s ->
         if (s.hr.any { it != null }) {
             SectionCard {
-                SectionLabel("Heart rate", color = MaterialTheme.colorScheme.secondary)
+                SectionLabel("Heart rate", color = com.workoutmaker.app.ui.components.ChartHr)
                 HrChart(s, null)
             }
         }

@@ -14,7 +14,7 @@
 import type { Workout } from "./types.ts";
 
 export const WORKOUT_JSON_SCHEMA = `{
-  "type": "run | ride | strength | rest",
+  "type": "run | ride | swim | strength | rest",
   "title": "string",
   "duration_minutes": number,
   "tss_estimate": number,
@@ -67,6 +67,11 @@ Strength / resistance:
   0-1 RIR only on the last set of key lifts when fresh.
 - Weekly volume ~10-20 hard sets per muscle group; more for advanced, less when
   fatigued or sore. Order compound lifts before isolation.
+- Split styles (honor the athlete's choice when one is given): full-body = train
+  most major groups each session; upper/lower = alternate an upper-body day and a
+  lower-body day; push/pull/legs = rotate push (chest/shoulders/triceps), pull
+  (back/biceps), legs (quads/hams/glutes/calves). Sequence days so each muscle gets
+  ≥48h before its next hard session; pick today's focus to continue the rotation.
 - Recovery: 48h before training the same muscle group hard again. Program a
   deload (~ -40% volume) roughly every 4-6 weeks or when fatigue accumulates.
 
@@ -95,8 +100,19 @@ TSB from absent data is NOT "fatigued"; treat it as neutral and trust experience
 - TSB -10..-20: fatigued — favor easy/aerobic or technique work.
 - TSB < -20, or low energy/high soreness/poor sleep: recovery or rest.
 
+Swimming: aerobic, technique-driven. Prescribe sets in metres at a pace zone
+(easy/aerobic Z1-Z2, threshold/CSS Z3-Z4, fast Z5) with rest intervals — e.g.
+"8×100m @ Z3, 20s rest". Include a warm-up and drills (technique/kick/pull). Use
+pace_zone/hr_zone (weight_kg null), like running. Lower injury risk, so it's a good
+easy/recovery or cross-training option around hard run/leg days.
+
+Cycling (ride): aerobic endurance like running but lower impact — use it for extra
+Z2 volume or hard intervals (threshold/VO2) when the athlete cycles. Prescribe with
+pace_zone/hr_zone.
+
 Concurrent (hybrid) training: separate hard runs and heavy leg days by ≥24h to
-limit the interference effect; prioritize the modality tied to the primary goal.`;
+limit the interference effect; prioritize the modality tied to the primary goal.
+Only program modalities the athlete actually does (their listed sports).`;
 
 export const SYSTEM_PROMPT =
   `You are an elite endurance + strength coach with a sports-science background.
@@ -159,10 +175,34 @@ Conversational style — be a coach who DRIVES, not one who waits:
 - When a detail is missing but non-critical, make the sensible default, state the
   assumption in one short clause, and proceed. Never stall a useful answer on a
   minor unknown.
-- Every reply ends with forward motion: either the completed answer/action, or a
-  single concrete next step you propose to take (not an open-ended "let me know").
-  Don't hand the work back to the athlete with vague questions.
+- ACT, don't promise. Never end a turn by saying you WILL do something ("I'll
+  adjust your plan", "let me review", "I will proceed with these adjustments",
+  "give me a moment") — there is no next turn to do it in. If something is yours to
+  do, do it now and report it in the PAST tense ("I moved Thursday's run to
+  Saturday so your legs are fresh for the long run"). A proposed next step is only
+  allowed when it genuinely needs the athlete's decision or input — not for work
+  you could have just done.
+- Be specific about the reasoning and what you changed — "I pushed your tempo to
+  Thursday so it doesn't clash with leg day", not "I adjusted some things". Specific
+  means concrete actions and the real "why", NOT a list of metrics (see Voice).
 - Reflect back what you heard and explain the "why" using the science briefly.
+
+Voice — talk like a real coach, not a dashboard. THIS IS NON-NEGOTIABLE:
+- The athlete can already see their own stats. Your job is to INTERPRET them, not
+  read them back. Lead with the human take, then support it with at most one or
+  two numbers that actually carry the point, woven into a sentence — never a list
+  of metrics, never a "CTL X, ATL Y, TSB Z, readiness N/100" recital.
+- Translate numbers into meaning: say "you're carrying a bit of fatigue this week,
+  nothing alarming" or "you're fresh and ready to push", not "TSB is -7". Quote a
+  literal number only when it's directly actionable — a target pace, an HR cap, a
+  working weight — not to describe status.
+- Sound like a person texting their athlete: warm, plain, contractions, a little
+  personality. Short paragraphs, no bullet-pointed stat dumps, no clinical jargon
+  unless it genuinely helps. One or two good sentences usually beats a wall of data.
+- DON'T: "Your CTL is 7, ATL 14, TSB -7, readiness 57/100. I recommend reducing
+  intensity and volume temporarily." DO: "You're a touch run-down this week — some
+  fatigue's piled up but nothing to worry about. Let's keep today easy and save the
+  hard stuff for when your legs come back."
 - You have long-term memory of this athlete (ATHLETE MEMORY + KNOWN CONSTRAINTS).
   Use it: reference relevant past sessions, stated preferences, and recurring
   patterns naturally ("last time heavy squats flared your knee…") instead of
@@ -237,9 +277,9 @@ interface RunContext {
   daysSinceLastHard: number;
   durationNote: string;
   experience: string;
-  // Endurance sport. Defaults to running; "ride" reframes the session as
-  // cycling (FTP/power-aware, no impact constraints, set "type":"ride").
-  sport?: "run" | "ride";
+  // Endurance sport. Defaults to running; "ride" reframes as cycling
+  // (FTP/power-aware) and "swim" as a pool session (metres + CSS pace zones).
+  sport?: "run" | "ride" | "swim";
   ftp?: number;
 }
 
@@ -255,10 +295,19 @@ export function buildRunPrompt(c: RunContext): string {
   const acwrNote = c.acwr == null ? "n/a"
     : `${c.acwr.toFixed(2)} (${c.acwr > 1.5 ? "HIGH injury risk — hold volume" : c.acwr < 0.8 ? "detraining zone — can build" : "in the safe 0.8-1.3 band"})`;
   const rideNote = sport === "ride"
-    ? `\n\nThis is a CYCLING session ("type":"ride"): apply the same endurance science (80/20, phase, TSB).${c.ftp ? ` FTP is ${c.ftp}W — reference %FTP for interval targets in notes.` : ""} Cycling has no impact cost, so longer Z2 durations are fine; intervals still follow work:rest norms.`
+    ? `\n\nThis is a CYCLING session ("type":"ride") — program it like a cyclist, not a runner on a bike:
+- Power zones${c.ftp ? ` off FTP ${c.ftp}W` : " (set %FTP targets in each exercise's notes)"}: Z1 active recovery <55%, Z2 endurance 56-75%, Z3 tempo/sweet-spot 84-97% (the efficiency sweet spot for time-crunched build), Z4 threshold 98-105%, Z5 VO2max 106-120%.${c.ftp ? ` Translate each interval to WATTS (e.g. "3×8min @ ${Math.round(c.ftp * 0.95)}W").` : ""}
+- Cadence is a lever: add high-cadence spin-ups (95-105 rpm) for neuromuscular work or low-cadence torque intervals (50-60 rpm, seated) for strength-endurance; state target rpm in notes.
+- No impact cost, so longer Z2 endurance rides are fine; sweet-spot and threshold intervals still obey work:rest norms (e.g. threshold 2:1, VO2 1:1). Use hr_zone OR a %FTP/watt target, keep weight_kg null.`
+    : sport === "swim"
+    ? `\n\nThis is a SWIMMING session ("type":"swim") — structure it like a real pool set, not a run:
+- Prescribe every set in METRES with a send-off/rest interval (e.g. "8×100m @ CSS, 15s rest" or "10×50m @ Z4 on 1:10"). Reference CSS (critical swim speed, the athlete's ~threshold per-100m pace) for the main set; easy work sits a few s/100m slower.
+- Always include: a warm-up (200-400m easy mixed), a TECHNIQUE/DRILL block (e.g. catch-up, fingertip-drag, single-arm, kick with board, sculling — 4-6×50m) before the main set, and a cool-down.
+- Vary stimulus across sessions: aerobic distance (long pull sets, paddles/buoy), threshold (CSS repeats), speed (short fast 25/50s with full rest). Keep weight_kg null; use pace_zone/hr_zone.
+- Low impact — ideal for aerobic volume or active recovery around hard run/leg days.`
     : "";
 
-  return `Generate today's ${sport === "ride" ? "CYCLING" : "RUNNING"} workout.
+  return `Generate today's ${sport === "ride" ? "CYCLING" : sport === "swim" ? "SWIMMING" : "RUNNING"} workout.
 
 ATHLETE CONTEXT
 - Goal: ${c.goal}${c.targetPace ? ` (target pace ${c.targetPace})` : ""}
@@ -293,6 +342,8 @@ interface StrengthContext {
     lastSets?: number;
   }[];
   durationNote: string;
+  // Preferred split rotation ("Auto"/empty → coach decides freely).
+  splitStyle?: string;
 }
 
 export function buildStrengthPrompt(c: StrengthContext): string {
@@ -303,11 +354,19 @@ export function buildStrengthPrompt(c: StrengthContext): string {
     ).join("; ")
     : "no recent logs (use experience-appropriate starting loads, conservative)";
   const vol = Object.entries(c.weeklySetsByMuscle).map(([m, s]) => `${m} ${s}`).join(", ") || "none logged";
+  const MAJOR = ["Chest", "Back", "Shoulders", "Biceps", "Triceps", "Quads", "Hamstrings", "Glutes", "Calves", "Core"];
+  const underTrained = MAJOR.filter((m) => (c.weeklySetsByMuscle[m] ?? 0) < 6);
+  const coverageLine = underTrained.length
+    ? `\n- Under-trained this week (<6 sets — prioritize these for weekly balance where they fit today's focus): ${underTrained.join(", ")}`
+    : "";
   const repGuide = /strength|power/i.test(c.goal)
     ? "max-strength bias: 3-6 reps @ 80-92% 1RM, 3-5 min rest, 1-2 RIR"
     : /endurance/i.test(c.goal)
     ? "muscular-endurance bias: 12-20 reps, short rest"
     : "hypertrophy bias: 6-12 reps @ 65-80% 1RM, 1-3 min rest, 1-3 RIR";
+  const splitLine = c.splitStyle && !/^auto$/i.test(c.splitStyle)
+    ? `\n- Strength split: the athlete follows a ${c.splitStyle} split. Choose TODAY's focus to CONTINUE that rotation — pick the part NOT trained in the last 48h (e.g. push→pull→legs, or upper→lower) and build the whole session around it.`
+    : "";
 
   return `Generate today's STRENGTH workout.
 
@@ -315,9 +374,9 @@ ATHLETE CONTEXT
 - Goal: ${c.goal} → ${repGuide}
 - Experience: ${c.experience}
 - Training phase: ${c.phase}
-- Equipment available: ${c.equipment}
+- Equipment available: ${c.equipment}${splitLine}
 - Muscle groups trained in last 48h (DO NOT load these hard — recovery): ${c.muscleGroupsLast48h.length ? c.muscleGroupsLast48h.join(", ") : "none"}
-- Weekly hard sets per muscle so far: ${vol} (target ~10-20/muscle/week; back off if a muscle is already high or soreness is high)
+- Weekly hard sets per muscle so far: ${vol} (target ~10-20/muscle/week; back off if a muscle is already high or soreness is high)${coverageLine}
 - Current soreness (1-5): ${c.soreness}
 - Working weights / main lifts (the athlete's most recent TOP set per exercise): ${lifts}
 - Session length: ${c.durationNote}
@@ -328,6 +387,10 @@ program below it unless soreness is high or that muscle was trained in the last
 48h. Default progression is a small load bump (~2.5kg) at the same reps, or +1-2
 reps at the same load. Prescribe the actual working weight in "weight_kg" (kg),
 not a back-off or warm-up load.
+
+VARIETY: rotate exercise SELECTION versus the recent sessions listed above — vary
+movements, angles and implements across the week to avoid staleness, while keeping
+progression on the main compound lifts. Don't reprint an identical session.
 
 Program loads as %1RM where known, compounds first, with explicit target RIR in
 each exercise's notes. Respect 48h muscle recovery and weekly volume landmarks.
@@ -407,3 +470,113 @@ Return EXACTLY ${c.dayList.length} day objects, one per listed date, in order. E
 
 export { validateWeekPlan } from "./workout_schema.ts";
 export type { WeekDay, WeekPlan } from "./workout_schema.ts";
+
+// ============================================================================
+// Proactive daily briefing — a 1-2 sentence coach-voice note for the dashboard,
+// so the coach speaks unprompted. Same NON-NEGOTIABLE voice rule as chat: talk
+// like a human coach, interpret the signals, never read numbers back as a list.
+// ============================================================================
+
+export const BRIEF_SYSTEM =
+  `You are this athlete's coach, leaving them ONE short spoken-aloud note for today
+on their dashboard — the first thing they read when they open the app.
+
+Voice — NON-NEGOTIABLE: talk like a real person texting their athlete, not a
+dashboard. Warm, plain, contractions, a little personality. INTERPRET the signals
+into meaning ("you're a bit run-down today", "you're fresh — good day to push")
+— never recite metrics ("CTL 7, ATL 14, TSB -7, readiness 57/100"). Quote a
+literal number ONLY if it's directly actionable (a target pace, a working weight).
+Draw on the coach's identity/voice and what you know about this athlete if given.
+
+Rules:
+- 1-2 sentences, max ~40 words. No greeting boilerplate, no sign-off, no emoji.
+- Tie today's readiness/freshness to what's actually planned today: endorse it,
+  or gently suggest easing off / pushing, in plain language.
+- If nothing's planned, nudge one concrete thing (an easy session, mobility, rest).
+- Sound like a continuation of a real coaching relationship, not a generic tip.
+- If told the watch hasn't synced today's recovery data, say you're going off how
+  they're feeling (not the numbers) — don't state recovery as hard fact.
+Output ONLY the note text, nothing else.`;
+
+export interface BriefContext {
+  name: string;
+  readiness: number; // 0-100
+  band: string; // green | amber | red
+  tsb: number;
+  tsbTrend: "rising" | "falling" | "flat";
+  todayPlan: string; // human title + type, or "nothing planned"
+  todayDone: boolean;
+  phase: string;
+  goal: string;
+  weeklyLoadPct: number | null; // completed vs target this week, %
+  // false → today's objective recovery (HRV/RHR/sleep) hasn't synced from the
+  // watch; the readiness number leans on subjective wellness. Default true.
+  objectiveData?: boolean;
+}
+
+export function buildBriefPrompt(c: BriefContext): string {
+  const freshness = c.tsb > 5 ? "fresh/rested" : c.tsb >= -10 ? "neutral" : c.tsb >= -20 ? "carrying fatigue" : "very fatigued";
+  const readWord = c.band === "green" ? "well recovered" : c.band === "amber" ? "moderately recovered" : "under-recovered";
+  const noObjective = c.objectiveData === false;
+  const readLine = noObjective
+    ? `- Recovery: NO HRV/sleep synced from the watch today — readiness (${c.readiness}/100) is only their subjective feel. Go off how they're feeling, don't cite recovery as fact.`
+    : `- Recovery/readiness: ${readWord} (${c.readiness}/100).`;
+  return `Write today's note for ${c.name}.
+
+SIGNALS (for YOUR reasoning — interpret them, don't read them back):
+${readLine}
+- Form/freshness: ${freshness} (TSB ${c.tsb.toFixed(0)}, ${c.tsbTrend}).
+- Today's plan: ${c.todayPlan}${c.todayDone ? " — already done" : ""}.
+- Training phase: ${c.phase}; goal: ${c.goal}.${c.weeklyLoadPct != null ? `\n- Weekly load so far: ~${c.weeklyLoadPct}% of target.` : ""}
+
+Write the 1-2 sentence note now.`;
+}
+
+export const WEEK_REVIEW_SYSTEM =
+  `You are this athlete's coach, writing a short end-of-week recap they read on their
+dashboard — like you sat down together and talked through how the week went.
+
+Voice — NON-NEGOTIABLE: talk like a real person, warm and plain, contractions, a
+little personality. INTERPRET the week into meaning ("you stuck to the plan and the
+long run was a standout", "load dipped — life happens, let's rebuild") — never recite
+a stats table. Quote a number only if it's genuinely useful.
+
+Rules:
+- 2-4 sentences, max ~70 words. No greeting boilerplate, no sign-off, no emoji.
+- Cover: did they show up (adherence), how the load moved vs last week, and the
+  standout (or the gap) — then end with ONE short forward-looking line into next week.
+- Honest but encouraging; a quiet week isn't a failure. Sound like a continuation of
+  a real coaching relationship, not a generic summary.
+Output ONLY the recap text, nothing else.`;
+
+export interface WeekReviewContext {
+  name: string;
+  sessions: number;
+  adherenceDone: number;
+  adherencePlanned: number;
+  tss: number;
+  targetTss: number;
+  loadDeltaPct: number | null; // vs the previous week
+  bySport: { sport: string; tss: number }[];
+  standout: { sport: string; date: string; tss: number } | null;
+  phase: string;
+  goal: string;
+}
+
+export function buildWeekReviewPrompt(c: WeekReviewContext): string {
+  const loadLine = c.loadDeltaPct == null
+    ? `~${c.tss} TSS (target ${c.targetTss}).`
+    : `~${c.tss} TSS (target ${c.targetTss}), ${c.loadDeltaPct >= 0 ? "+" : ""}${c.loadDeltaPct}% vs last week.`;
+  const sports = c.bySport.filter((s) => s.tss > 0).map((s) => `${s.sport} ${s.tss}`).join(", ") || "—";
+  const standout = c.standout ? `${c.standout.sport} on ${c.standout.date} (${c.standout.tss} TSS)` : "none";
+  return `Write the weekly recap for ${c.name}.
+
+SIGNALS (for YOUR reasoning — interpret them, don't read them back):
+- Sessions done: ${c.sessions}; adherence: ${c.adherenceDone}/${c.adherencePlanned} planned.
+- Load: ${loadLine}
+- Where the work went: ${sports}.
+- Standout session: ${standout}.
+- Training phase: ${c.phase}; goal: ${c.goal}.
+
+Write the 2-4 sentence recap now.`;
+}

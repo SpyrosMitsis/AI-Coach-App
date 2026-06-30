@@ -17,6 +17,9 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.ui.draw.clip
+import com.workoutmaker.app.ui.theme.palette
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.Delete
@@ -139,6 +142,33 @@ internal fun ProfileSection(vm: SettingsViewModel) {
             style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
         ChipGroup("Equipment", EQUIPMENT, profile.equipment) { e -> vm.updateProfile { it.copy(equipment = e) } }
+        ChipGroup("Strength split", SPLIT_STYLES, profile.split_style ?: "Auto") { s ->
+            vm.updateProfile { it.copy(split_style = if (s == "Auto") null else s) }
+        }
+        Text("Sports you do", style = MaterialTheme.typography.labelLarge)
+        FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+            SPORTS.forEach { s ->
+                FilterChip(
+                    selected = profile.sports.contains(s),
+                    onClick = { vm.updateProfile { it.copy(sports = if (it.sports.contains(s)) it.sports - s else it.sports + s) } },
+                    label = { Text(s.replaceFirstChar { c -> c.uppercase() }) },
+                )
+            }
+        }
+        Text(
+            "Only the sports you pick get scheduled. Leave empty to let the coach infer from your goal.",
+            style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        ToggleRow(
+            "Periodize my weeks",
+            "Progressive build weeks with an automatic deload every ~4 weeks (applies when planning a week).",
+            profile.periodized,
+        ) { checked -> vm.updateProfile { it.copy(periodized = checked) } }
+        ToggleRow(
+            "Daily coach briefing",
+            "A short, human note from your coach at the top of Home each day. Costs one AI call per day; turn off to avoid any automatic spend.",
+            profile.briefing,
+        ) { checked -> vm.updateProfile { it.copy(briefing = checked) } }
         if (profile.goal_date != null || profile.target_pace != null) {
             Text(
                 buildString {
@@ -286,6 +316,14 @@ internal fun AiSection(vm: SettingsViewModel) {
         }
         Text("✦ = has a free tier. Add a key below; the others act as fallbacks.",
             style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        // The model is the single biggest lever on coach quality — the free default
+        // is capable but generic. Nudge toward a stronger model without forcing spend.
+        Text(
+            "Tip: your coach gets noticeably more human and insightful on a stronger model " +
+                "(e.g. Claude / Anthropic). Free tiers work fine to start.",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.primary,
+        )
     }
     LlmProvider.entries.forEach { provider -> ProviderCard(Modifier, provider, vm) }
 }
@@ -400,16 +438,74 @@ internal fun DiagnosticsSection(vm: SettingsViewModel) {
         }
         return
     }
-    val spent = logs.sumOf { it.estimated_cost_usd }
-    val fails = logs.count { !it.parsed_ok }
-    SectionCard {
-        Text("Last ${logs.size} generations · ~$${"%.3f".format(spent)} est. cost" + (if (fails > 0) " · $fails failed" else " · all OK"),
+    // Local-date based windows (the app's "today" is the client's local date).
+    val today = java.time.LocalDate.now()
+    fun daysAgo(l: com.workoutmaker.app.data.GenerationLogRow): Long = runCatching {
+        java.time.temporal.ChronoUnit.DAYS.between(java.time.LocalDate.parse(l.created_at?.take(10)), today)
+    }.getOrDefault(99999L)
+    fun money(v: Double) = "$${"%.3f".format(v)}"
+    val within30 = logs.filter { daysAgo(it) <= 29 }
+    val spentToday = logs.filter { daysAgo(it) <= 0 }.sumOf { it.estimated_cost_usd }
+    val spent7 = logs.filter { daysAgo(it) <= 6 }.sumOf { it.estimated_cost_usd }
+    val spent30 = within30.sumOf { it.estimated_cost_usd }
+    val fails = within30.count { !it.parsed_ok }
+    val byProvider = within30.groupBy { it.provider ?: "?" }
+        .mapValues { e -> e.value.sumOf { it.estimated_cost_usd } }
+        .entries.sortedByDescending { it.value }
+    val byFeature = within30.groupBy { it.feature ?: "?" }
+        .mapValues { e -> e.value.sumOf { it.estimated_cost_usd } }
+        .entries.sortedByDescending { it.value }
+
+    val appSettings by vm.appSettings.collectAsStateSafe()
+    val cap = appSettings.spendCapUsd
+
+    SectionCard(title = "AI spend (estimated)") {
+        Text("Today ${money(spentToday)} · 7d ${money(spent7)} · 30d ${money(spent30)}",
+            style = MaterialTheme.typography.titleSmall)
+        Text("${within30.size} generations in 30d" + (if (fails > 0) " · $fails failed" else " · all OK"),
             style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+
+        // Soft monthly cap: a warning banner only — never blocks generation.
+        if (cap > 0 && spent30 >= cap) {
+            Text(
+                "⚠ Over your ${money(cap)}/month cap — 30-day spend is ${money(spent30)}. " +
+                    "Consider a cheaper provider or turning off the daily briefing.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.error,
+                modifier = Modifier.padding(top = 6.dp),
+            )
+        }
+        var capText by remember(cap) { mutableStateOf(if (cap > 0) cap.toString() else "") }
+        OutlinedTextField(
+            value = capText,
+            onValueChange = { capText = it.filter { c -> c.isDigit() || c == '.' } },
+            label = { Text("Monthly spend cap (USD, 0 = off)") },
+            singleLine = true,
+            keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(keyboardType = androidx.compose.ui.text.input.KeyboardType.Decimal),
+            trailingIcon = {
+                androidx.compose.material3.TextButton(onClick = { vm.setSpendCap(capText.toDoubleOrNull() ?: 0.0) }) { Text("Set") }
+            },
+            modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
+        )
+        if (byFeature.isNotEmpty()) {
+            Text("By feature (30d): " + byFeature.joinToString(" · ") { "${it.key} ${money(it.value)}" },
+                style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(top = 6.dp))
+        }
+        if (byProvider.isNotEmpty()) {
+            Text("By provider (30d): " + byProvider.joinToString(" · ") { "${it.key} ${money(it.value)}" },
+                style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        }
+    }
+    SectionCard(title = "Recent generations") {
         logs.take(12).forEach { l ->
-            Row(Modifier.fillMaxWidth()) {
+            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                 Text(if (l.parsed_ok) "✓" else "✗", color = if (l.parsed_ok) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.error)
-                Text("  ${l.created_at?.take(16)?.replace('T', ' ') ?: ""} · ${l.provider ?: "?"}" + (if (!l.parsed_ok && l.error != null) " — ${l.error.take(60)}" else ""),
-                    style = MaterialTheme.typography.bodySmall)
+                Text(
+                    "  ${l.created_at?.take(16)?.replace('T', ' ') ?: ""} · ${l.feature ?: "?"} · ${l.provider ?: "?"} · ${money(l.estimated_cost_usd)}" +
+                        (if (!l.parsed_ok && l.error != null) " — ${l.error.take(50)}" else ""),
+                    style = MaterialTheme.typography.bodySmall,
+                )
             }
         }
     }
@@ -497,7 +593,22 @@ internal fun ExportCard(vm: SettingsViewModel) {
 @Composable
 internal fun AppearanceSection(vm: SettingsViewModel) {
     val s by vm.appSettings.collectAsStateSafe()
-    SectionCard(title = "Theme") {
+    SectionCard(title = "Palette") {
+        Text("Re-skin the whole app. “Serene Vanguard” is the original sage look; the others are experiments you can switch any time.",
+            style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        com.workoutmaker.app.data.ThemePalette.entries.forEach { p ->
+            Row(
+                Modifier.fillMaxWidth().clickable { vm.setThemePalette(p) }.padding(vertical = 10.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                androidx.compose.material3.RadioButton(selected = s.themePalette == p, onClick = { vm.setThemePalette(p) })
+                Text(p.label, Modifier.padding(start = 8.dp), style = MaterialTheme.typography.bodyLarge)
+                Box(Modifier.weight(1f))
+                PaletteSwatches(p)
+            }
+        }
+    }
+    SectionCard(title = "Light / Dark") {
         Text("Choose how the app looks. “Follow system” matches your phone's light/dark setting.",
             style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
         com.workoutmaker.app.data.ThemeMode.entries.forEach { mode ->
@@ -508,6 +619,23 @@ internal fun AppearanceSection(vm: SettingsViewModel) {
                 androidx.compose.material3.RadioButton(selected = s.themeMode == mode, onClick = { vm.setThemeMode(mode) })
                 Text(mode.label, Modifier.padding(start = 8.dp), style = MaterialTheme.typography.bodyLarge)
             }
+        }
+    }
+}
+
+// Three little dots previewing a palette's primary/secondary/background so the
+// choice is visible without selecting it. Uses the palette's dark scheme.
+@Composable
+private fun PaletteSwatches(p: com.workoutmaker.app.data.ThemePalette) {
+    val scheme = p.palette().dark
+    Row(horizontalArrangement = Arrangement.spacedBy(4.dp), verticalAlignment = Alignment.CenterVertically) {
+        listOf(scheme.primary, scheme.secondary, scheme.surface).forEach { c ->
+            Box(
+                Modifier.size(16.dp)
+                    .clip(androidx.compose.foundation.shape.CircleShape)
+                    .background(c)
+                    .border(1.dp, MaterialTheme.colorScheme.outlineVariant, androidx.compose.foundation.shape.CircleShape),
+            )
         }
     }
 }
@@ -616,6 +744,7 @@ internal fun ProviderCard(mod: Modifier, provider: LlmProvider, vm: SettingsView
     val result = vm.results[provider.key]
     val overrides by vm.modelOverrides.collectAsStateSafe()
     val llmKeys by vm.llmKeys.collectAsStateSafe()
+    val customPrice by vm.customPrice.collectAsStateSafe()
     val saved = llmKeys[provider.key]
     val activeModel = overrides[provider.key] ?: provider.model
     val isCustom = provider == LlmProvider.CUSTOM
@@ -647,6 +776,29 @@ internal fun ProviderCard(mod: Modifier, provider: LlmProvider, vm: SettingsView
                 placeholder = { Text("llama3.1:8b") },
                 singleLine = true, modifier = Modifier.fillMaxWidth(),
             )
+            // Optional pricing so the diagnostics screen shows real spend (a BYO
+            // endpoint has no known price → cost would otherwise read $0).
+            var priceIn by remember(customPrice.first) { mutableStateOf(customPrice.first?.toString() ?: "") }
+            var priceOut by remember(customPrice.second) { mutableStateOf(customPrice.second?.toString() ?: "") }
+            Text("Pricing (optional, $ per 1M tokens) — for cost tracking only.",
+                style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                OutlinedTextField(
+                    priceIn, { priceIn = it },
+                    label = { Text("Input") }, placeholder = { Text("0.20") },
+                    singleLine = true, modifier = Modifier.weight(1f),
+                    keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(keyboardType = androidx.compose.ui.text.input.KeyboardType.Decimal),
+                )
+                OutlinedTextField(
+                    priceOut, { priceOut = it },
+                    label = { Text("Output") }, placeholder = { Text("0.60") },
+                    singleLine = true, modifier = Modifier.weight(1f),
+                    keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(keyboardType = androidx.compose.ui.text.input.KeyboardType.Decimal),
+                )
+                TextButton(onClick = { vm.setCustomPricing(priceIn.toDoubleOrNull(), priceOut.toDoubleOrNull()) }) {
+                    Text("Save")
+                }
+            }
         } else {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Column(Modifier.weight(1f)) {

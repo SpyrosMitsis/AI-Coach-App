@@ -227,3 +227,34 @@ Deno.test("review is deterministic and idempotent (re-review is a no-op)", () =>
   assertEquals(first.corrected.sections[0].exercises[0].weight_kg, 100);
   assertEquals(second.corrected.sections[0].exercises[0].weight_kg, 100);
 });
+
+// --- equipment hard-filter -------------------------------------------------
+Deno.test("strength lift needing unavailable equipment is stripped + flagged", () => {
+  const w = mk({
+    sections: [strengthSection([
+      { name: "Barbell Bench Press", sets: 4, reps: "5", weight_kg: 60, muscle: "Chest", notes: "" },
+      { name: "Push-Up", sets: 3, reps: "12", muscle: "Chest", notes: "" },
+    ])],
+  });
+  const r = reviewWorkout(w, { ...EMPTY_CTX, equipment: "Bodyweight" });
+  const names = r.corrected.sections.flatMap((s) => s.exercises.map((e) => e.name));
+  assert(!names.includes("Barbell Bench Press"), "barbell lift should be removed");
+  assert(names.includes("Push-Up"), "bodyweight lift should remain");
+  assert(r.violations.some((v) => /Barbell Bench Press/.test(v)));
+});
+
+// --- intensity ceiling on low readiness ------------------------------------
+Deno.test("hard endurance session on a wrecked athlete is capped to easy", () => {
+  const w = validateWorkout({
+    type: "run", title: "Intervals", duration_minutes: 50, tss_estimate: 90, rpe_target: 9,
+    coach_note: "", sections: [
+      { name: "Main Set", duration_minutes: 30, exercises: [{ name: "VO2 reps", sets: 5, reps: "3min", pace_zone: "Z5" }] },
+    ],
+  }).workout!;
+  assert(isHardSession(w));
+  const r = reviewWorkout(w, { ...EMPTY_CTX, tsb: -25, readiness: 20 });
+  assert(r.corrected.rpe_target <= 5, "rpe should be capped");
+  const zones = r.corrected.sections.flatMap((s) => s.exercises.map((e) => e.pace_zone));
+  assert(zones.every((z) => z !== "Z5" && z !== "Z4"), "hard zones should be downgraded");
+  assert(r.violations.some((v) => /readiness|TSB/i.test(v)));
+});

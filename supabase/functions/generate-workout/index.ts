@@ -9,8 +9,10 @@
 // 5. choose type            10. optional push to Intervals.icu calendar
 
 import { handleOptions, json } from "../_shared/cors.ts";
+import { logger } from "../_shared/log.ts";
 import { adminClient, decryptSecret, getUserId } from "../_shared/supabase.ts";
 import {
+  customPriceFromProfile,
   estimateCostUsd,
   extractJson,
   llmGenerateWithFallback,
@@ -49,10 +51,13 @@ import { type MainLift, reviewWorkout } from "../_shared/workout_review.ts";
 const DAY = 86_400_000;
 const daysBetween = (a: string, b: Date) => Math.floor((b.getTime() - new Date(a).getTime()) / DAY);
 
+const log = logger("generate-workout");
+
 Deno.serve(async (req) => {
   const pre = handleOptions(req);
   if (pre) return pre;
 
+  const startedAt = Date.now();
   try {
     const userId = await getUserId(req);
     if (!userId) return json({ error: "unauthorized" }, 401);
@@ -62,6 +67,7 @@ Deno.serve(async (req) => {
     const date: string = body.date ?? new Date().toISOString().slice(0, 10);
     const requestedType: string = body.type ?? "auto";
     const shouldPush: boolean = body.push ?? true;
+    log.info("request", { date, requestedType, push: shouldPush, hasRequest: !!body.request });
 
     // 1. profile ------------------------------------------------------------
     const { data: profile } = await admin
@@ -118,9 +124,20 @@ Deno.serve(async (req) => {
     // down-regulates intensity. wells is newest-first; series want oldest→newest.
     const isNumR = (v: unknown): v is number => typeof v === "number";
     const chrono = [...wells].reverse();
-    const hrvSeries = chrono.map((w) => (w as { hrv_rmssd?: number }).hrv_rmssd).filter(isNumR);
-    const rhrSeries = chrono.map((w) => (w as { resting_hr?: number }).resting_hr).filter(isNumR);
-    const recovery = computeRecovery(wells, hrvSeries, rhrSeries);
+    // Dated points so computeRecovery can anchor on the target day specifically —
+    // a not-synced-today HRV/RHR then reads as missing (and the score leans on the
+    // subjective wellness composite) instead of silently inheriting yesterday's.
+    const datedSeries = (key: "hrv_rmssd" | "resting_hr") => {
+      const out: { date?: string; value: number }[] = [];
+      for (const w of chrono) {
+        const v = (w as Record<string, unknown>)[key];
+        if (isNumR(v)) out.push({ date: (w as { date?: string }).date, value: v });
+      }
+      return out;
+    };
+    const hrvSeries = datedSeries("hrv_rmssd");
+    const rhrSeries = datedSeries("resting_hr");
+    const recovery = computeRecovery(wells, hrvSeries, rhrSeries, date);
     const avg = (vals: number[]) => vals.length ? vals.reduce((a, b) => a + b, 0) / vals.length : 3;
     const wellness3d = {
       energy: avg(wells.slice(0, 3).map((w) => w.energy ?? 3)),
@@ -145,6 +162,32 @@ Deno.serve(async (req) => {
     const hardEffort = acts.find((a) => (a.tss ?? 0) > 60);
     const daysSinceLastHard = hardEffort ? daysBetween(hardEffort.date, now) : 99;
 
+    // Surrounding planned week — so a single session slots in instead of clashing
+    // (two hard days back-to-back, a leg day next to the long run). Read the day
+    // before + the next 6 days; feed both the decision and the prompt.
+    const dayBefore = new Date(now.getTime() - DAY).toISOString().slice(0, 10);
+    const dayAfter = new Date(now.getTime() + DAY).toISOString().slice(0, 10);
+    const weekAhead = new Date(now.getTime() + 6 * DAY).toISOString().slice(0, 10);
+    const { data: aroundPlanned } = await admin
+      .from("planned_workouts")
+      .select("date, type, workout_json")
+      .eq("user_id", userId)
+      .gte("date", dayBefore).lte("date", weekAhead).neq("date", date)
+      .order("date", { ascending: true });
+    const around = aroundPlanned ?? [];
+    const titleOf = (w: { workout_json?: unknown }) =>
+      ((w.workout_json ?? {}) as { title?: string }).title ?? "";
+    const isHardPlanned = (w: { workout_json?: unknown }) => {
+      const wj = (w.workout_json ?? {}) as { rpe_target?: number; tss_estimate?: number };
+      return (wj.rpe_target ?? 0) >= 7 || (wj.tss_estimate ?? 0) >= 70 ||
+        /threshold|interval|tempo|vo2|hard|race/i.test(titleOf(w));
+    };
+    const adjacentHard = around.some((w) =>
+      (w.date === dayBefore || w.date === dayAfter) && isHardPlanned(w));
+    const surroundingSummary = around.length
+      ? around.map((w) => `${w.date} ${w.type}${titleOf(w) ? ` (${titleOf(w)})` : ""}`).join(" | ")
+      : "nothing else planned this week";
+
     const goal: string = onboarding.goal ?? "General fitness";
 
     // Training phase from weeks until the goal race (onboarding.goal_date).
@@ -155,12 +198,30 @@ Deno.serve(async (req) => {
     }
     const phase = trainingPhase(weeksToGoal);
 
+    // Auto-rest when the athlete is genuinely cooked — low readiness or deeply
+    // negative form. Today's prescription should be recovery, not another stressor.
+    const lowReadiness = recovery.score < 35;
+    const veryFatigued = fitness.tsb < -20;
+
     let type = requestedType;
     if (type === "auto") {
+      const sports: string[] = Array.isArray(onboarding.sports) ? onboarding.sports as string[] : [];
       const isStrengthGoal = /muscle|recomp|hybrid|strength/i.test(goal);
-      // Avoid back-to-back hard: if a hard effort was yesterday, bias to the
-      // other modality / easy.
-      type = isStrengthGoal && daysSinceLastRun < 2 ? "strength" : "run";
+      if (lowReadiness || veryFatigued) {
+        type = "rest";
+      } else if (isStrengthGoal && daysSinceLastRun < 2 && (sports.length === 0 || sports.includes("strength"))) {
+        type = "strength";
+      } else if (adjacentHard && (sports.length === 0 || sports.includes("strength"))) {
+        // A hard day sits next to today → keep today off the legs/aerobic system:
+        // a strength day (if they lift) spaces the hard endurance work out.
+        type = "strength";
+      } else if (sports.length === 0) {
+        type = "run";
+      } else {
+        // First endurance sport the athlete does, else strength, else run.
+        type = ["run", "ride", "swim"].find((s) => sports.includes(s)) ??
+          (sports.includes("strength") ? "strength" : "run");
+      }
     }
 
     // 5b. live Intervals.icu physiology (shared with the week planner). The
@@ -251,6 +312,7 @@ Deno.serve(async (req) => {
         soreness: Math.round(wellness3d.soreness),
         mainLifts,
         durationNote,
+        splitStyle: onboarding.split_style as string | undefined,
       });
       // Pin exercise names to the loggable catalog (+ the athlete's customs).
       userPrompt += await exerciseCatalogBlock(admin, userId);
@@ -282,9 +344,16 @@ Deno.serve(async (req) => {
         daysSinceLastHard,
         durationNote,
         experience: onboarding.experience ?? "Intermediate",
-        sport: type === "ride" ? "ride" : "run",
+        sport: type === "ride" ? "ride" : type === "swim" ? "swim" : "run",
         ftp: typeof onboarding.ftp === "number" ? onboarding.ftp : undefined,
       });
+    }
+
+    // 6a-pre. surrounding week so this session fits the block, not just today.
+    if (type !== "rest") {
+      userPrompt += `\n\nTHIS WEEK AROUND TODAY (fit today INTO this — don't clash): ${surroundingSummary}.` +
+        ` Keep ≥24h between hard efforts and between heavy leg work and the long run.` +
+        (adjacentHard ? ` A HARD day is adjacent to today, so keep today EASY/recovery or a non-competing modality.` : "");
     }
 
     // 6a-ext. free-text athlete request for this specific date (e.g. "social
@@ -389,6 +458,7 @@ Return the revised workout as JSON only, same schema.`;
     } catch (e) {
       await admin.from("generation_logs").insert({
         user_id: userId,
+        feature: "workout",
         provider: chain[0] ?? null,
         system_prompt: SYSTEM_PROMPT,
         user_prompt: userPrompt,
@@ -431,11 +501,12 @@ Return the revised workout as JSON only, same schema.`;
       }
     }
 
-    const cost = estimateCostUsd(outcome.provider, outcome.promptTokens, outcome.completionTokens);
+    const cost = estimateCostUsd(outcome.provider, outcome.promptTokens, outcome.completionTokens, customPriceFromProfile(outcome.provider, profile));
 
     if (!parsedOk || !validated) {
       await admin.from("generation_logs").insert({
         user_id: userId,
+        feature: "workout",
         provider: outcome.provider,
         model: outcome.model,
         prompt_tokens: outcome.promptTokens,
@@ -470,6 +541,9 @@ Return the revised workout as JSON only, same schema.`;
       experience: onboarding.experience ?? "Intermediate",
       // Structured safety: injuries on file + durable coach constraints.
       injuries: [onboarding.injury_history, profile.coach_knowledge].filter(Boolean).join("; "),
+      // Deterministic intensity ceiling + equipment hard-filter.
+      readiness: recovery.score,
+      equipment: onboarding.equipment as string | undefined,
     };
     let review = reviewWorkout(validated, reviewCtx);
     validated = review.corrected;
@@ -521,7 +595,7 @@ Return the revised workout as JSON only, same schema.`;
     }
 
     // Recompute cost in case the repair pass replaced `outcome`.
-    const finalCost = estimateCostUsd(outcome.provider, outcome.promptTokens, outcome.completionTokens);
+    const finalCost = estimateCostUsd(outcome.provider, outcome.promptTokens, outcome.completionTokens, customPriceFromProfile(outcome.provider, profile));
 
     // 9. persist planned workout + log -------------------------------------
     // Idempotent: replace any incomplete plan already on this date so repeated
@@ -565,6 +639,7 @@ Return the revised workout as JSON only, same schema.`;
 
     await admin.from("generation_logs").insert({
       user_id: userId,
+      feature: "workout",
       provider: outcome.provider,
       model: outcome.model,
       prompt_tokens: outcome.promptTokens,
@@ -592,7 +667,7 @@ Return the revised workout as JSON only, same schema.`;
             date,
             name: validated.title,
             description,
-            type: validated.type === "run" ? "Run" : validated.type === "ride" ? "Ride" : "Workout",
+            type: validated.type === "run" ? "Run" : validated.type === "ride" ? "Ride" : validated.type === "swim" ? "Swim" : "Workout",
           });
           intervalsEventId = ev.id;
           await admin
@@ -605,6 +680,16 @@ Return the revised workout as JSON only, same schema.`;
       }
     }
 
+    log.info("done", {
+      ms: Date.now() - startedAt,
+      provider: outcome.provider,
+      model: outcome.model,
+      type: validated.type,
+      tss: validated.tss_estimate,
+      costUsd: finalCost,
+      fallbacks: outcome.attempts.length,
+      pushError: pushError ?? undefined,
+    });
     return json({
       workout: validated,
       workout_id: planned.id,
@@ -618,6 +703,7 @@ Return the revised workout as JSON only, same schema.`;
       tss_replaced: review.tssReplaced ?? null,
     });
   } catch (e) {
+    log.error("failed", { ms: Date.now() - startedAt, err: e instanceof Error ? e.message : String(e) });
     return json({ error: e instanceof Error ? e.message : String(e) }, 500);
   }
 });

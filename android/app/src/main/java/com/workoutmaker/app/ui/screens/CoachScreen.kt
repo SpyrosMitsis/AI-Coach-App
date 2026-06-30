@@ -119,6 +119,9 @@ internal fun friendlyToolProgress(tool: String): String = when (tool) {
     else -> "Working…"
 }
 
+// Tools that mutate the calendar/plan — used to drive the "✓ Updated" result card.
+private val WRITE_TOOL_NAMES = setOf("plan_week", "generate_workout", "move_workout", "set_goal_race")
+
 // Maps tool names the agentic coach used into a friendly "what I just did" note.
 private fun friendlyTools(tools: List<String>): String {
     val label = { t: String ->
@@ -150,6 +153,10 @@ class CoachViewModel @Inject constructor(private val repo: WorkoutRepository) : 
     val liveStatus = MutableStateFlow<String?>(null)
     // After the coach changes the calendar: this week's sessions for the result card.
     val actionWeek = MutableStateFlow<List<com.workoutmaker.app.data.PlannedWorkout>?>(null)
+    // Plain-language summary of the write actions the coach just took (card subtitle).
+    val lastAction = MutableStateFlow<String?>(null)
+    // Whether a full week was (re)planned this turn — gates the card's "Re-plan" escape hatch.
+    val showReplan = MutableStateFlow(false)
     // Contextual conversation starters, built from the cached dashboard.
     val suggestions = MutableStateFlow(
         listOf(
@@ -186,7 +193,44 @@ class CoachViewModel @Inject constructor(private val repo: WorkoutRepository) : 
         }
     }
 
-    fun dismissActionCard() { actionWeek.value = null }
+    fun dismissActionCard() {
+        actionWeek.value = null
+        lastAction.value = null
+        showReplan.value = false
+    }
+
+    // Re-run the weekly plan from the result card — the same plan-week action the
+    // Calendar tab uses, as a quick "not happy with this? regenerate" escape hatch.
+    fun rePlanWeek() {
+        sending.value = true
+        liveStatus.value = "Re-planning your week…"
+        viewModelScope.launch {
+            runCatching {
+                val monday = java.time.LocalDate.now().with(java.time.DayOfWeek.MONDAY)
+                repo.planWeek(com.workoutmaker.app.data.PlanWeekRequest(start_date = monday.toString()))
+            }.onSuccess {
+                lastAction.value = "re-planned your week"
+                banner.value = "✓ Re-planned your week"
+                loadActionWeek()
+            }.onFailure { banner.value = "Couldn't re-plan: ${it.message}" }
+            sending.value = false
+            liveStatus.value = null
+        }
+    }
+
+    // Reflect any write actions the coach took this turn: a plain-language card
+    // subtitle, the "Re-plan" escape hatch (only after a full week plan), and a
+    // fresh pull of the real calendar for the result card.
+    private fun onToolsUsed(tools: List<String>) {
+        val writes = tools.filter { it in WRITE_TOOL_NAMES }
+        if (writes.isNotEmpty()) {
+            lastAction.value = friendlyTools(writes)
+            showReplan.value = writes.contains("plan_week")
+        }
+        if (tools.any { it == "plan_week" || it == "generate_workout" || it == "move_workout" }) {
+            loadActionWeek()
+        }
+    }
 
     // After plan_week / generate_workout / move_workout: show what's actually on
     // the calendar now, fetched fresh from the source of truth.
@@ -254,6 +298,8 @@ class CoachViewModel @Inject constructor(private val repo: WorkoutRepository) : 
         messages.value = outgoing
         sending.value = true
         banner.value = null
+        lastAction.value = null
+        showReplan.value = false
         liveStatus.value = "Thinking…"
         val history = outgoing.drop(1) // drop the local greeting
 
@@ -285,9 +331,7 @@ class CoachViewModel @Inject constructor(private val repo: WorkoutRepository) : 
                     if (!gotReply) messages.value = messages.value + ChatMessage("assistant", "⚠️ $err")
                 }
                 if (r.toolsUsed.isNotEmpty()) banner.value = "🔧 " + friendlyTools(r.toolsUsed)
-                if (r.toolsUsed.any { it == "plan_week" || it == "generate_workout" || it == "move_workout" }) {
-                    loadActionWeek()
-                }
+                onToolsUsed(r.toolsUsed)
             }.onFailure {
                 if (!gotReply) {
                     // Stream transport failed — retry once over the plain endpoint.
@@ -299,9 +343,7 @@ class CoachViewModel @Inject constructor(private val repo: WorkoutRepository) : 
                         conversationId = reply.conversation_id ?: conversationId
                         messages.value = messages.value + ChatMessage("assistant", reply.reply ?: "(no reply)")
                         if (reply.tools_used.isNotEmpty()) banner.value = "🔧 " + friendlyTools(reply.tools_used)
-                        if (reply.tools_used.any { t -> t == "plan_week" || t == "generate_workout" || t == "move_workout" }) {
-                            loadActionWeek()
-                        }
+                        onToolsUsed(reply.tools_used)
                     }.onFailure { e2 ->
                         banner.value = e2.message
                         messages.value = messages.value + ChatMessage("assistant", "⚠️ ${e2.message}")
@@ -345,6 +387,8 @@ fun CoachScreen(vm: CoachViewModel = hiltViewModel(), onOpenCalendar: () -> Unit
     val banner by vm.banner.collectAsStateSafe()
     val liveStatus by vm.liveStatus.collectAsStateSafe()
     val actionWeek by vm.actionWeek.collectAsStateSafe()
+    val lastAction by vm.lastAction.collectAsStateSafe()
+    val showReplan by vm.showReplan.collectAsStateSafe()
     val suggestions by vm.suggestions.collectAsStateSafe()
     val showHistory by vm.showHistory.collectAsStateSafe()
     val conversations by vm.conversations.collectAsStateSafe()
@@ -418,7 +462,16 @@ fun CoachScreen(vm: CoachViewModel = hiltViewModel(), onOpenCalendar: () -> Unit
         ) {
             items(messages) { msg -> Bubble(msg) }
             actionWeek?.let { week ->
-                item { CalendarResultCard(week, onOpen = onOpenCalendar, onDismiss = { vm.dismissActionCard() }) }
+                item {
+                    CalendarResultCard(
+                        week,
+                        changed = lastAction,
+                        showReplan = showReplan,
+                        onOpen = onOpenCalendar,
+                        onReplan = { vm.rePlanWeek() },
+                        onDismiss = { vm.dismissActionCard() },
+                    )
+                }
             }
             if (sending) {
                 item {
@@ -454,13 +507,19 @@ fun CoachScreen(vm: CoachViewModel = hiltViewModel(), onOpenCalendar: () -> Unit
             )
         }
 
-        // Primary action: put what was discussed onto the REAL calendar (the
-        // coach uses its plan_week / generate_workout tools). Saving a reusable
-        // template is the secondary path, tucked into a small menu. Only shown
-        // while the coach is actually proposing sessions — not under plain Q&A,
-        // and not when the action already landed (the calendar card shows then).
+        // Fallback only: the coach normally applies changes itself (its plan_week /
+        // generate_workout tools land on the real calendar and the result card
+        // shows above). This appears just for the rare turn where the coach
+        // proposed sessions in prose without applying them — a manual escape hatch.
+        // Saving a reusable template is tucked into the small "Save" menu.
         val lastAssistant = messages.lastOrNull { it.role == "assistant" }?.content ?: ""
         if (messages.size > 2 && actionWeek == null && looksLikeWorkoutProposal(lastAssistant)) {
+            Text(
+                "Coach proposed this but didn't apply it:",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(horizontal = 16.dp, vertical = 2.dp),
+            )
             Row(
                 Modifier.fillMaxWidth().padding(horizontal = 12.dp),
                 verticalAlignment = Alignment.CenterVertically,
@@ -472,7 +531,7 @@ fun CoachScreen(vm: CoachViewModel = hiltViewModel(), onOpenCalendar: () -> Unit
                     },
                     enabled = !sending,
                     modifier = Modifier.weight(1f),
-                ) { Text("📅 Apply to my calendar") }
+                ) { Text("📅 Put it on my calendar") }
                 var templateMenu by remember { mutableStateOf(false) }
                 Box {
                     TextButton(onClick = { templateMenu = true }, enabled = !sending) {
@@ -611,14 +670,27 @@ private fun ConversationRow(
 @Composable
 private fun CalendarResultCard(
     week: List<com.workoutmaker.app.data.PlannedWorkout>,
+    changed: String?,
+    showReplan: Boolean,
     onOpen: () -> Unit,
+    onReplan: () -> Unit,
     onDismiss: () -> Unit,
 ) {
     com.workoutmaker.app.ui.components.SectionCard {
         Row(verticalAlignment = Alignment.CenterVertically) {
-            com.workoutmaker.app.ui.components.SectionLabel("Now on your calendar")
+            com.workoutmaker.app.ui.components.SectionLabel(
+                if (changed != null) "✓ Updated your calendar" else "Now on your calendar",
+            )
             Spacer(Modifier.weight(1f))
             TextButton(onClick = onDismiss) { Text("Hide", style = MaterialTheme.typography.labelMedium) }
+        }
+        changed?.let {
+            Text(
+                "The coach $it.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(bottom = 4.dp),
+            )
         }
         if (week.isEmpty()) {
             Text(
@@ -655,7 +727,18 @@ private fun CalendarResultCard(
                 }
             }
         }
-        GhostButton(onClick = onOpen, modifier = Modifier.fillMaxWidth()) { Text("View in calendar") }
+        Row(
+            Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            GhostButton(onClick = onOpen, modifier = Modifier.weight(1f)) { Text("View in calendar") }
+            if (showReplan) {
+                TextButton(onClick = onReplan) {
+                    Text("Re-plan", style = MaterialTheme.typography.labelMedium)
+                }
+            }
+        }
     }
 }
 

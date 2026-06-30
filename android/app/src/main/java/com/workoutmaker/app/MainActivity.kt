@@ -31,10 +31,13 @@ import com.workoutmaker.app.ui.AuthGate
 import com.workoutmaker.app.ui.screens.CalendarScreen
 import com.workoutmaker.app.ui.screens.CoachScreen
 import com.workoutmaker.app.ui.screens.HomeScreen
+import com.workoutmaker.app.ui.screens.RecoveryHistoryScreen
 import com.workoutmaker.app.ui.screens.SettingsScreen
 import com.workoutmaker.app.ui.screens.StrengthScreen
 import com.workoutmaker.app.ui.screens.WorkoutHistoryScreen
+import com.workoutmaker.app.ui.screens.WorkoutPlayerScreen
 import com.workoutmaker.app.ui.theme.WorkoutMakerTheme
+import com.workoutmaker.app.ui.theme.palette
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.ViewModel
@@ -64,6 +67,9 @@ class ThemeViewModel @Inject constructor(prefs: AppPreferences) : ViewModel() {
     val themeMode = prefs.settings
         .map { it.themeMode }
         .stateIn(viewModelScope, SharingStarted.Eagerly, ThemeMode.SYSTEM)
+    val themePalette = prefs.settings
+        .map { it.themePalette }
+        .stateIn(viewModelScope, SharingStarted.Eagerly, com.workoutmaker.app.data.ThemePalette.SERENE)
 }
 
 @AndroidEntryPoint
@@ -73,12 +79,13 @@ class MainActivity : ComponentActivity() {
         setContent {
             val themeVm: ThemeViewModel = hiltViewModel()
             val mode by themeVm.themeMode.collectAsState()
+            val palette by themeVm.themePalette.collectAsState()
             val dark = when (mode) {
                 ThemeMode.DARK -> true
                 ThemeMode.LIGHT -> false
                 ThemeMode.SYSTEM -> isSystemInDarkTheme()
             }
-            WorkoutMakerTheme(darkTheme = dark) {
+            WorkoutMakerTheme(palette = palette.palette(), darkTheme = dark) {
                 Surface {
                     AuthGate { MainScaffold() }
                 }
@@ -143,7 +150,18 @@ private fun MainScaffold() {
             com.workoutmaker.app.ui.components.LocalAppSnackbar provides appSnackbar,
         ) {
         NavHost(nav, startDestination = startDestination, modifier = Modifier.padding(padding)) {
-            composable("home") { HomeScreen() }
+            composable("home") {
+                HomeScreen(
+                    onOpenRecoveryHistory = { nav.navigate("recovery-history") },
+                    onStartWorkout = { nav.navigate("player") },
+                )
+            }
+            composable("recovery-history") {
+                RecoveryHistoryScreen(onBack = { nav.popBackStack() })
+            }
+            composable("player") {
+                WorkoutPlayerScreen(onExit = { nav.popBackStack() })
+            }
             composable("coach") {
                 CoachScreen(onOpenCalendar = {
                     nav.navigate("calendar") {

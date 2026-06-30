@@ -19,7 +19,7 @@ import { fmtCost } from "@/lib/utils";
 import Link from "next/link";
 import { ArrowDown, ArrowUp, CheckCircle2, ChevronLeft, ExternalLink, XCircle } from "lucide-react";
 
-const ALL: LlmProvider[] = ["anthropic", "deepseek", "openai", "gemini", "groq"];
+const ALL: LlmProvider[] = ["anthropic", "deepseek", "openai", "gemini", "groq", "openrouter"];
 
 // A saved key row — the key itself never leaves the server; key_hint is the
 // masked preview ("sk-an••••3kQx") written at save time.

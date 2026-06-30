@@ -45,6 +45,8 @@ async function fetchModels(provider: LlmProvider, apiKey: string, baseUrl?: stri
         ? "https://api.openai.com/v1"
         : provider === "deepseek"
         ? "https://api.deepseek.com/v1"
+        : provider === "openrouter"
+        ? "https://openrouter.ai/api/v1"
         : provider === "custom"
         ? (baseUrl ?? "")
         : "https://api.groq.com/openai/v1";
