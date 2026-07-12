@@ -92,10 +92,13 @@ import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import javax.inject.Inject
 
+// Theme-aware: the raw band constants are dark-palette pastels that wash out on
+// light paper (theme-aware-accents rule).
+@Composable
 internal fun priorityColor(p: String) = when (p.uppercase()) {
-    "A" -> com.workoutmaker.app.ui.theme.BandRed
-    "B" -> com.workoutmaker.app.ui.theme.BandAmber
-    else -> com.workoutmaker.app.ui.theme.Sage
+    "A" -> MaterialTheme.colorScheme.error
+    "B" -> com.workoutmaker.app.ui.theme.amberAccent()
+    else -> MaterialTheme.colorScheme.primary
 }
 
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
@@ -229,7 +232,7 @@ internal fun ZonesSection(vm: SettingsViewModel) {
             }
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
                 Text(t.date, style = MaterialTheme.typography.bodySmall)
-                Text(label, style = MaterialTheme.typography.bodyMedium, color = com.workoutmaker.app.ui.theme.Sage)
+                Text(label, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.primary)
             }
         }
         OutlinedButton(onClick = { showTest = true }, modifier = Modifier.fillMaxWidth()) { Text("Log a test") }

@@ -44,6 +44,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -149,6 +150,9 @@ class CoachViewModel @Inject constructor(private val repo: WorkoutRepository) : 
     val messages = MutableStateFlow(listOf(ChatMessage("assistant", GREETING)))
     val sending = MutableStateFlow(false)
     val banner = MutableStateFlow<String?>(null)
+    // When a send fails outright, the failed text is parked here so the screen can
+    // refill the input box — the athlete retries with one tap, not a retype.
+    val draftRestore = MutableStateFlow<String?>(null)
     // Live tool-progress line while the agentic loop runs.
     val liveStatus = MutableStateFlow<String?>(null)
     // After the coach changes the calendar: this week's sessions for the result card.
@@ -346,7 +350,12 @@ class CoachViewModel @Inject constructor(private val repo: WorkoutRepository) : 
                         onToolsUsed(reply.tools_used)
                     }.onFailure { e2 ->
                         banner.value = e2.message
-                        messages.value = messages.value + ChatMessage("assistant", "⚠️ ${e2.message}")
+                        // Both transports failed — revert the stranded user turn and
+                        // hand the text back to the input box so retry is one tap.
+                        if (messages.value.lastOrNull()?.role == "user") {
+                            messages.value = messages.value.dropLast(1)
+                        }
+                        draftRestore.value = text
                     }
                 }
             }
@@ -392,8 +401,19 @@ fun CoachScreen(vm: CoachViewModel = hiltViewModel(), onOpenCalendar: () -> Unit
     val suggestions by vm.suggestions.collectAsStateSafe()
     val showHistory by vm.showHistory.collectAsStateSafe()
     val conversations by vm.conversations.collectAsStateSafe()
-    var input by remember { mutableStateOf("") }
+    // Saveable: a half-typed coach message must survive rotation.
+    var input by rememberSaveable { mutableStateOf("") }
     val listState = rememberLazyListState()
+
+    // A failed send parks its text here — pull it back into the box (unless the
+    // athlete already started typing something new) so retry is one tap.
+    val draftRestore by vm.draftRestore.collectAsStateSafe()
+    LaunchedEffect(draftRestore) {
+        draftRestore?.let {
+            if (input.isBlank()) input = it
+            vm.draftRestore.value = null
+        }
+    }
 
     if (showHistory) {
         ModalBottomSheet(

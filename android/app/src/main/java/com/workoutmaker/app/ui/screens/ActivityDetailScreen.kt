@@ -334,7 +334,7 @@ private fun ActivityChartsSection(
     if (series.pace.any { it != null }) {
         SectionCard {
             SectionLabel(
-                "Pace · /km" + (a.target?.takeIf { it.pace_lo != null }?.let { t ->
+                "Pace · /km" + (a.target?.takeIf { it.pace_lo != null && it.pace_hi != null }?.let { t ->
                     " · target ${t.zones} ${fmtPaceSec(t.pace_lo!!.toInt())}–${fmtPaceSec(t.pace_hi!!.toInt())}"
                 } ?: ""),
                 color = ChartPace,
@@ -349,7 +349,7 @@ private fun ActivityChartsSection(
     if (series.hr.any { it != null }) {
         SectionCard {
             SectionLabel(
-                "Heart rate · bpm" + (a.target?.takeIf { it.hr_lo != null }?.let { " · target ${it.hr_lo}–${it.hr_hi}" } ?: ""),
+                "Heart rate · bpm" + (a.target?.takeIf { it.hr_lo != null && it.hr_hi != null }?.let { " · target ${it.hr_lo}–${it.hr_hi}" } ?: ""),
                 color = ChartHr,
             )
             HrChart(series, a.target)

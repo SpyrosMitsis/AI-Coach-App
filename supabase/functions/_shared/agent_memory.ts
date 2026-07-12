@@ -16,6 +16,9 @@
 import type { SupabaseClient } from "jsr:@supabase/supabase-js@2";
 import type { LlmProvider } from "./types.ts";
 import { type ChatMessage, llmGenerateWithFallback } from "./llm.ts";
+import { logger } from "./log.ts";
+
+const log = logger("agent_memory");
 
 // Provider access bundle — exactly the shape llmAccess() returns, so callers
 // can pass it straight through.
@@ -148,11 +151,23 @@ export async function updateUserDoc(
       bundle.resolveBaseUrl,
     );
     const next = out.text.trim();
-    if (next && next.length <= 2000 && /[-*•]/.test(next) && next !== existing.trim()) {
+    // Relaxed gate: previously required a bullet char, which silently dropped a
+    // valid single fact stated without a dash ("Only trains twice a week"). Now
+    // we accept any non-empty, length-bounded, changed text and only reject
+    // explicit no-content replies — logging every outcome so drops aren't blind.
+    const noContent = !next || /^\(?\s*(empty|none|no (durable|new|changes?|updates?)|n\/a)\b/i.test(next);
+    if (noContent) {
+      log.debug("user_doc_skip", { reason: "no-content" });
+    } else if (next.length > 2000) {
+      log.warn("user_doc_skip", { reason: "too-long", len: next.length });
+    } else if (next === existing.trim()) {
+      log.debug("user_doc_skip", { reason: "unchanged" });
+    } else {
       await admin.from("user_profiles").update({ coach_knowledge: next }).eq("id", userId);
+      log.info("user_doc_saved", { len: next.length });
     }
-  } catch (_e) {
-    // best-effort
+  } catch (e) {
+    log.warn("user_doc_failed", { err: e instanceof Error ? e.message : String(e) });
   }
 }
 

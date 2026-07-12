@@ -171,10 +171,11 @@ export default function CalendarPage() {
           .update({ completed: vars.completed }).eq("id", vars.w.id);
         if (e2) throw e2;
       }
-      await supabase.from("workout_feedback").insert({
+      const { error: fbErr } = await supabase.from("workout_feedback").insert({
         planned_workout_id: vars.w.id, date: vars.w.date,
         completed: vars.completed, difficulty: vars.completed ? "just_right" : null,
       });
+      if (fbErr) throw fbErr;
     },
     onSuccess: (_d, vars) => setBannerAndReload(vars.completed ? "✓ Marked done" : "Marked skipped"),
     onError: fail,

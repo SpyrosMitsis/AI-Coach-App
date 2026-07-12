@@ -69,7 +69,7 @@ class UiExercise(val name: String) {
 private fun kg(v: Double): String =
     if (kotlin.math.abs(v - v.toLong()) < 0.001) v.toLong().toString() else ((v * 100).toLong() / 100.0).toString()
 
-// Single source of truth for the 🎯 headline and the greyed input placeholders:
+// Single source of truth for the ↗ target headline and the greyed input placeholders:
 // when a live progression suggestion exists it drives BOTH, so they can't
 // disagree. Only fills sets the athlete hasn't typed into yet; a history-based
 // suggestion overrides any plan-seeded placeholder.
@@ -141,35 +141,9 @@ class StrengthViewModel @Inject constructor(
     // workout (the "keep or replace?" guard). Null when nothing's pending.
     val pendingPlannedStart = MutableStateFlow<StrengthHandoff.Start?>(null)
 
-    // Observe the Calendar → Strength handoff: opening the tab with a pending
-    // request seeds the logger from the plan — but guard an in-progress session.
-    init {
-        viewModelScope.launch {
-            handoff.pending.collect { s ->
-                if (s != null) {
-                    handoff.clear()
-                    if (exercises.isNotEmpty()) pendingPlannedStart.value = s // ask before discarding
-                    else startPlanned(s)
-                }
-            }
-        }
-    }
-
     // History/Calendar → "edit this logged workout" handoff, with the same
     // in-progress-session guard as planned starts.
     val pendingEditStart = MutableStateFlow<String?>(null)
-
-    init {
-        viewModelScope.launch {
-            handoff.pendingEdit.collect { id ->
-                if (id != null) {
-                    handoff.clearEdit()
-                    if (exercises.isNotEmpty()) pendingEditStart.value = id // ask before discarding
-                    else editWorkout(id)
-                }
-            }
-        }
-    }
 
     /** User chose to discard the in-progress session and load the planned one. */
     fun confirmReplaceWithPlanned() {
@@ -240,6 +214,32 @@ class StrengthViewModel @Inject constructor(
     // initialised, and synchronously so the workout is ready on first frame.
     init { restoreSavedSession() }
 
+    // Observe the Calendar → Strength handoffs: opening the tab with a pending
+    // request seeds the logger from the plan — but guard an in-progress session.
+    // MUST come after every property above: viewModelScope is Main.immediate, so
+    // when a handoff is already pending the collect body runs synchronously
+    // during construction (touching `exercises` earlier NPE'd).
+    init {
+        viewModelScope.launch {
+            handoff.pending.collect { s ->
+                if (s != null) {
+                    handoff.clear()
+                    if (exercises.isNotEmpty()) pendingPlannedStart.value = s // ask before discarding
+                    else startPlanned(s)
+                }
+            }
+        }
+        viewModelScope.launch {
+            handoff.pendingEdit.collect { id ->
+                if (id != null) {
+                    handoff.clearEdit()
+                    if (exercises.isNotEmpty()) pendingEditStart.value = id // ask before discarding
+                    else editWorkout(id)
+                }
+            }
+        }
+    }
+
     // New surfaces: weekly volume/deload (B2/B5), PR celebration (C2),
     // picker favorites/recents/custom (D1/D5), programs (B4).
     val weeklyReport = MutableStateFlow<WeeklyReport?>(null)
@@ -270,7 +270,12 @@ class StrengthViewModel @Inject constructor(
                 prefs.setCustomsCleanupV1Done()
                 if (tidied > 0) status.value = "Tidied $tidied exercise name(s) to match the catalog"
             }
-            val restored = repo.restoreIfEmpty()
+            val restored = runCatching { repo.restoreIfEmpty() }.getOrElse {
+                // Only reachable when local history is empty (post-reinstall), so
+                // an empty screen here would silently mask un-restored history.
+                status.value = "Couldn't restore your history from the cloud — check your connection and reopen this tab"
+                0
+            }
             if (restored > 0) status.value = "Restored $restored workouts from the cloud"
             // Two-way sync: pull in sessions logged elsewhere (e.g. the web app).
             val merged = repo.mergeFromCloud()
@@ -370,12 +375,10 @@ class StrengthViewModel @Inject constructor(
         clearSavedSession()
     }
 
-    // Q4: reorder exercises in the active session.
-    fun moveExercise(ux: UiExercise, up: Boolean) {
-        val i = exercises.indexOf(ux)
-        if (i < 0) return
-        val j = if (up) i - 1 else i + 1
-        if (j in exercises.indices) { exercises[i] = exercises[j]; exercises[j] = ux }
+    // Q4: reorder exercises in the active session (drag-and-drop).
+    fun moveExerciseTo(from: Int, to: Int) {
+        if (from == to || from !in exercises.indices || to !in exercises.indices) return
+        exercises.add(to, exercises.removeAt(from))
         persistSession()
     }
 
@@ -542,7 +545,7 @@ class StrengthViewModel @Inject constructor(
                 e.rest_seconds?.let { ux.restSec = it }
                 exercises.add(ux)
                 // History-based suggestion wins over the plan-prescribed weight so
-                // the 🎯 target and the greyed placeholders always match.
+                // the ↗ target and the greyed placeholders always match.
                 viewModelScope.launch {
                     ux.previous = repo.previousSets(e.name)
                     applySuggestion(ux, repo.progressionFor(e.name))
@@ -620,9 +623,12 @@ class StrengthViewModel @Inject constructor(
 
     fun toggleDone(ux: UiExercise, s: UiSet) {
         if (!s.done) {
-            // A greyed suggestion is NOT a logged value: require real entered
-            // weight & reps (typed, or tapped in from "PREV") before a set can
-            // count as done — otherwise it'd save as 0×0.
+            // Ticking a blank field adopts its greyed suggestion — one tap logs
+            // the suggested set as-is. The values become real (visible) entries
+            // so what gets saved is exactly what the row shows.
+            if (s.reps.isBlank() && s.suggestedReps.isNotBlank()) s.reps = s.suggestedReps
+            if (!ux.isCardio && s.weight.isBlank() && s.suggestedWeight.isNotBlank()) s.weight = s.suggestedWeight
+            // With no suggestion either, there's still nothing to log (0×0 guard).
             val needsWeight = !ux.isCardio && !s.warmup
             if (s.reps.isBlank() || (needsWeight && s.weight.isBlank())) {
                 status.value = if (ux.isCardio) "Enter minutes before ticking the set"
@@ -794,7 +800,7 @@ class StrengthViewModel @Inject constructor(
                     restRemaining.value = null
                     cancelRestAlarm() // foreground: cue in-app instead of via the alarm
                     if (cfg.restVibrate) com.workoutmaker.app.notify.vibrateStrong(context)
-                    if (cfg.restNotify) com.workoutmaker.app.notify.playRestOverSound(context)
+                    if (cfg.restNotify) com.workoutmaker.app.notify.playRestOverSound(context, cfg.restChime)
                     break
                 }
                 restRemaining.value = remain

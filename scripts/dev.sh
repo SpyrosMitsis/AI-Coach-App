@@ -16,18 +16,24 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 
-# --- baked-in environment (override via env if your setup differs) ----------
+# --- personal machine defaults (untracked; see scripts/dev.local.sh) --------
+# Put PROJECT_REF / ANDROID_SERIAL / any override there so the repo stays
+# publishable; explicit env vars still win.
+[[ -f "$SCRIPT_DIR/dev.local.sh" ]] && source "$SCRIPT_DIR/dev.local.sh"
+
+# --- baked-in environment (override via env or dev.local.sh) ----------------
 JAVA_HOME="${JAVA_HOME:-/usr/lib/jvm/java-17-openjdk}"
 DENO_BIN="${DENO_BIN:-$HOME/.deno/bin}"
-PROJECT_REF="${PROJECT_REF:-qkcyavbuuhljjplufrlu}"
+PROJECT_REF="${PROJECT_REF:-}"        # your Supabase project ref
 APP_ID="${APP_ID:-com.workoutmaker.app}"
-ANDROID_SERIAL="${ANDROID_SERIAL:-R3CT40D46AD}"
+ANDROID_SERIAL="${ANDROID_SERIAL:-}"  # adb serial; blank = adb's default device
 LOCAL_API="${LOCAL_API:-http://localhost:54321}"
 # Seeded dev athlete (supabase/seed.sql) — used by fn:call for a real user JWT.
 DEV_EMAIL="${DEV_EMAIL:-athlete@example.com}"
 DEV_PASSWORD="${DEV_PASSWORD:-password123}"
 
-export JAVA_HOME ANDROID_SERIAL
+export JAVA_HOME
+[[ -n "$ANDROID_SERIAL" ]] && export ANDROID_SERIAL
 export PATH="$DENO_BIN:$PATH"
 
 # --- pretty output ----------------------------------------------------------
@@ -37,6 +43,7 @@ warn() { printf '%s!!%s %s\n' "$c_yellow" "$c_off" "$*" >&2; }
 die()  { printf '%sxx%s %s\n' "$c_red" "$c_off" "$*" >&2; exit 1; }
 
 need() { command -v "$1" >/dev/null 2>&1 || die "missing '$1' on PATH"; }
+need_ref() { [[ -n "$PROJECT_REF" ]] || die "PROJECT_REF is unset — set it in scripts/dev.local.sh or the environment"; }
 
 confirm() { # confirm "question"
   printf '%s?? %s [y/N] %s' "$c_yellow" "$*" "$c_off"
@@ -115,14 +122,14 @@ cmd_fn_serve() {
 }
 
 cmd_fn_deploy() {
-  need supabase
+  need supabase; need_ref
   [[ $# -gt 0 ]] || die "usage: fn:deploy <name> [name ...]"
   say "deploy [$*] -> $PROJECT_REF"
   supabase functions deploy "$@" --project-ref "$PROJECT_REF"
 }
 
 cmd_fn_logs() {
-  need supabase
+  need supabase; need_ref
   [[ $# -eq 1 ]] || die "usage: fn:logs <name>"
   say "logs $1 -> $PROJECT_REF  (tip: WM_LOG=debug for verbose JSON lines)"
   supabase functions logs "$1" --project-ref "$PROJECT_REF"
@@ -145,6 +152,7 @@ cmd_fn_call() {
 
   local base anon
   if [[ "$remote" == 1 ]]; then
+    need_ref
     base="https://${PROJECT_REF}.supabase.co"
     anon="${SUPABASE_ANON_KEY:-}"
     [[ -n "$anon" ]] || die "set SUPABASE_ANON_KEY for --remote (anon key from the dashboard)"
@@ -186,7 +194,7 @@ _json_field() { # _json_field key  (reads stdin)
 # ============================================================================
 cmd_db_push() {
   need supabase
-  warn "db:push runs ALL pending migrations against $PROJECT_REF."
+  warn "db:push runs ALL pending migrations against ${PROJECT_REF:-the linked project}."
   confirm "Push migrations now?" || { say "aborted."; return; }
   ( cd "$ROOT/supabase" && supabase db push )
 }

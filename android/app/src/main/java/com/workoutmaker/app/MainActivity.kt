@@ -35,7 +35,6 @@ import com.workoutmaker.app.ui.screens.RecoveryHistoryScreen
 import com.workoutmaker.app.ui.screens.SettingsScreen
 import com.workoutmaker.app.ui.screens.StrengthScreen
 import com.workoutmaker.app.ui.screens.WorkoutHistoryScreen
-import com.workoutmaker.app.ui.screens.WorkoutPlayerScreen
 import com.workoutmaker.app.ui.theme.WorkoutMakerTheme
 import com.workoutmaker.app.ui.theme.palette
 import androidx.compose.foundation.isSystemInDarkTheme
@@ -152,15 +151,13 @@ private fun MainScaffold() {
         NavHost(nav, startDestination = startDestination, modifier = Modifier.padding(padding)) {
             composable("home") {
                 HomeScreen(
-                    onOpenRecoveryHistory = { nav.navigate("recovery-history") },
-                    onStartWorkout = { nav.navigate("player") },
+                    // singleTop: a fast double-tap must not stack two copies
+                    // (Back then appears broken, popping to the duplicate).
+                    onOpenRecoveryHistory = { nav.navigate("recovery-history") { launchSingleTop = true } },
                 )
             }
             composable("recovery-history") {
                 RecoveryHistoryScreen(onBack = { nav.popBackStack() })
-            }
-            composable("player") {
-                WorkoutPlayerScreen(onExit = { nav.popBackStack() })
             }
             composable("coach") {
                 CoachScreen(onOpenCalendar = {
@@ -175,7 +172,7 @@ private fun MainScaffold() {
                 CalendarScreen(onOpenStrength = openStrengthLogger)
             }
             composable("strength") {
-                StrengthScreen(onOpenHistory = { nav.navigate("history") })
+                StrengthScreen(onOpenHistory = { nav.navigate("history") { launchSingleTop = true } })
             }
             composable("history") {
                 WorkoutHistoryScreen(

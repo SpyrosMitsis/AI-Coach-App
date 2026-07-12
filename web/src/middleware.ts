@@ -30,7 +30,9 @@ export async function middleware(request: NextRequest) {
   const path = request.nextUrl.pathname;
 
   const isAuthRoute = path.startsWith("/login");
-  const isPublic = isAuthRoute || path.startsWith("/auth");
+  // /delete-account must be reachable without sign-in: Google Play's data-safety
+  // form requires a public web deletion path.
+  const isPublic = isAuthRoute || path.startsWith("/auth") || path === "/delete-account";
 
   if (!user && !isPublic) {
     return NextResponse.redirect(new URL("/login", request.url));

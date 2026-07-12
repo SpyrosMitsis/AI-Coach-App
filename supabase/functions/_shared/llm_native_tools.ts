@@ -13,6 +13,10 @@ import type { LlmProvider } from "./types.ts";
 import { anthropicAcceptsTemperature, openAiModernParams, PROVIDERS } from "./llm.ts";
 import type { ChatMessage } from "./llm.ts";
 
+// Per-step deadline — one hung tool-call step shouldn't run to the platform
+// wall-clock and stall the whole agentic loop.
+const STEP_TIMEOUT_MS = 60_000;
+
 export interface NativeToolDef {
   name: string;
   description: string;
@@ -75,6 +79,7 @@ async function anthropicLoop(args: NativeLoopArgs): Promise<NativeLoopResult> {
         messages: msgs,
         tools: args.tools,
       }),
+      signal: AbortSignal.timeout(STEP_TIMEOUT_MS),
     });
     if (!res.ok) throw new Error(`anthropic HTTP ${res.status}: ${await res.text()}`);
     const data = await res.json();
@@ -148,6 +153,7 @@ async function openAiCompatibleLoop(args: NativeLoopArgs): Promise<NativeLoopRes
           ? { max_completion_tokens: 2500 }
           : { temperature: 0.6, max_tokens: 2500 }),
       }),
+      signal: AbortSignal.timeout(STEP_TIMEOUT_MS),
     });
     if (!res.ok) throw new Error(`${args.provider} HTTP ${res.status}: ${await res.text()}`);
     const data = await res.json();

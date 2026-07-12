@@ -90,9 +90,11 @@ export default function DashboardPage() {
           .update({ completed: vars.completed, skipped: !vars.completed }).eq("id", today.id);
         // Pre-migration-26 fallback: no `skipped` column yet.
         if (error) await supabase.from("planned_workouts").update({ completed: vars.completed }).eq("id", today.id);
-        await supabase.from("workout_feedback").insert({ ...row, planned_workout_id: today.id });
+        const { error: fbErr } = await supabase.from("workout_feedback").insert({ ...row, planned_workout_id: today.id });
+        if (fbErr) throw fbErr;
       } else {
-        await supabase.from("workout_feedback").insert(row);
+        const { error: fbErr } = await supabase.from("workout_feedback").insert(row);
+        if (fbErr) throw fbErr;
       }
     },
     onSuccess: (_d, vars) => {

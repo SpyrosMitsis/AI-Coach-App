@@ -1,6 +1,6 @@
 package com.workoutmaker.app.di
 
-import com.workoutmaker.app.BuildConfig
+import com.workoutmaker.app.data.BackendConfig
 import dagger.Module
 import dagger.Provides
 import dagger.hilt.InstallIn
@@ -20,10 +20,10 @@ object AppModule {
 
     @Provides
     @Singleton
-    fun provideSupabase(): SupabaseClient =
+    fun provideSupabase(backend: BackendConfig): SupabaseClient =
         createSupabaseClient(
-            supabaseUrl = BuildConfig.SUPABASE_URL,
-            supabaseKey = BuildConfig.SUPABASE_ANON_KEY,
+            supabaseUrl = backend.url,
+            supabaseKey = backend.anonKey,
         ) {
             // Multi-week block planning (plan-block) can run for a while; give
             // function calls plenty of headroom over the ~10s default.

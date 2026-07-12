@@ -24,6 +24,11 @@ export interface ProviderSpec {
   getFreeKeyUrl: string;
 }
 
+// Per-request deadline for a (non-streaming) provider call. Without it a hung
+// provider runs to the platform wall-clock, and the agentic coach loop compounds
+// that across up to ~12 sequential calls. AbortSignal.timeout auto-cleans.
+const LLM_TIMEOUT_MS = 60_000;
+
 export const PROVIDERS: Record<LlmProvider, ProviderSpec> = {
   anthropic: {
     label: "Anthropic",
@@ -89,15 +94,37 @@ export interface PriceOverride {
   outputPer1M: number;
 }
 
+// Per-model prices for models that differ from their provider's default. Only
+// covers the Anthropic family — the documented "strong model opt-in" — so a user
+// who selects, say, Haiku or Sonnet instead of the default Opus isn't billed at
+// Opus rates. Other providers fall back to the provider default. Source:
+// Anthropic pricing, USD per 1M tokens.
+const MODEL_PRICES: { test: RegExp; inputPer1M: number; outputPer1M: number }[] = [
+  { test: /opus-4/i, inputPer1M: 5.0, outputPer1M: 25.0 },
+  { test: /sonnet-4/i, inputPer1M: 3.0, outputPer1M: 15.0 },
+  { test: /haiku-4/i, inputPer1M: 1.0, outputPer1M: 5.0 },
+  { test: /fable-5|mythos-5/i, inputPer1M: 10.0, outputPer1M: 50.0 },
+];
+function priceForModel(model: string | undefined): PriceOverride | undefined {
+  if (!model) return undefined;
+  const hit = MODEL_PRICES.find((m) => m.test.test(model));
+  return hit ? { inputPer1M: hit.inputPer1M, outputPer1M: hit.outputPer1M } : undefined;
+}
+
 export function estimateCostUsd(
   provider: LlmProvider,
   promptTokens: number,
   completionTokens: number,
   override?: PriceOverride,
+  model?: string,
 ): number {
   const p = PROVIDERS[provider];
-  const inputPer1M = override?.inputPer1M ?? p.inputPer1M;
-  const outputPer1M = override?.outputPer1M ?? p.outputPer1M;
+  // Precedence: explicit user override (custom/openrouter BYO pricing) →
+  // model-specific price (non-default model on a built-in provider) → provider
+  // default. Without the middle tier a non-default model logged the wrong price.
+  const priced = override ?? priceForModel(model);
+  const inputPer1M = priced?.inputPer1M ?? p.inputPer1M;
+  const outputPer1M = priced?.outputPer1M ?? p.outputPer1M;
   return (
     (promptTokens / 1_000_000) * inputPer1M +
     (completionTokens / 1_000_000) * outputPer1M
@@ -217,6 +244,7 @@ async function openAiCompatible(
       ...openRouterHeaders(provider),
     },
     body: JSON.stringify(body),
+    signal: AbortSignal.timeout(LLM_TIMEOUT_MS),
   });
 
   if (!res.ok) {
@@ -260,6 +288,7 @@ async function anthropic(args: GenArgs): Promise<LlmResult> {
       "anthropic-version": "2023-06-01",
     },
     body: JSON.stringify(body),
+    signal: AbortSignal.timeout(LLM_TIMEOUT_MS),
   });
   if (!res.ok) {
     throw new Error(`anthropic HTTP ${res.status}: ${await res.text()}`);
@@ -300,6 +329,7 @@ async function gemini(args: GenArgs): Promise<LlmResult> {
       })),
       generationConfig,
     }),
+    signal: AbortSignal.timeout(LLM_TIMEOUT_MS),
   });
   if (!res.ok) {
     throw new Error(`gemini HTTP ${res.status}: ${await res.text()}`);

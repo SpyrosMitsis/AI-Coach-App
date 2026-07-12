@@ -1,6 +1,5 @@
 package com.workoutmaker.app.data
 
-import com.workoutmaker.app.BuildConfig
 import io.github.jan.supabase.SupabaseClient
 import io.github.jan.supabase.gotrue.auth
 import io.github.jan.supabase.gotrue.providers.builtin.Email
@@ -36,6 +35,7 @@ class WorkoutRepository @Inject constructor(
     private val supabase: SupabaseClient,
     private val cache: CacheDao,
     private val prefs: AppPreferences,
+    private val backend: BackendConfig,
 ) {
     private val json = Json { ignoreUnknownKeys = true; encodeDefaults = true }
 
@@ -70,18 +70,37 @@ class WorkoutRepository @Inject constructor(
         runCatching { cache.clearWorkouts(); cache.clearSummaries(); cache.clearBriefs() }
     }
 
+    // Permanent server-side account deletion (Play requirement). The edge
+    // function cascades through every owned row; afterwards the local session
+    // is dead anyway, so clear it like a sign-out.
+    suspend fun deleteAccount() {
+        supabase.functions.invoke("delete-account")
+        runCatching { signOut() }
+    }
+
     // --- Profile row cache ----------------------------------------------------
     // loadProfile / isOnboardingComplete / loadKnowledge / autoPlanEnabled all
     // used to fire their own full-row select; serve them from one cached fetch,
     // invalidated whenever this client writes the profile.
     @Volatile
     private var profileRowCache: Map<String, JsonElement>? = null
+    @Volatile
+    private var profileRowFetchedAt: Long = 0L
+
+    // TTL because the row also changes server-side (coach memory/soul evolution,
+    // web-app profile edits) — without it those stay invisible until app restart.
+    private val profileTtlMs = 5 * 60_000L
 
     private suspend fun profileRow(): Map<String, JsonElement>? {
-        profileRowCache?.let { return it }
+        profileRowCache
+            ?.takeIf { System.currentTimeMillis() - profileRowFetchedAt < profileTtlMs }
+            ?.let { return it }
         val rows: List<Map<String, JsonElement>> =
             supabase.postgrest.from("user_profiles").select { filter { eq("id", uid()) } }.decodeList()
-        return rows.firstOrNull()?.also { profileRowCache = it }
+        return rows.firstOrNull()?.also {
+            profileRowCache = it
+            profileRowFetchedAt = System.currentTimeMillis()
+        }
     }
 
     private fun invalidateProfileCache() {
@@ -238,12 +257,18 @@ class WorkoutRepository @Inject constructor(
     // --- Direct table access (RLS-scoped to the signed-in user) --------------
     // Write-through cached so the Calendar still renders the plan offline.
     suspend fun plannedWorkouts(fromDate: String): List<PlannedWorkout> {
+        // Row-tolerant decode: one schema-drifted workout_json must drop that row,
+        // not fail the whole Calendar/Coach plan fetch (the cached path below
+        // already does the same per-row).
         val rows: List<PlannedWorkout> = supabase.postgrest.from("planned_workouts").select {
             filter { gte("date", fromDate) }
             order("date", Order.DESCENDING)
-        }.decodeList()
+        }.decodeList<kotlinx.serialization.json.JsonObject>().mapNotNull { el ->
+            runCatching { json.decodeFromJsonElement(PlannedWorkout.serializer(), el) }
+                .logFailure("plannedWorkouts/row").getOrNull()
+        }
         runCatching {
-            cache.clearWorkouts()
+            cache.clearWorkoutsFrom(fromDate)
             cache.upsertWorkouts(
                 rows.map {
                     CachedWorkout(
@@ -408,11 +433,14 @@ class WorkoutRepository @Inject constructor(
     // --- Coach chat ----------------------------------------------------------
     suspend fun coachChat(req: CoachChatRequest): CoachReply =
         com.workoutmaker.app.util.AppLog.time("coach", "coach-chat mode=${req.mode} turns=${req.messages.size}") {
-            json.decodeFromString(
+            json.decodeFromString<CoachReply>(
                 supabase.functions.invoke("coach-chat") {
                     setBody(json.encodeToString(CoachChatRequest.serializer(), req))
                 }.body(),
-            )
+            ).also {
+                // The coach may have evolved memory/soul server-side this turn.
+                invalidateProfileCache()
+            }
         }
 
     // Past coach conversations for the history list. Ordered by recency here;
@@ -712,10 +740,19 @@ class WorkoutRepository @Inject constructor(
                 .update(mapOf("completed" to JsonPrimitive(completed), "skipped" to JsonPrimitive(!completed))) {
                     filter { eq("id", plannedId) }
                 }
-        }.getOrElse { // pre-migration-26 fallback: no `skipped` column yet
+        }.getOrElse { e ->
+            // Pre-migration-26 fallback: no `skipped` column yet. Only for that
+            // specific error — a blanket fallback would mask network failures and
+            // still write feedback below for an update that never happened.
+            if (e.message?.contains("skipped", ignoreCase = true) != true) throw e
             supabase.postgrest.from("planned_workouts")
                 .update(mapOf("completed" to JsonPrimitive(completed))) { filter { eq("id", plannedId) } }
         }
+        // Last-write-wins per planned session: a double-tap or a re-rate must not
+        // stack duplicate rows (they skew the generator's autoregulation).
+        runCatching {
+            supabase.postgrest.from("workout_feedback").delete { filter { eq("planned_workout_id", plannedId) } }
+        }.logFailure("markPlannedComplete/dedupe")
         supabase.postgrest.from("workout_feedback").insert(
             WorkoutFeedback(planned_workout_id = plannedId, date = date, completed = completed, actual_rpe = rpe, difficulty = difficulty),
         )
@@ -747,8 +784,9 @@ class WorkoutRepository @Inject constructor(
             "run" -> a.contains("run") || a.contains("walk")
             "strength" -> a.contains("weight") || a.contains("strength") || a.contains("workout") || a.contains("gym")
             "ride", "bike" -> a.contains("ride") || a.contains("bike") || a.contains("cycl")
-            "rest" -> false
-            else -> a.isNotEmpty()
+            "swim" -> a.contains("swim")
+            // rest + unknown planned types: never auto-complete from an activity.
+            else -> false
         }
     }
 
@@ -839,7 +877,7 @@ class WorkoutRepository @Inject constructor(
         onToken: (String) -> Unit,
     ): CoachStreamResult {
         val token = supabase.auth.currentSessionOrNull()?.accessToken
-        val url = BuildConfig.SUPABASE_URL.trimEnd('/') + "/functions/v1/coach-chat"
+        val url = backend.url.trimEnd('/') + "/functions/v1/coach-chat"
         val payload = json.encodeToString(
             CoachChatRequest.serializer(),
             CoachChatRequest(messages = messages, mode = "chat", conversationId = conversationId, purpose = "setup", stream = true),
@@ -853,7 +891,7 @@ class WorkoutRepository @Inject constructor(
         com.workoutmaker.app.util.AppLog.i("coach", "coach-stream start turns=${messages.size}")
         streamingHttp.preparePost(url) {
             header("Authorization", "Bearer $token")
-            header("apikey", BuildConfig.SUPABASE_ANON_KEY)
+            header("apikey", backend.anonKey)
             contentType(ContentType.Application.Json)
             setBody(payload)
         }.execute { resp ->
@@ -879,6 +917,8 @@ class WorkoutRepository @Inject constructor(
             "coach-stream done ${System.currentTimeMillis() - streamStarted}ms reply=$gotReply tools=$tools" +
                 (error?.let { " error=$it" } ?: ""),
         )
+        // The coach may have evolved memory/soul server-side this turn.
+        invalidateProfileCache()
         return CoachStreamResult(convId, tools, error, gotReply)
     }
 

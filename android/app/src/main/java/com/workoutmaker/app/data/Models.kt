@@ -642,6 +642,12 @@ data class TrainingProfile(
     // The coach's proactive daily note on Home. On by default; turn off to avoid
     // the one-LLM-call-per-day it costs.
     val briefing: Boolean = true,
+    // Manual demographics — normally read from Intervals.icu; anything set here
+    // OVERRIDES the Intervals value (for when that profile is missing or stale).
+    val sex: String? = null, // "male" | "female"
+    val birth_year: Int? = null,
+    val weight_kg: Int? = null,
+    val height_cm: Int? = null,
 )
 
 @Serializable

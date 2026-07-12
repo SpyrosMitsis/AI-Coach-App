@@ -29,7 +29,10 @@ enable_signup = true
 
 [auth.email]
 enable_signup = true
-enable_confirmations = false   # local dev: skip email confirmation
+# Mirrors production (the real switch lives in the Supabase dashboard — this
+# file only affects local dev). Local confirmation mails land in Inbucket:
+# http://localhost:54324
+enable_confirmations = true
 
 [realtime]
 enabled = true
@@ -63,4 +66,6 @@ verify_jwt = true
 [functions.plan-block]
 verify_jwt = true
 [functions.delete-workout]
+verify_jwt = true
+[functions.delete-account]
 verify_jwt = true

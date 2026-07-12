@@ -185,6 +185,7 @@ class SettingsViewModel @Inject constructor(
     fun setBarbell(kg: Double) = viewModelScope.launch { prefs.setBarbell(kg) }
     fun setRestVibrate(on: Boolean) = viewModelScope.launch { prefs.setRestVibrate(on) }
     fun setRestNotify(on: Boolean) = viewModelScope.launch { prefs.setRestNotify(on) }
+    fun setRestChime(c: com.workoutmaker.app.data.RestChime) = viewModelScope.launch { prefs.setRestChime(c) }
     fun setKeepScreenOn(on: Boolean) = viewModelScope.launch { prefs.setKeepScreenOn(on) }
     fun setThemeMode(m: com.workoutmaker.app.data.ThemeMode) = viewModelScope.launch { prefs.setThemeMode(m) }
     fun setThemePalette(p: com.workoutmaker.app.data.ThemePalette) = viewModelScope.launch { prefs.setThemePalette(p) }
@@ -444,6 +445,17 @@ class SettingsViewModel @Inject constructor(
     }
 
     fun signOut() = viewModelScope.launch { repo.signOut() }
+
+    // null = idle, "" = in flight, anything else = error text.
+    val deleteAccountState = MutableStateFlow<String?>(null)
+
+    fun deleteAccount() = viewModelScope.launch {
+        deleteAccountState.value = ""
+        runCatching { repo.deleteAccount() }
+            .onFailure { deleteAccountState.value = it.message ?: "Deletion failed — try again." }
+            .onSuccess { deleteAccountState.value = null }
+        // On success AuthGate flips to the login screen by itself (session gone).
+    }
 }
 
 // ===========================================================================

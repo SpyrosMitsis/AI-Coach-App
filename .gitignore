@@ -18,3 +18,6 @@ local.properties
 # personal data exports (test fixtures live in android/app/src/*/resources)
 /strong*.csv
 /notes*.md
+
+# personal machine defaults for scripts/dev.sh (project ref, device serial, …)
+scripts/dev.local.sh

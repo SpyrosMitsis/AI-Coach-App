@@ -22,6 +22,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
@@ -48,6 +49,7 @@ class OnboardingViewModel @Inject constructor(private val repo: WorkoutRepositor
     val profile = MutableStateFlow(TrainingProfile())
     val keyStatus = MutableStateFlow<String?>(null)
     val intervalsStatus = MutableStateFlow<String?>(null)
+    val finishStatus = MutableStateFlow<String?>(null)
     val busy = MutableStateFlow(false)
     var provider by androidx.compose.runtime.mutableStateOf(LlmProvider.GROQ)
 
@@ -84,9 +86,13 @@ class OnboardingViewModel @Inject constructor(private val repo: WorkoutRepositor
 
     fun finish() = viewModelScope.launch {
         busy.value = true
+        finishStatus.value = null
         runCatching { repo.saveProfile(profile.value) }
+            // saveProfile flips onboarding_complete → enters the app. Entering
+            // without the save would leave every downstream feature profileless.
+            .onSuccess { complete.value = true }
+            .onFailure { finishStatus.value = "Couldn't save your profile: ${it.message}. Check your connection and try again." }
         busy.value = false
-        complete.value = true // saveProfile flips onboarding_complete → enters the app
     }
 }
 
@@ -96,6 +102,7 @@ fun OnboardingScreen(vm: OnboardingViewModel = hiltViewModel()) {
     val step by vm.step.collectAsStateSafe()
     val profile by vm.profile.collectAsStateSafe()
     val busy by vm.busy.collectAsStateSafe()
+    val finishStatus by vm.finishStatus.collectAsStateSafe()
 
     Column(Modifier.fillMaxSize().padding(20.dp).verticalScroll(rememberScrollState())) {
         Text("Welcome", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.Bold)
@@ -118,6 +125,14 @@ fun OnboardingScreen(vm: OnboardingViewModel = hiltViewModel()) {
                     Text(if (busy) "Saving…" else "Finish")
                 }
             }
+        }
+        finishStatus?.let {
+            Text(
+                it,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onErrorContainer,
+                modifier = Modifier.padding(top = 8.dp),
+            )
         }
         if (step < 2) {
             TextButton(onClick = { vm.finish() }, modifier = Modifier.fillMaxWidth()) { Text("Skip setup for now") }
@@ -157,7 +172,7 @@ private fun StepGoal(profile: TrainingProfile, vm: OnboardingViewModel) {
 
 @Composable
 private fun StepKey(vm: OnboardingViewModel) {
-    var key by remember { mutableStateOf("") }
+    var key by rememberSaveable { mutableStateOf("") }
     val status by vm.keyStatus.collectAsStateSafe()
     val busy by vm.busy.collectAsStateSafe()
     SectionCard(title = "Add an AI key") {
@@ -191,8 +206,8 @@ private fun FlowRowProviders(vm: OnboardingViewModel) {
 
 @Composable
 private fun StepConnect(vm: OnboardingViewModel) {
-    var athleteId by remember { mutableStateOf("") }
-    var key by remember { mutableStateOf("") }
+    var athleteId by rememberSaveable { mutableStateOf("") }
+    var key by rememberSaveable { mutableStateOf("") }
     val status by vm.intervalsStatus.collectAsStateSafe()
     val busy by vm.busy.collectAsStateSafe()
     SectionCard(title = "Connect Intervals.icu (optional)") {

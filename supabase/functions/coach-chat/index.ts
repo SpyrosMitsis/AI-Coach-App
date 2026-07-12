@@ -32,7 +32,7 @@ import {
   updateUserDoc,
 } from "../_shared/agent_memory.ts";
 import { corsHeaders } from "../_shared/cors.ts";
-import { COACH_SYSTEM_PROMPT, finalizeInstruction, trainingPhase } from "../_shared/prompt.ts";
+import { COACH_SYSTEM_PROMPT, finalizeInstruction, freshnessWord, recoveryWord, trainingPhase } from "../_shared/prompt.ts";
 import type { LlmProvider } from "../_shared/types.ts";
 import { executeTool, nativeToolDefs, toolCatalogPrompt } from "../_shared/coach_tools.ts";
 import { runNativeToolLoop, supportsNativeTools } from "../_shared/llm_native_tools.ts";
@@ -135,6 +135,19 @@ const trimThread = (msgs: ChatMessage[]): ChatMessage[] => compressThread(msgs).
 // budget on knowledge-extraction when the latest user turn plausibly carries one.
 const KNOWLEDGE_HINTS =
   /\b(injur|hurt|pain|sore|tendin|strain|sprain|knee|shoulder|back|hip|ankle|wrist|elbow|equipment|dumbbell|barbell|kettlebell|machine|rack|gym|home|treadmill|don'?t have|no access|only have|prefer|hate|dislike|avoid|can'?t|cannot|unable|allerg|vegan|schedule|mornings?|evenings?|nights?|work|travel|busy|recover)/i;
+
+// First-person declaratives often carry durable preferences/constraints without
+// a hint keyword ("I only train twice a week", "my coach said no deadlifts").
+const SELF_STATEMENT =
+  /\b(i|my)\b.{0,40}\b(only|usually|always|never|tend to|can'?t|cannot|won'?t|prefer|like|love|hate|need|have to|train|do|avoid|stick to|coach|physio|doctor)\b/i;
+
+// Decide whether to run the (background, LLM-backed) knowledge maintainer: on a
+// keyword hint, on a first-person declarative, or periodically as a safety net
+// so an oddly-phrased durable fact still lands within a few turns.
+function shouldUpdateKnowledge(lastUser: string, userTurns: number): boolean {
+  return KNOWLEDGE_HINTS.test(lastUser) || SELF_STATEMENT.test(lastUser) ||
+    (userTurns > 0 && userTurns % 4 === 0);
+}
 
 const log = logger("coach-chat");
 
@@ -241,8 +254,8 @@ Deno.serve(async (req) => {
 - Goal: ${onboarding.goal ?? "not set"}; experience: ${onboarding.experience ?? "unknown"}
 - Available days: ${(onboarding.days as string[] | undefined)?.join(", ") ?? "unknown"}; session length: ${onboarding.session_duration ?? "?"} min
 - Equipment: ${onboarding.equipment ?? "unknown"}; injuries: ${onboarding.injury_history ?? "none noted"}
-- Fitness CTL ${ctl.toFixed(0)}, fatigue ATL ${atl.toFixed(0)}, form TSB ${(ctl - atl).toFixed(0)}
-- Readiness today: ${recovery.score}/100 (${recovery.band}); weekly load so far: ${weeklyTss} TSS
+- Form/freshness: ${freshnessWord(ctl - atl)} (TSB ${(ctl - atl).toFixed(0)})
+- Recovery today: ${recoveryWord(recovery.band)} (${recovery.score}/100); weekly load so far ~${weeklyTss} TSS — background only, don't quote it unless they ask
 - Today's plan: ${todayLine}
 - Last completed sessions (newest first): ${recentLines.join(" | ") || "none recorded in the last 28 days"}
 - ~${weeklyKm.toFixed(0)} km/week recently; training phase: ${trainingPhase(weeksToGoal)}` +
@@ -276,10 +289,23 @@ Deno.serve(async (req) => {
         let promptTokens = 0;
         let completionTokens = 0;
         let model = "";
+        // State-changing tools are made idempotent within a turn: the native
+        // loop can fire a write tool and then exhaust maxSteps (returning empty
+        // text), which makes generateOnce replay the JSON protocol from the
+        // original thread and call the same tool again. Returning the first
+        // observation instead of re-executing prevents the double-write.
+        const writeCache = new Map<string, Promise<string>>();
         const exec = (name: string, targs: Record<string, unknown>) => {
+          const writeKey = WRITE_TOOLS.has(name) ? `${name}:${JSON.stringify(targs)}` : null;
+          if (writeKey) {
+            const prior = writeCache.get(writeKey);
+            if (prior) { log.warn("dedup_write", { tool: name }); return prior; }
+          }
           toolsUsed.push(name);
           try { onTool?.(name); } catch { /* never block on UI events */ }
-          return executeTool(admin, userId, auth, name, targs);
+          const obs = executeTool(admin, userId, auth, name, targs);
+          if (writeKey) writeCache.set(writeKey, obs);
+          return obs;
         };
 
         // Resolve the native-tool provider once — independent of the thread, so
@@ -314,7 +340,14 @@ Deno.serve(async (req) => {
               promptTokens += out.promptTokens;
               completionTokens += out.completionTokens;
               model = out.model;
-            } catch { /* fall back to the JSON protocol */ }
+            } catch (e) {
+              // Native tool-calling silently degrading to the JSON protocol is a
+              // real quality cliff — surface why instead of swallowing it.
+              log.warn("native_tools_failed", {
+                provider: keyedProvider,
+                err: e instanceof Error ? e.message : String(e),
+              });
+            }
           }
 
           const chatSystem = `${COACH_SYSTEM_PROMPT}\n\n${context}${TOOL_PROTOCOL}`;
@@ -375,7 +408,7 @@ Deno.serve(async (req) => {
         if (promptTokens + completionTokens > 0) {
           const cost = estimateCostUsd(
             provider as LlmProvider, promptTokens, completionTokens,
-            customPriceFromProfile(provider, profile),
+            customPriceFromProfile(provider, profile), model,
           );
           waitUntil((async () => {
             try {
@@ -412,7 +445,8 @@ Deno.serve(async (req) => {
         } catch { /* best effort */ }
         const bundle = { chain, resolveKey, resolveModel, resolveBaseUrl };
         const lastUser = [...messages].reverse().find((m) => m.role === "user")?.content ?? "";
-        if (KNOWLEDGE_HINTS.test(lastUser)) {
+        const userTurns = (fullThread as ChatMessage[]).filter((m) => m.role === "user").length;
+        if (shouldUpdateKnowledge(lastUser, userTurns)) {
           // Slow secondary LLM call — never block the response on it.
           waitUntil(updateUserDoc(admin, userId, existingKnowledge, fullThread as ChatMessage[], bundle));
         }
@@ -468,7 +502,7 @@ Deno.serve(async (req) => {
       resolveModel,
       resolveBaseUrl,
     );
-    const cost = estimateCostUsd(outcome.provider, outcome.promptTokens, outcome.completionTokens, customPriceFromProfile(outcome.provider, profile));
+    const cost = estimateCostUsd(outcome.provider, outcome.promptTokens, outcome.completionTokens, customPriceFromProfile(outcome.provider, profile), outcome.model);
     waitUntil((async () => {
       try {
         await admin.from("generation_logs").insert({
@@ -506,7 +540,8 @@ Deno.serve(async (req) => {
     if (mode !== "finalize") {
       // Maintain durable knowledge when the latest turn plausibly carries a fact.
       const lastUser = [...messages].reverse().find((m) => m.role === "user")?.content ?? "";
-      if (KNOWLEDGE_HINTS.test(lastUser)) {
+      const userTurns = (fullThread as ChatMessage[]).filter((m) => m.role === "user").length;
+      if (shouldUpdateKnowledge(lastUser, userTurns)) {
         // Slow secondary LLM call — don't block the reply on it.
         waitUntil(updateUserDoc(admin, userId, existingKnowledge, fullThread as ChatMessage[], { chain, resolveKey, resolveModel, resolveBaseUrl }));
       }

@@ -185,6 +185,34 @@ internal fun ProfileSection(vm: SettingsViewModel) {
             label = { Text("Injury history (optional)") }, modifier = Modifier.fillMaxWidth())
         Button(onClick = { haptics.performHapticFeedback(HapticFeedbackType.LongPress); vm.saveProfile() }, enabled = !busy, modifier = Modifier.fillMaxWidth()) { Text("Save profile") }
     }
+    SectionCard(title = "About you") {
+        ChipGroup("Sex", listOf("Male", "Female"), profile.sex?.replaceFirstChar { c -> c.uppercase() }) { s ->
+            // Tap the selected chip again to clear back to the Intervals value.
+            vm.updateProfile { it.copy(sex = if (it.sex == s.lowercase()) null else s.lowercase()) }
+        }
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            OutlinedTextField(
+                (profile.birth_year?.toString() ?: ""), { v -> vm.updateProfile { it.copy(birth_year = v.toIntOrNull()) } },
+                label = { Text("Born") }, singleLine = true,
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number), modifier = Modifier.weight(1f),
+            )
+            OutlinedTextField(
+                (profile.weight_kg?.toString() ?: ""), { v -> vm.updateProfile { it.copy(weight_kg = v.toIntOrNull()) } },
+                label = { Text("Weight kg") }, singleLine = true,
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number), modifier = Modifier.weight(1f),
+            )
+            OutlinedTextField(
+                (profile.height_cm?.toString() ?: ""), { v -> vm.updateProfile { it.copy(height_cm = v.toIntOrNull()) } },
+                label = { Text("Height cm") }, singleLine = true,
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number), modifier = Modifier.weight(1f),
+            )
+        }
+        Text(
+            "Normally read from your Intervals.icu profile (weight follows your latest wellness entry). Anything set here overrides it; leave blank to use Intervals.icu.",
+            style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        Button(onClick = { haptics.performHapticFeedback(HapticFeedbackType.LongPress); vm.saveProfile() }, enabled = !busy, modifier = Modifier.fillMaxWidth()) { Text("Save") }
+    }
 }
 
 @OptIn(ExperimentalLayoutApi::class)
@@ -415,13 +443,34 @@ internal fun ConnectionsSection(vm: SettingsViewModel) {
     }
 }
 
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 internal fun NotificationsSection(vm: SettingsViewModel) {
     val s by vm.appSettings.collectAsStateSafe()
+    val context = androidx.compose.ui.platform.LocalContext.current
     SectionCard {
         ToggleRow("Rest-timer alert", "Notify when a rest period ends — even if the app is in the background.", s.restNotify) { vm.setRestNotify(it) }
         HorizontalDivider(color = MaterialTheme.colorScheme.surfaceContainerHigh)
         ToggleRow("Vibrate on rest end", "Buzz the phone when the rest timer finishes.", s.restVibrate) { vm.setRestVibrate(it) }
+    }
+    SectionCard(title = "Rest-end chime") {
+        FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+            com.workoutmaker.app.data.RestChime.entries.forEach { c ->
+                FilterChip(
+                    selected = s.restChime == c,
+                    onClick = {
+                        vm.setRestChime(c)
+                        // Preview the pick right away so choosing doesn't need a live timer.
+                        com.workoutmaker.app.notify.playRestOverSound(context, c)
+                    },
+                    label = { Text(c.label) },
+                )
+            }
+        }
+        Text(
+            "Played when the rest timer finishes while the app is open. Uses the media volume — sounds even on silent, alongside your music. Background alerts use the system notification sound.",
+            style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
     }
 }
 
@@ -668,9 +717,11 @@ internal fun RacesSection(vm: SettingsViewModel) {
             val days = runCatching { java.time.temporal.ChronoUnit.DAYS.between(today, java.time.LocalDate.parse(r.date)) }.getOrNull()
             val isGoal = profile.goal_date == r.date
             Row(Modifier.fillMaxWidth().padding(vertical = 6.dp), verticalAlignment = Alignment.CenterVertically) {
-                Box(Modifier.size(26.dp).background(priorityColor(r.priority), androidx.compose.foundation.shape.CircleShape),
+                val dotColor = priorityColor(r.priority)
+                Box(Modifier.size(26.dp).background(dotColor, androidx.compose.foundation.shape.CircleShape),
                     contentAlignment = Alignment.Center) {
-                    Text(r.priority, style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onPrimary)
+                    Text(r.priority, style = MaterialTheme.typography.labelMedium,
+                        color = androidx.compose.material3.contentColorFor(dotColor))
                 }
                 Column(Modifier.weight(1f).padding(start = 10.dp)) {
                     Text(r.name + if (isGoal) "  ⭐" else "", style = MaterialTheme.typography.titleSmall)
@@ -694,10 +745,40 @@ internal fun RacesSection(vm: SettingsViewModel) {
 
 @Composable
 internal fun AccountSection(vm: SettingsViewModel) {
+    val deleteState = vm.deleteAccountState.collectAsStateSafe().value
+    val confirmDelete = remember { mutableStateOf(false) }
     SectionCard {
         Text("Workout Maker", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
         Text("Personalised endurance + strength coaching.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
         OutlinedButton(onClick = { vm.signOut() }, modifier = Modifier.fillMaxWidth()) { Text("Sign out") }
+        TextButton(onClick = { confirmDelete.value = true }, modifier = Modifier.fillMaxWidth()) {
+            Text("Delete account & all data", color = MaterialTheme.colorScheme.onErrorContainer)
+        }
+        if (deleteState != null && deleteState.isNotEmpty()) {
+            Text(deleteState, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onErrorContainer)
+        }
+    }
+    if (confirmDelete.value) {
+        androidx.compose.material3.AlertDialog(
+            onDismissRequest = { confirmDelete.value = false },
+            title = { Text("Delete account?") },
+            text = {
+                Text(
+                    "This permanently deletes your account and everything in it — profile, " +
+                        "workouts, strength logs, coach conversations, and stored API keys. " +
+                        "There is no undo. Data already pushed to Intervals.icu stays there.",
+                )
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = { confirmDelete.value = false; vm.deleteAccount() },
+                    enabled = deleteState?.isEmpty() != true,
+                ) { Text("Delete everything", color = MaterialTheme.colorScheme.onErrorContainer) }
+            },
+            dismissButton = {
+                TextButton(onClick = { confirmDelete.value = false }) { Text("Cancel") }
+            },
+        )
     }
 }
 

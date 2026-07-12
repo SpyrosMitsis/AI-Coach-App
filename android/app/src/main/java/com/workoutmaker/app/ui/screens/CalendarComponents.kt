@@ -327,6 +327,6 @@ internal fun looksLike(plannedType: String, actualType: String?): Boolean {
         "ride" -> a.contains("ride") || a.contains("bike") || a.contains("cycl")
         "swim" -> a.contains("swim")
         "strength" -> a.contains("weight") || a.contains("strength") || a.contains("workout") || a.contains("gym")
-        else -> a.isNotEmpty()
+        else -> false
     }
 }

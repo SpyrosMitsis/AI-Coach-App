@@ -193,6 +193,15 @@ export function muscleForName(name: string, custom: CatalogExercise[] = []): str
   return catalogByFuzz.get(fuzzName(name))?.muscle ?? null;
 }
 
+/** Compound flag for an exercise (customs → catalog → fuzzy), false if unknown
+ *  — mirrors the Android fallback so progression rep windows match the app. */
+export function compoundForName(name: string, custom: CatalogExercise[] = []): boolean {
+  const n = normName(name);
+  if (!n) return false;
+  for (const c of custom) if (normName(c.name) === n) return c.compound === true;
+  return catalogByNorm.get(n)?.compound ?? catalogByFuzz.get(fuzzName(name))?.compound ?? false;
+}
+
 /**
  * Snap each strength exercise the model named to a loggable catalog entry when
  * it's clearly a re-worded duplicate (e.g. "Machine Lat Pulldown" → "Lat
@@ -239,6 +248,26 @@ export async function customExercises(
   }
 }
 
+/** Distinct exercises the athlete has actually logged recently (~4 months) —
+ *  a proxy for the machines/implements their gym really has. Best-effort. */
+async function loggedRepertoire(
+  admin: SupabaseClient,
+  userId: string,
+): Promise<string[]> {
+  try {
+    const since = new Date(Date.now() - 120 * 86_400_000).toISOString().slice(0, 10);
+    const { data } = await admin
+      .from("strength_logs")
+      .select("exercise_name")
+      .eq("user_id", userId)
+      .gte("date", since)
+      .limit(1000);
+    return [...new Set((data ?? []).map((r) => (r.exercise_name ?? "").trim()).filter(Boolean))];
+  } catch (_e) {
+    return [];
+  }
+}
+
 // Prompt block: pins strength exercise names to the loggable catalog and sets
 // the rules for cardio entries and for the rare genuinely-new exercise.
 export async function exerciseCatalogBlock(
@@ -246,6 +275,7 @@ export async function exerciseCatalogBlock(
   userId: string,
 ): Promise<string> {
   const custom = await customExercises(admin, userId);
+  const repertoire = await loggedRepertoire(admin, userId);
   const byMuscle = new Map<string, string[]>();
   for (const e of EXERCISE_CATALOG) {
     byMuscle.set(e.muscle, [...(byMuscle.get(e.muscle) ?? []), e.name]);
@@ -254,8 +284,15 @@ export async function exerciseCatalogBlock(
   const customLine = custom.length
     ? `\n- Athlete's custom exercises (also valid): ${custom.map((c) => c.name).join(", ")}`
     : "";
+  const repertoireBlock = repertoire.length
+    ? `\n\nTHE ATHLETE'S OWN REPERTOIRE — exercises they actually log (this is what their gym's ` +
+      `machines and their preferences support): ${repertoire.join(", ")}.\n` +
+      `STRONGLY prefer these over other library entries: an unfamiliar variation (e.g. a different ` +
+      `leg-curl machine) usually just means equipment they don't have. Go outside the repertoire only ` +
+      `when it has nothing for a muscle/pattern the session needs.`
+    : "";
   return `\n\nSTRENGTH EXERCISE LIBRARY (the athlete logs sessions against this list — names must match EXACTLY):\n` +
-    lines.join("\n") + customLine + `\n` +
+    lines.join("\n") + customLine + repertoireBlock + `\n` +
     `Rules for strength exercises:\n` +
     `- Every strength exercise "name" MUST be copied character-for-character from the library above.\n` +
     `- Only if something essential is truly missing may you introduce a new exercise; in that case you MUST also set ` +

@@ -30,8 +30,11 @@ class StrengthSyncWorker @AssistedInject constructor(
         repo.syncPending()
         Result.success()
     } catch (_: Exception) {
-        // Network/transient failure → let WorkManager retry with backoff.
-        Result.retry()
+        // Network/transient failure → let WorkManager retry with backoff, but
+        // cap it: a durable server rejection would otherwise retry forever.
+        // Failed items stay unsynced locally, and every workout save / app
+        // foreground enqueues a fresh sync, so giving up here loses nothing.
+        if (runAttemptCount >= 5) Result.failure() else Result.retry()
     }
 }
 

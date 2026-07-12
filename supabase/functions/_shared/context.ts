@@ -5,9 +5,13 @@
 import type { SupabaseClient } from "jsr:@supabase/supabase-js@2";
 import { decryptSecret } from "./supabase.ts";
 import {
+  athleteDemographics,
+  type Demographics,
   getAthleteFull,
   getWellness,
   latestWellnessSubjective,
+  type ManualDemographics,
+  mergeDemographics,
   runHrZones,
   runPaceZones,
 } from "./intervals.ts";
@@ -24,45 +28,62 @@ export interface ActivityRow {
   atl?: number | null;
 }
 
-// Live Intervals.icu physiology: threshold pace, zones, VO2max, subjective flags.
+// Live Intervals.icu physiology: demographics, threshold pace, zones, VO2max,
+// subjective flags. `manual` carries the app's Settings → About you overrides
+// (stored in onboarding) — set values beat Intervals, and the demographics line
+// still renders when Intervals is disconnected or down.
 export async function intervalsPhysiology(
   admin: SupabaseClient,
   profile: { intervals_athlete_id?: string | null; intervals_api_key_encrypted?: string | null },
+  manual?: ManualDemographics | null,
 ): Promise<{ apiKey: string | null; hrZones: HrZone[] | null; block: string }> {
   let apiKey: string | null = null;
   let hrZones: HrZone[] | null = null;
-  let block = "";
-  if (!profile.intervals_athlete_id || !profile.intervals_api_key_encrypted) {
-    return { apiKey, hrZones, block };
+  let demo: Demographics = {};
+  const lines: string[] = [];
+  if (profile.intervals_athlete_id && profile.intervals_api_key_encrypted) {
+    try {
+      apiKey = await decryptSecret(admin, profile.intervals_api_key_encrypted);
+      if (apiKey) {
+        const [athlete, ivWellness] = await Promise.all([
+          getAthleteFull(profile.intervals_athlete_id, apiKey),
+          getWellness(profile.intervals_athlete_id, apiKey, 14),
+        ]);
+        const hz = runHrZones(athlete);
+        if (hz.length) hrZones = hz.map((z) => ({ zone: z.name, min: z.min, max: z.max }));
+        const { thresholdPace, zones: paceZones } = runPaceZones(athlete);
+        const subj = latestWellnessSubjective(ivWellness);
+        demo = athleteDemographics(athlete, subj.weight);
+        if (thresholdPace !== "—") lines.push(`- Threshold pace: ${thresholdPace}`);
+        if (paceZones.length) lines.push(`- Pace zones: ${paceZones.map((z) => `${z.name} ${z.pace}`).join(", ")} (prescribe exact paces, not just zone labels)`);
+        if (subj.vo2max) lines.push(`- VO2max: ${subj.vo2max.toFixed(1)}`);
+        if (subj.restingHR) lines.push(`- Resting HR: ${subj.restingHR}`);
+        if (subj.hrv) lines.push(`- HRV: ${subj.hrv.toFixed(0)}`);
+        const flags: string[] = [];
+        if ((subj.fatigue ?? 1) >= 3) flags.push("high fatigue");
+        if ((subj.soreness ?? 1) >= 3) flags.push("high soreness");
+        if ((subj.stress ?? 1) >= 3) flags.push("high stress");
+        if ((subj.motivation ?? 1) >= 3) flags.push("low motivation");
+        if ((subj.injury ?? 1) >= 2) flags.push("INJURY flagged — avoid aggravating load");
+        if (flags.length) lines.push(`- Subjective flags: ${flags.join(", ")} → reduce intensity/volume accordingly`);
+      }
+    } catch (_e) {
+      // best-effort — manual demographics below still apply
+    }
   }
-  try {
-    apiKey = await decryptSecret(admin, profile.intervals_api_key_encrypted);
-    if (!apiKey) return { apiKey, hrZones, block };
-    const [athlete, ivWellness] = await Promise.all([
-      getAthleteFull(profile.intervals_athlete_id, apiKey),
-      getWellness(profile.intervals_athlete_id, apiKey, 14),
-    ]);
-    const hz = runHrZones(athlete);
-    if (hz.length) hrZones = hz.map((z) => ({ zone: z.name, min: z.min, max: z.max }));
-    const { thresholdPace, zones: paceZones } = runPaceZones(athlete);
-    const subj = latestWellnessSubjective(ivWellness);
-    const lines: string[] = [];
-    if (thresholdPace !== "—") lines.push(`- Threshold pace: ${thresholdPace}`);
-    if (paceZones.length) lines.push(`- Pace zones: ${paceZones.map((z) => `${z.name} ${z.pace}`).join(", ")} (prescribe exact paces, not just zone labels)`);
-    if (subj.vo2max) lines.push(`- VO2max: ${subj.vo2max.toFixed(1)}`);
-    if (subj.restingHR) lines.push(`- Resting HR: ${subj.restingHR}`);
-    if (subj.hrv) lines.push(`- HRV: ${subj.hrv.toFixed(0)}`);
-    const flags: string[] = [];
-    if ((subj.fatigue ?? 1) >= 3) flags.push("high fatigue");
-    if ((subj.soreness ?? 1) >= 3) flags.push("high soreness");
-    if ((subj.stress ?? 1) >= 3) flags.push("high stress");
-    if ((subj.motivation ?? 1) >= 3) flags.push("low motivation");
-    if ((subj.injury ?? 1) >= 2) flags.push("INJURY flagged — avoid aggravating load");
-    if (flags.length) lines.push(`- Subjective flags: ${flags.join(", ")} → reduce intensity/volume accordingly`);
-    if (lines.length) block = `\n\nMEASURED PHYSIOLOGY (Intervals.icu — use these exact numbers):\n${lines.join("\n")}`;
-  } catch (_e) {
-    // best-effort
-  }
+  // Demographics first: age/sex temper recovery expectations, weight grounds
+  // relative-strength and load context. Manual settings win per-field.
+  demo = mergeDemographics(demo, manual);
+  const demoBits = [
+    demo.age != null ? `${demo.age}y` : null,
+    demo.sex ?? null,
+    demo.weightKg != null ? `${demo.weightKg}kg` : null,
+    demo.heightCm != null ? `${demo.heightCm}cm` : null,
+  ].filter(Boolean);
+  if (demoBits.length) lines.unshift(`- Athlete: ${demoBits.join(", ")}`);
+  const block = lines.length
+    ? `\n\nMEASURED PHYSIOLOGY (Intervals.icu — use these exact numbers):\n${lines.join("\n")}`
+    : "";
   return { apiKey, hrZones, block };
 }
 

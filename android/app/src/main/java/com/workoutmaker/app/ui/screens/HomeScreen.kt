@@ -40,6 +40,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -78,7 +79,6 @@ class HomeViewModel @Inject constructor(
     private val repo: WorkoutRepository,
     private val strength: com.workoutmaker.app.strength.StrengthRepository,
     private val location: com.workoutmaker.app.data.LocationProvider,
-    private val player: com.workoutmaker.app.data.WorkoutPlayerHolder,
 ) : ViewModel() {
     val summary = MutableStateFlow<DailySummary?>(null)
     val fitness = MutableStateFlow<com.workoutmaker.app.data.IntervalsStats?>(null)
@@ -178,11 +178,17 @@ class HomeViewModel @Inject constructor(
         // spend an LLM call generating one for a historical day. Streams in
         // separately so it never holds up the dashboard; cached per-day.
         if (viewingToday) {
-            viewModelScope.launch { runCatching { repo.coachBrief() }.onSuccess { brief.value = it } }
+            viewModelScope.launch {
+                runCatching { repo.coachBrief() }
+                    .onSuccess { brief.value = it }
+                    .onFailure { com.workoutmaker.app.util.AppLog.w("home", "coachBrief failed", it) }
+            }
             viewModelScope.launch {
                 val now = java.time.LocalDate.now()
                 val monday = now.minusDays((now.dayOfWeek.value - 1).toLong())
-                runCatching { repo.weekReview(monday.toString()) }.onSuccess { weekReviewNote.value = it }
+                runCatching { repo.weekReview(monday.toString()) }
+                    .onSuccess { weekReviewNote.value = it }
+                    .onFailure { com.workoutmaker.app.util.AppLog.w("home", "weekReview failed", it) }
             }
         }
         if (markedDates.value.isEmpty()) loadMarks()
@@ -209,13 +215,6 @@ class HomeViewModel @Inject constructor(
             .onFailure { error.value = it.message }
     }
 
-    // Hand today's workout to the guided player; returns false if there's none.
-    fun playToday(): Boolean {
-        val w = summary.value?.today_workout?.workout_json ?: return false
-        player.workout.value = w
-        return true
-    }
-
     fun saveWellness(energy: Int, soreness: Int) = viewModelScope.launch {
         wellnessBusy.value = true
         val checkin = com.workoutmaker.app.data.WellnessCheckin(
@@ -230,6 +229,9 @@ class HomeViewModel @Inject constructor(
 
     val adjusting = MutableStateFlow(false)
     val feedbackStatus = MutableStateFlow<String?>(null)
+    // In-flight guard: the done/skip buttons stay tappable until load() flips the
+    // completed state, so without this a fast double-tap double-submits feedback.
+    val submittingFeedback = MutableStateFlow(false)
 
     // Tapping a Home "recent activity" digest resolves it to the full
     // CompletedActivity (rich Intervals data) so it opens the SAME detail page
@@ -334,6 +336,7 @@ class HomeViewModel @Inject constructor(
     }
 
     fun submitFeedback(difficulty: String, rpe: Int?) = viewModelScope.launch {
+        if (!submittingFeedback.compareAndSet(false, true)) return@launch
         val today = summary.value?.today_workout
         val date = java.time.LocalDate.now().toString()
         runCatching {
@@ -349,14 +352,17 @@ class HomeViewModel @Inject constructor(
             repo.refreshMemory()
             load()
         }.onFailure { feedbackStatus.value = it.message }
+        submittingFeedback.value = false
     }
 
     fun skipToday() = viewModelScope.launch {
-        val today = summary.value?.today_workout ?: return@launch
+        if (!submittingFeedback.compareAndSet(false, true)) return@launch
+        val today = summary.value?.today_workout ?: run { submittingFeedback.value = false; return@launch }
         val date = java.time.LocalDate.now().toString()
         runCatching { repo.markPlannedComplete(today.id, date, completed = false, difficulty = null, rpe = null) }
             .onSuccess { feedbackStatus.value = null; repo.refreshMemory(); load() }
             .onFailure { feedbackStatus.value = it.message }
+        submittingFeedback.value = false
     }
 
     fun undoSkip() = viewModelScope.launch {
@@ -371,7 +377,6 @@ class HomeViewModel @Inject constructor(
 @Composable
 fun HomeScreen(
     onOpenRecoveryHistory: () -> Unit = {},
-    onStartWorkout: () -> Unit = {},
     vm: HomeViewModel = hiltViewModel(),
 ) {
     val summary by vm.summary.collectAsStateSafe()
@@ -381,6 +386,7 @@ fun HomeScreen(
     val generating by vm.generating.collectAsStateSafe()
     val adjusting by vm.adjusting.collectAsStateSafe()
     val feedbackStatus by vm.feedbackStatus.collectAsStateSafe()
+    val submittingFeedback by vm.submittingFeedback.collectAsStateSafe()
     val error by vm.error.collectAsStateSafe()
     val wellnessToday by vm.wellnessToday.collectAsStateSafe()
     val wellnessLoaded by vm.wellnessLoaded.collectAsStateSafe()
@@ -759,16 +765,9 @@ fun HomeScreen(
             // The generate/tweak/rating controls only make sense for today — past
             // days are read-only history.
             if (isToday) {
-                // Launch the guided, timed player for today's session.
-                if (w != null && !isRest && s.today_workout?.completed != true) {
-                    Button(
-                        onClick = { if (vm.playToday()) onStartWorkout() },
-                        modifier = Modifier.fillMaxWidth(),
-                    ) { Text("▶  Start workout") }
-                }
                 // Tweak field guides the (re)generation; the button sits below it and
                 // regenerates WITH whatever you typed (no separate "Adjust").
-                var instruction by remember { mutableStateOf("") }
+                var instruction by rememberSaveable { mutableStateOf("") }
                 if (w != null) {
                     androidx.compose.material3.OutlinedTextField(
                         value = instruction,
@@ -807,10 +806,11 @@ fun HomeScreen(
                                 vm.submitFeedback("just_right", null)
                             },
                             modifier = Modifier.fillMaxWidth(),
+                            enabled = !submittingFeedback,
                         ) { Text("Mark rest taken") }
                     }
                     else -> {
-                        var didIt by remember(s.today_workout?.id) { mutableStateOf(false) }
+                        var didIt by rememberSaveable(s.today_workout?.id) { mutableStateOf(false) }
                         if (!didIt) {
                             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                                 Button(
@@ -825,12 +825,12 @@ fun HomeScreen(
                                 GhostButton(onClick = {
                                     haptics.performHapticFeedback(HapticFeedbackType.LongPress)
                                     vm.skipToday()
-                                }) { Text("Skip") }
+                                }, enabled = !submittingFeedback) { Text("Skip") }
                             }
                         } else {
                             // RPE first (increasing-bars histogram), then the
                             // difficulty word — both feed the next generations.
-                            var rpe by remember(s.today_workout?.id) { mutableStateOf<Int?>(null) }
+                            var rpe by rememberSaveable(s.today_workout?.id) { mutableStateOf<Int?>(null) }
                             SectionLabel("How hard was it? (RPE)", color = MaterialTheme.colorScheme.onSurfaceVariant)
                             RpeBars(selected = rpe, onSelect = { rpe = it })
                             Text(
@@ -848,6 +848,7 @@ fun HomeScreen(
                                             vm.submitFeedback(k, rpe)
                                         },
                                         modifier = Modifier.weight(1f),
+                                        enabled = !submittingFeedback,
                                     ) { Text(label, style = MaterialTheme.typography.labelSmall) }
                                 }
                             }
@@ -865,9 +866,9 @@ fun HomeScreen(
 // optional — saving any one writes it onto today's wellness row.
 @Composable
 private fun ManualRecoveryDialog(onDismiss: () -> Unit, onSave: (Double?, Int?, Int?) -> Unit) {
-    var hrv by remember { mutableStateOf("") }
-    var rhr by remember { mutableStateOf("") }
-    var sleepH by remember { mutableStateOf("") }
+    var hrv by rememberSaveable { mutableStateOf("") }
+    var rhr by rememberSaveable { mutableStateOf("") }
+    var sleepH by rememberSaveable { mutableStateOf("") }
     val hrvVal = hrv.trim().toDoubleOrNull()
     val rhrVal = rhr.trim().toIntOrNull()
     val sleepMin = sleepH.trim().toDoubleOrNull()?.let { (it * 60).roundToInt() }
@@ -912,8 +913,8 @@ private fun ManualRecoveryDialog(onDismiss: () -> Unit, onSave: (Double?, Int?, 
 // longer asked here. Appears only when today is unanswered.
 @Composable
 private fun WellnessCheckinCard(mod: Modifier, busy: Boolean, onSave: (Int, Int) -> Unit) {
-    var energy by remember { mutableStateOf<Int?>(null) }
-    var soreness by remember { mutableStateOf<Int?>(null) }
+    var energy by rememberSaveable { mutableStateOf<Int?>(null) }
+    var soreness by rememberSaveable { mutableStateOf<Int?>(null) }
     SectionCard(mod, title = "How do you feel today?") {
         Text(
             "A quick morning check tunes today's readiness and training. Sleep is pulled from Intervals.icu automatically.",

@@ -45,9 +45,7 @@ import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.automirrored.filled.NoteAdd
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.FileDownload
-import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.KeyboardArrowRight
-import androidx.compose.material.icons.filled.KeyboardArrowUp
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.Search
@@ -85,6 +83,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -111,8 +110,16 @@ import com.workoutmaker.app.strength.OneRepMax
 import com.workoutmaker.app.strength.StrengthProgram
 import com.workoutmaker.app.strength.WeeklyReport
 import com.workoutmaker.app.ui.collectAsStateSafe
+import androidx.compose.foundation.gestures.detectDragGestures
+import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.material.icons.filled.DragHandle
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.zIndex
 import com.workoutmaker.app.ui.components.ChipRow
+import com.workoutmaker.app.ui.components.DragDropState
 import com.workoutmaker.app.ui.components.EmptyState
+import com.workoutmaker.app.ui.components.rememberDragDropState
 import com.workoutmaker.app.ui.components.GhostButton
 import com.workoutmaker.app.ui.components.InsetStat
 import com.workoutmaker.app.ui.components.MetaChip
@@ -307,8 +314,19 @@ internal fun ActiveWorkoutView(vm: StrengthViewModel) {
             }
         },
     ) { padding ->
+        // Drag-to-reorder: exercise cards sit after the two header fields, so
+        // LazyColumn indices are exercise index + 2. Only exercise rows are
+        // draggable / valid drop targets.
+        val listState = rememberLazyListState()
+        val headerItems = 2
+        val dragState = rememberDragDropState(
+            listState,
+            canDrag = { info -> info.index - headerItems in vm.exercises.indices },
+            onMove = { from, to -> vm.moveExerciseTo(from - headerItems, to - headerItems) },
+        )
         LazyColumn(
             Modifier.padding(padding).fillMaxWidth(),
+            state = listState,
             contentPadding = androidx.compose.foundation.layout.PaddingValues(12.dp),
             verticalArrangement = Arrangement.spacedBy(10.dp),
         ) {
@@ -321,8 +339,28 @@ internal fun ActiveWorkoutView(vm: StrengthViewModel) {
                     modifier = Modifier.fillMaxWidth(), singleLine = false,
                     textStyle = MaterialTheme.typography.bodySmall)
             }
-            items(vm.exercises, key = { it.name + System.identityHashCode(it) }) { ux ->
-                ExerciseCard(vm, ux)
+            itemsIndexed(vm.exercises, key = { _, ux -> ux.name + System.identityHashCode(ux) }) { i, ux ->
+                val isDragging = dragState.draggingItemIndex == i + headerItems
+                val isSettling = dragState.settlingItemIndex == i + headerItems
+                Box(
+                    when {
+                        // The grabbed card floats over its neighbours and tracks the finger.
+                        isDragging -> Modifier.zIndex(1f).graphicsLayer {
+                            translationY = dragState.draggingItemOffset
+                            shadowElevation = 24f
+                        }
+                        // Just released: glide home from the finger position.
+                        isSettling -> Modifier.zIndex(1f).graphicsLayer {
+                            translationY = dragState.settlingItemOffset.value
+                            shadowElevation = 24f * (dragState.settlingItemOffset.value.let { v ->
+                                (kotlin.math.abs(v) / 100f).coerceAtMost(1f)
+                            })
+                        }
+                        else -> Modifier.animateItem()
+                    },
+                ) {
+                    ExerciseCard(vm, ux, dragState)
+                }
             }
             if (vm.exercises.isEmpty()) {
                 item {
@@ -356,8 +394,8 @@ internal fun ActiveWorkoutView(vm: StrengthViewModel) {
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 internal fun RateEffortView(vm: StrengthViewModel) {
-    var rpe by remember { mutableStateOf<Int?>(null) }
-    var difficulty by remember { mutableStateOf<String?>(null) }
+    var rpe by rememberSaveable { mutableStateOf<Int?>(null) }
+    var difficulty by rememberSaveable { mutableStateOf<String?>(null) }
     val accent = MaterialTheme.colorScheme.primary
     val haptics = LocalHapticFeedback.current
 
@@ -516,23 +554,40 @@ private fun EffortBars(selected: Int?, onSelect: (Int) -> Unit, modifier: Modifi
 }
 
 @Composable
-internal fun ExerciseCard(vm: StrengthViewModel, ux: UiExercise) {
+internal fun ExerciseCard(vm: StrengthViewModel, ux: UiExercise, dragState: DragDropState? = null) {
     var menu by remember { mutableStateOf(false) }
     var showInsight by remember { mutableStateOf(false) }
+    val haptics = LocalHapticFeedback.current
     if (showInsight) ExerciseInsightSheet(vm, ux.name) { showInsight = false }
     SectionCard {
         Row(verticalAlignment = Alignment.CenterVertically) {
+            // Q4: grab the handle and drag the card to reorder the session.
+            if (dragState != null) {
+                Icon(
+                    Icons.Filled.DragHandle, "Reorder",
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier
+                        .size(40.dp)
+                        // Gesture area = the full 40dp square (padding only shrinks the glyph).
+                        .pointerInput(dragState, ux) {
+                            detectDragGestures(
+                                onDragStart = {
+                                    haptics.performHapticFeedback(HapticFeedbackType.LongPress)
+                                    // Must match the LazyColumn item key exactly.
+                                    dragState.onDragStart(ux.name + System.identityHashCode(ux))
+                                },
+                                onDrag = { change, amount -> change.consume(); dragState.onDrag(amount.y) },
+                                onDragEnd = { dragState.onDragEnd() },
+                                onDragCancel = { dragState.onDragEnd() },
+                            )
+                        }
+                        .padding(8.dp),
+                )
+            }
             // Tap the name to peek this exercise's history without leaving the session.
             Column(Modifier.weight(1f).clickable { showInsight = true }) {
                 Text(ux.name, style = MaterialTheme.typography.titleSmall, color = MaterialTheme.colorScheme.primary)
                 Text(ux.muscle, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-            }
-            // Q4: reorder within the session.
-            IconButton(onClick = { vm.moveExercise(ux, up = true) }, modifier = Modifier.size(32.dp)) {
-                Icon(Icons.Filled.KeyboardArrowUp, "Move up", tint = MaterialTheme.colorScheme.onSurfaceVariant)
-            }
-            IconButton(onClick = { vm.moveExercise(ux, up = false) }, modifier = Modifier.size(32.dp)) {
-                Icon(Icons.Filled.KeyboardArrowDown, "Move down", tint = MaterialTheme.colorScheme.onSurfaceVariant)
             }
             RestPicker(ux.restSec) { vm.setRest(ux, it) }
             Box {
@@ -559,7 +614,7 @@ internal fun ExerciseCard(vm: StrengthViewModel, ux: UiExercise) {
         }
         // B1 auto-progression target
         ux.suggestion?.let { s ->
-            Text("🎯 Target ${trimKg(s.weightKg)}kg × ${s.reps} · ${s.note}",
+            Text("↗ Target ${trimKg(s.weightKg)}kg × ${s.reps} · ${s.note}",
                 style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.primary)
         }
         // Column headers share the SetRow grid exactly so labels sit over their
@@ -676,19 +731,6 @@ internal fun HCell(text: String, modifier: Modifier) {
         color = MaterialTheme.colorScheme.onSurfaceVariant, textAlign = TextAlign.Center)
 }
 
-// Greedy per-side plate breakdown for a loaded barbell. Empty when the weight
-// doesn't clear the bar (dumbbell / machine / bodyweight work needs no plates).
-private val PLATE_SIZES = listOf(25.0, 20.0, 15.0, 10.0, 5.0, 2.5, 1.25)
-internal fun platesPerSide(totalKg: Double, barKg: Double = 20.0): List<Double> {
-    var perSide = (totalKg - barKg) / 2.0
-    if (perSide <= 0.0) return emptyList()
-    val out = mutableListOf<Double>()
-    for (p in PLATE_SIZES) {
-        while (perSide >= p - 1e-6) { out.add(p); perSide -= p }
-    }
-    return out
-}
-
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 internal fun SetRow(
@@ -727,12 +769,16 @@ internal fun SetRow(
         enableDismissFromStartToEnd = false,
         enableDismissFromEndToStart = true,
         backgroundContent = {
-            Box(
-                Modifier.fillMaxSize().clip(RoundedCornerShape(8.dp))
-                    .background(MaterialTheme.colorScheme.error.copy(alpha = 0.9f)).padding(horizontal = 20.dp),
-                contentAlignment = Alignment.CenterEnd,
-            ) {
-                Icon(Icons.Filled.Delete, "Delete set", tint = androidx.compose.ui.graphics.Color.White)
+            // Rendered only mid-swipe: at rest the red layer peeked out of the
+            // row's rounded corners as a hairline sliver.
+            if (dismissState.dismissDirection == SwipeToDismissBoxValue.EndToStart) {
+                Box(
+                    Modifier.fillMaxSize().clip(RoundedCornerShape(8.dp))
+                        .background(MaterialTheme.colorScheme.error.copy(alpha = 0.9f)).padding(horizontal = 20.dp),
+                    contentAlignment = Alignment.CenterEnd,
+                ) {
+                    Icon(Icons.Filled.Delete, "Delete set", tint = MaterialTheme.colorScheme.onError)
+                }
             }
         },
     ) {
@@ -787,18 +833,6 @@ internal fun SetRow(
                 modifier = Modifier.size(40.dp),
             ) {
                 Icon(Icons.Filled.Check, "Done", tint = if (s.done) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant)
-            }
-        }
-        // Loaded-barbell plate math — only when the entered weight clears the bar.
-        if (!cardio) {
-            val plates = s.weight.toDoubleOrNull()?.let { platesPerSide(it) }
-            if (!plates.isNullOrEmpty()) {
-                Text(
-                    "per side: ${plates.joinToString(" + ") { trimKg(it) }}",
-                    Modifier.padding(start = 36.dp, top = 2.dp),
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
             }
         }
         if (showNote) {

@@ -68,8 +68,9 @@ class FeedbackPromptWorker @AssistedInject constructor(
         return when (plannedType.lowercase()) {
             "run" -> a.contains("run") || a.contains("walk")
             "ride" -> a.contains("ride") || a.contains("bike") || a.contains("cycl")
+            "swim" -> a.contains("swim")
             "strength" -> a.contains("weight") || a.contains("strength") || a.contains("workout") || a.contains("gym")
-            else -> a.isNotEmpty()
+            else -> false
         }
     }
 

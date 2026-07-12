@@ -340,6 +340,9 @@ interface StrengthContext {
     lastWeight: number;
     lastReps?: number;
     lastSets?: number;
+    // The app's double-progression target for the next session, when history
+    // exists (progression.ts) — prescribed verbatim so plan == logger target.
+    target?: { weightKg: number; reps: number; note: string } | null;
   }[];
   durationNote: string;
   // Preferred split rotation ("Auto"/empty → coach decides freely).
@@ -350,7 +353,8 @@ export function buildStrengthPrompt(c: StrengthContext): string {
   const lifts = c.mainLifts.length
     ? c.mainLifts.map((l) =>
       `${l.exercise}: last top set ${l.lastWeight}kg×${l.lastReps ?? "?"}` +
-      `${l.lastSets ? ` (${l.lastSets} sets)` : ""}, est 1RM ${l.estimated1rm.toFixed(0)}kg`
+      `${l.lastSets ? ` (${l.lastSets} sets)` : ""}, est 1RM ${l.estimated1rm.toFixed(0)}kg` +
+      (l.target ? `, NEXT TARGET ${l.target.weightKg}kg × ${l.target.reps} (${l.target.note})` : "")
     ).join("; ")
     : "no recent logs (use experience-appropriate starting loads, conservative)";
   const vol = Object.entries(c.weeklySetsByMuscle).map(([m, s]) => `${m} ${s}`).join(", ") || "none logged";
@@ -381,16 +385,17 @@ ATHLETE CONTEXT
 - Working weights / main lifts (the athlete's most recent TOP set per exercise): ${lifts}
 - Session length: ${c.durationNote}
 
-PROGRESSIVE OVERLOAD (critical): for any exercise the athlete has logged above,
-prescribe a load and rep target that meets OR beats their last top set — never
-program below it unless soreness is high or that muscle was trained in the last
-48h. Default progression is a small load bump (~2.5kg) at the same reps, or +1-2
-reps at the same load. Prescribe the actual working weight in "weight_kg" (kg),
-not a back-off or warm-up load.
+PROGRESSIVE OVERLOAD (critical): exercises above with a NEXT TARGET carry the
+athlete's in-app progression engine's prescription — the exact number they will
+see while lifting. Program those exercises at EXACTLY the target weight and reps
+(back off only if soreness is high or that muscle was trained in the last 48h).
+For logged exercises without a target, meet or beat the last top set. Prescribe
+the actual working weight in "weight_kg" (kg), not a back-off or warm-up load.
 
-VARIETY: rotate exercise SELECTION versus the recent sessions listed above — vary
-movements, angles and implements across the week to avoid staleness, while keeping
-progression on the main compound lifts. Don't reprint an identical session.
+VARIETY: vary exercise selection across the week to avoid staleness — but pick
+variations from the athlete's own repertoire (the exercises they actually log);
+they map to the equipment their gym really has. Keep progression on the main
+compound lifts and don't reprint an identical session.
 
 Program loads as %1RM where known, compounds first, with explicit target RIR in
 each exercise's notes. Respect 48h muscle recovery and weekly volume landmarks.
@@ -514,9 +519,19 @@ export interface BriefContext {
   objectiveData?: boolean;
 }
 
+// Plain-language translations of the load/recovery metrics, so prompts can lead
+// with meaning instead of raw CTL/ATL/TSB/readiness numbers (the "interpret it,
+// don't recite stats" coach ethos). Shared by the brief and the chat context.
+export function freshnessWord(tsb: number): string {
+  return tsb > 5 ? "fresh/rested" : tsb >= -10 ? "neutral" : tsb >= -20 ? "carrying fatigue" : "very fatigued";
+}
+export function recoveryWord(band: string): string {
+  return band === "green" ? "well recovered" : band === "amber" ? "moderately recovered" : "under-recovered";
+}
+
 export function buildBriefPrompt(c: BriefContext): string {
-  const freshness = c.tsb > 5 ? "fresh/rested" : c.tsb >= -10 ? "neutral" : c.tsb >= -20 ? "carrying fatigue" : "very fatigued";
-  const readWord = c.band === "green" ? "well recovered" : c.band === "amber" ? "moderately recovered" : "under-recovered";
+  const freshness = freshnessWord(c.tsb);
+  const readWord = recoveryWord(c.band);
   const noObjective = c.objectiveData === false;
   const readLine = noObjective
     ? `- Recovery: NO HRV/sleep synced from the watch today — readiness (${c.readiness}/100) is only their subjective feel. Go off how they're feeling, don't cite recovery as fact.`

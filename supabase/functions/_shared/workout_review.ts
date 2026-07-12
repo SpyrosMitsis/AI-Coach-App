@@ -15,6 +15,7 @@
 
 import type { Workout, WorkoutExercise } from "./types.ts";
 import { allowedCategories, categoryOfExercise, EXERCISE_CATALOG } from "./exercise_catalog.ts";
+import type { NextTarget } from "./progression.ts";
 
 export interface MainLift {
   exercise: string;
@@ -22,6 +23,10 @@ export interface MainLift {
   lastWeight: number;
   lastReps?: number;
   lastSets?: number;
+  // The app's double-progression target for the next session (progression.ts).
+  // When set, the review snaps the prescription to it so the plan always says
+  // the same thing as the logger's ↗ target.
+  target?: NextTarget | null;
 }
 
 export interface ReviewContext {
@@ -230,6 +235,23 @@ export function reviewWorkout(w: Workout, ctx: ReviewContext): ReviewResult {
       const warm = isWarmupSection(sec.name);
       for (const ex of sec.exercises) {
         const lift = liftByName.get(norm(ex.name));
+
+        // Progression-engine SNAP: a logged lift's working prescription is the
+        // app's double-progression target, verbatim — the athlete sees one
+        // number in the plan and the logger. Skipped for warm-up sections and
+        // muscles in 48h recovery (deliberate back-off stays allowed there).
+        if (lift?.target && !warm && typeof ex.weight_kg === "number" &&
+            !ctx.muscleGroupsLast48h.includes(muscleOf(ex))) {
+          const t = lift.target;
+          const repsNum = Number((ex.reps ?? "").match(/\d+/)?.[0] ?? NaN);
+          if (Math.abs(ex.weight_kg - t.weightKg) > 1e-6 || repsNum !== t.reps) {
+            violations.push(
+              `${ex.name}: prescribed ${ex.weight_kg}kg×${ex.reps} ≠ progression target ${t.weightKg}kg×${t.reps} — snapped to the engine target`,
+            );
+            ex.weight_kg = t.weightKg;
+            ex.reps = String(t.reps);
+          }
+        }
 
         // Progressive-overload FLOOR: never program below the athlete's last top
         // set (unless that muscle is in 48h recovery — handled separately).

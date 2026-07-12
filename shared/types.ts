@@ -4,7 +4,9 @@
 // Keep in sync with supabase/functions/_shared/types.ts.
 // ============================================================================
 
-export type LlmProvider = "anthropic" | "deepseek" | "openai" | "gemini" | "groq" | "openrouter";
+// Keep in sync with supabase/functions/_shared/types.ts and the llm_api_keys
+// provider CHECK. "custom" = a user-supplied OpenAI-compatible endpoint.
+export type LlmProvider = "anthropic" | "deepseek" | "openai" | "gemini" | "groq" | "openrouter" | "custom";
 
 export const PROVIDER_LABELS: Record<LlmProvider, string> = {
   anthropic: "Anthropic",
@@ -13,6 +15,7 @@ export const PROVIDER_LABELS: Record<LlmProvider, string> = {
   gemini: "Google Gemini",
   groq: "Groq",
   openrouter: "OpenRouter",
+  custom: "Custom (OpenAI-compatible)",
 };
 
 export const PROVIDER_MODELS: Record<LlmProvider, string> = {
@@ -22,6 +25,7 @@ export const PROVIDER_MODELS: Record<LlmProvider, string> = {
   gemini: "gemini-2.5-flash",
   groq: "llama-3.3-70b-versatile",
   openrouter: "openrouter/auto",
+  custom: "",
 };
 
 export const PROVIDER_FREE_KEY_URL: Record<LlmProvider, string> = {
@@ -31,10 +35,12 @@ export const PROVIDER_FREE_KEY_URL: Record<LlmProvider, string> = {
   gemini: "https://aistudio.google.com/app/apikey",
   groq: "https://console.groq.com/keys",
   openrouter: "https://openrouter.ai/keys",
+  custom: "",
 };
 
 // ~USD per 1M tokens (input/output) for the per-generation cost estimate.
-// OpenRouter pricing depends on the chosen model, so it shows ~$0 here.
+// OpenRouter + custom pricing depend on the chosen model/endpoint, so they show
+// ~$0 here unless the user enters explicit per-1M prices.
 export const PROVIDER_PRICING: Record<LlmProvider, { inputPer1M: number; outputPer1M: number }> = {
   anthropic: { inputPer1M: 5.0, outputPer1M: 25.0 },
   deepseek: { inputPer1M: 0.28, outputPer1M: 0.42 },
@@ -42,6 +48,7 @@ export const PROVIDER_PRICING: Record<LlmProvider, { inputPer1M: number; outputP
   gemini: { inputPer1M: 0.3, outputPer1M: 2.5 },
   groq: { inputPer1M: 0.59, outputPer1M: 0.79 },
   openrouter: { inputPer1M: 0, outputPer1M: 0 },
+  custom: { inputPer1M: 0, outputPer1M: 0 },
 };
 
 export interface WorkoutExercise {
@@ -67,7 +74,7 @@ export interface WorkoutSection {
 }
 
 export interface Workout {
-  type: "run" | "ride" | "strength" | "rest";
+  type: "run" | "ride" | "swim" | "strength" | "rest";
   title: string;
   duration_minutes: number;
   tss_estimate: number;
@@ -156,7 +163,7 @@ export interface WellnessCheckin {
 export interface PlannedWorkout {
   id: string;
   date: string;
-  type: "run" | "ride" | "strength" | "rest";
+  type: "run" | "ride" | "swim" | "strength" | "rest";
   workout_json: Workout;
   llm_provider: string | null;
   llm_model: string | null;

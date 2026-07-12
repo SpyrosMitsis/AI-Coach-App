@@ -38,6 +38,16 @@ enum class ThemePalette(val label: String) {
     }
 }
 
+// Sound played when a rest timer finishes while the app is open. (The
+// background alarm keeps the notification channel's system sound.)
+enum class RestChime(val label: String) {
+    SYSTEM("System default"), CHIME("Chime"), BEEP("Beep"), DOUBLE_BEEP("Double beep"), SILENT("Silent");
+
+    companion object {
+        fun fromName(n: String?): RestChime = entries.firstOrNull { it.name == n } ?: SYSTEM
+    }
+}
+
 enum class WeightUnit(val label: String, val suffix: String) {
     KG("Kilograms", "kg"),
     LB("Pounds", "lb");
@@ -56,6 +66,7 @@ data class AppSettings(
     val barbellKg: Double = 20.0,
     val restVibrate: Boolean = true,
     val restNotify: Boolean = true,
+    val restChime: RestChime = RestChime.SYSTEM,
     val keepScreenOn: Boolean = true,
     val themeMode: ThemeMode = ThemeMode.SYSTEM,
     val themePalette: ThemePalette = ThemePalette.SERENE,
@@ -76,6 +87,7 @@ class AppPreferences @Inject constructor(
         val barbell = doublePreferencesKey("barbell_kg")
         val restVibrate = booleanPreferencesKey("rest_vibrate")
         val restNotify = booleanPreferencesKey("rest_notify")
+        val restChime = stringPreferencesKey("rest_chime")
         val keepScreenOn = booleanPreferencesKey("keep_screen_on")
         val themeMode = stringPreferencesKey("theme_mode")
         val themePalette = stringPreferencesKey("theme_palette")
@@ -105,6 +117,7 @@ class AppPreferences @Inject constructor(
             barbellKg = p[Keys.barbell] ?: 20.0,
             restVibrate = p[Keys.restVibrate] ?: true,
             restNotify = p[Keys.restNotify] ?: true,
+            restChime = RestChime.fromName(p[Keys.restChime]),
             keepScreenOn = p[Keys.keepScreenOn] ?: true,
             themeMode = ThemeMode.fromName(p[Keys.themeMode]),
             themePalette = ThemePalette.fromName(p[Keys.themePalette]),
@@ -117,6 +130,7 @@ class AppPreferences @Inject constructor(
     suspend fun setBarbell(kg: Double) = edit { it[Keys.barbell] = kg.coerceIn(0.0, 50.0) }
     suspend fun setRestVibrate(on: Boolean) = edit { it[Keys.restVibrate] = on }
     suspend fun setRestNotify(on: Boolean) = edit { it[Keys.restNotify] = on }
+    suspend fun setRestChime(c: RestChime) = edit { it[Keys.restChime] = c.name }
     suspend fun setKeepScreenOn(on: Boolean) = edit { it[Keys.keepScreenOn] = on }
     suspend fun setThemeMode(m: ThemeMode) = edit { it[Keys.themeMode] = m.name }
     suspend fun setThemePalette(p: ThemePalette) = edit { it[Keys.themePalette] = p.name }

@@ -14,6 +14,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -116,12 +117,12 @@ fun RecoveryHistoryScreen(onBack: () -> Unit, vm: RecoveryHistoryViewModel = hil
                 com.workoutmaker.app.ui.components.EmptyState(
                     title = "No recovery data yet",
                     subtitle = "HRV, resting HR and sleep will chart here as your watch (or manual entries) build up.",
-                    icon = Icons.AutoMirrored.Filled.ArrowBack,
+                    icon = Icons.Filled.Favorite,
                 )
                 return@Column
             }
             MetricTrendCard("HRV", "ms", hrv, MaterialTheme.colorScheme.primary, higherIsBetter = true) { "%.0f".format(it) }
-            MetricTrendCard("Resting HR", "bpm", rhr, Color(0xFFE5736B), higherIsBetter = false) { "%.0f".format(it) }
+            MetricTrendCard("Resting HR", "bpm", rhr, MaterialTheme.colorScheme.error, higherIsBetter = false) { "%.0f".format(it) }
             MetricTrendCard("Sleep", "h", sleep, MaterialTheme.colorScheme.secondary, higherIsBetter = true) { hhmm(it) }
             MetricTrendCard("Sleep score", "/100", sleepScore, com.workoutmaker.app.ui.theme.amberAccent(), higherIsBetter = true) { "%.0f".format(it) }
         }

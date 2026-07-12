@@ -30,8 +30,9 @@ android {
         applicationId = "com.workoutmaker.app"
         minSdk = 26
         targetSdk = 35
-        versionCode = 1
-        versionName = "0.1.0"
+        // Every Play upload needs a versionCode bump.
+        versionCode = 2
+        versionName = "1.0.0"
 
         // Supabase project values are injected at build time from gradle
         // properties (see local.properties / CI secrets). These are public
@@ -46,10 +47,30 @@ android {
         buildConfig = true
     }
 
+    // Upload keystore for Play (never committed; values via local.properties /
+    // CI secrets, same resolution as the Supabase values above). Release builds
+    // fall back to unsigned when absent so contributors can still compile.
+    val hasReleaseKeystore = secret("RELEASE_STORE_FILE").isNotEmpty()
+    signingConfigs {
+        if (hasReleaseKeystore) {
+            create("release") {
+                storeFile = file(secret("RELEASE_STORE_FILE"))
+                storePassword = secret("RELEASE_STORE_PASSWORD")
+                keyAlias = secret("RELEASE_KEY_ALIAS")
+                keyPassword = secret("RELEASE_KEY_PASSWORD")
+            }
+        }
+    }
+
     buildTypes {
         release {
-            isMinifyEnabled = false
+            isMinifyEnabled = true
+            isShrinkResources = true
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
+            // Contributors/self-hosters without an upload keystore still get an
+            // installable (debug-signed) release APK, matching the README flow.
+            signingConfig = if (hasReleaseKeystore) signingConfigs.getByName("release")
+            else signingConfigs.getByName("debug")
         }
     }
 

@@ -6,6 +6,7 @@
 import type { SupabaseClient } from "jsr:@supabase/supabase-js@2";
 
 import { computeRecovery } from "./recovery.ts";
+import { freshnessWord, recoveryWord } from "./prompt.ts";
 
 const DAY = 86400000;
 const iso = (d: number) => new Date(d).toISOString().slice(0, 10);
@@ -140,10 +141,13 @@ export function toolCatalogPrompt(): string {
 
 async function callFunction(auth: string, name: string, body: unknown): Promise<unknown> {
   const url = `${Deno.env.get("SUPABASE_URL")}/functions/v1/${name}`;
+  // Generous deadline: these proxy to generate-workout / plan-week, which run
+  // their own LLM calls — but a hung one shouldn't stall the coach turn forever.
   const res = await fetch(url, {
     method: "POST",
     headers: { "Authorization": auth, "Content-Type": "application/json" },
     body: JSON.stringify(body ?? {}),
+    signal: AbortSignal.timeout(120_000),
   });
   const text = await res.text();
   try { return JSON.parse(text); } catch { return { raw: text, status: res.status }; }
@@ -171,7 +175,12 @@ export async function executeTool(
         const load7 = a.filter((r) => (r.date ?? "") >= since7).reduce((s, r) => s + (r.tss ?? 0), 0);
         const load28 = a.reduce((s, r) => s + (r.tss ?? 0), 0);
         const acwr = load28 > 0 ? (load7 / (load28 / 4)).toFixed(2) : "n/a";
-        return JSON.stringify({ ctl: +ctl.toFixed(0), atl: +atl.toFixed(0), tsb: +(ctl - atl).toFixed(0), weekly_tss: Math.round(load7), acwr });
+        return JSON.stringify({
+          freshness: freshnessWord(ctl - atl),
+          ctl: +ctl.toFixed(0), atl: +atl.toFixed(0), tsb: +(ctl - atl).toFixed(0),
+          weekly_tss: Math.round(load7), acwr,
+          note: "Interpret this in plain words — don't read the raw numbers back to the athlete.",
+        });
       }
       case "get_recent_activities": {
         const days = Math.min(60, Math.max(1, Number(args.days) || 14));
@@ -247,9 +256,11 @@ export async function executeTool(
           chrono.map((w) => (w as { resting_hr?: number }).resting_hr).filter(isNum),
         );
         return JSON.stringify({
+          readiness: recoveryWord(rec.band),
           score: rec.score, band: rec.band, summary: rec.summary,
           hrv: rec.hrv ?? null, resting_hr: rec.rhr ?? null, sleep: rec.sleep ?? null,
           wellness_1to5: rec.wellness,
+          note: "Interpret this in plain words — don't read the raw numbers back to the athlete.",
         });
       }
       case "get_execution_analysis": {

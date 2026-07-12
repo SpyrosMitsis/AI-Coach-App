@@ -76,6 +76,11 @@ interface CacheDao {
     @Query("DELETE FROM cached_workout")
     suspend fun clearWorkouts()
 
+    // Scoped replace: drop only the fetched window so a narrow (e.g. today-only)
+    // background refresh can't wipe cached history older than fromDate.
+    @Query("DELETE FROM cached_workout WHERE date >= :fromDate")
+    suspend fun clearWorkoutsFrom(fromDate: String)
+
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun upsertSummary(summary: CachedSummary)
 

@@ -18,7 +18,7 @@ One front door that bakes in the env gotchas (so you don't retype them). Run wit
 for the full list. Most-used:
 
 ```
-scripts/dev.sh android:install        # build + install debug APK (JDK17, device R3CT40D46AD)
+scripts/dev.sh android:install        # build + install debug APK (JDK17, device from dev.local.sh)
 scripts/dev.sh android:log [regex]     # tail THIS app's logcat by pid, optional grep
 scripts/dev.sh deno:test               # run the _shared/ test suite
 scripts/dev.sh deno:check [fn ...]     # type-check functions (default: all)
@@ -41,7 +41,8 @@ scripts/dev.sh db:push                 # run pending migrations (asks first)
 - **Coach voice**: human, not a stats recital. Don't shove raw numbers into the prompt
   context. The biggest coach-quality lever is the LLM model (default groq is weak; strong
   models need Settings opt-in).
-- **Project ref**: `qkcyavbuuhljjplufrlu`. **Device**: `R3CT40D46AD`.
+- **Project ref & device serial** live in `scripts/dev.local.sh` (untracked) — `dev.sh`
+  sources it automatically. Don't hardcode them in tracked files; this repo is public.
 
 ## Logging & observability
 

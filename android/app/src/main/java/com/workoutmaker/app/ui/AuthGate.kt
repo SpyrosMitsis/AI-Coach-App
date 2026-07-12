@@ -25,6 +25,7 @@ import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.workoutmaker.app.data.BackendConfig
 import com.workoutmaker.app.data.WorkoutRepository
 import dagger.hilt.android.lifecycle.HiltViewModel
 import io.github.jan.supabase.gotrue.SessionStatus
@@ -58,6 +59,7 @@ internal fun friendlyAuthError(t: Throwable): String {
 @HiltViewModel
 class AuthViewModel @Inject constructor(
     val repo: WorkoutRepository,
+    val backend: BackendConfig,
 ) : ViewModel() {
     val sessionStatus: StateFlow<SessionStatus> = repo.auth.sessionStatus as StateFlow<SessionStatus>
     val error = MutableStateFlow<String?>(null)
@@ -226,7 +228,9 @@ private fun LoginScreen(vm: AuthViewModel) {
                 color = androidx.compose.material3.MaterialTheme.colorScheme.onSurfaceVariant,
             )
         }
-        error?.let { Text(it, color = com.workoutmaker.app.ui.theme.Red, modifier = Modifier.padding(top = 12.dp)) }
+        // onErrorContainer, not error: light-mode error is the pastel band fill,
+        // which is unreadable as foreground text on the light paper.
+        error?.let { Text(it, color = androidx.compose.material3.MaterialTheme.colorScheme.onErrorContainer, modifier = Modifier.padding(top = 12.dp)) }
         info?.let {
             Text(
                 it,
@@ -234,5 +238,83 @@ private fun LoginScreen(vm: AuthViewModel) {
                 modifier = Modifier.padding(top = 12.dp),
             )
         }
+
+        // Self-hosters: point this install at their own Supabase project.
+        var showServerDialog by remember { mutableStateOf(false) }
+        androidx.compose.material3.TextButton(
+            onClick = { showServerDialog = true },
+            modifier = Modifier.fillMaxWidth().padding(top = 16.dp),
+            enabled = !busy,
+        ) {
+            Text(
+                if (vm.backend.isCustom) "Server: ${vm.backend.url.removePrefix("https://").removePrefix("http://")}"
+                else "Advanced: custom server",
+                style = androidx.compose.material3.MaterialTheme.typography.labelSmall,
+                color = androidx.compose.material3.MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+        if (showServerDialog) CustomServerDialog(vm.backend) { showServerDialog = false }
     }
+}
+
+// Restarting the process is the price of the Supabase client being a Hilt
+// singleton built at startup — a settings change can't rebuild it in place.
+private fun relaunchApp(context: android.content.Context) {
+    val intent = context.packageManager.getLaunchIntentForPackage(context.packageName)
+    intent?.addFlags(
+        android.content.Intent.FLAG_ACTIVITY_NEW_TASK or android.content.Intent.FLAG_ACTIVITY_CLEAR_TASK,
+    )
+    context.startActivity(intent)
+    Runtime.getRuntime().exit(0)
+}
+
+@Composable
+private fun CustomServerDialog(backend: BackendConfig, onDismiss: () -> Unit) {
+    val context = androidx.compose.ui.platform.LocalContext.current
+    var url by remember { mutableStateOf(if (backend.isCustom) backend.url else "") }
+    var anonKey by remember { mutableStateOf(if (backend.isCustom) backend.anonKey else "") }
+    val valid = url.trim().startsWith("http") && anonKey.trim().isNotEmpty()
+
+    androidx.compose.material3.AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Custom server") },
+        text = {
+            Column {
+                Text(
+                    "Point the app at your own Supabase project (see docs/SELF_HOSTING.md). " +
+                        "The app restarts to apply the change.",
+                    style = androidx.compose.material3.MaterialTheme.typography.bodySmall,
+                    color = androidx.compose.material3.MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                OutlinedTextField(
+                    url, { url = it },
+                    label = { Text("Supabase URL") },
+                    placeholder = { Text("https://your-ref.supabase.co") },
+                    modifier = Modifier.fillMaxWidth().padding(top = 12.dp),
+                    singleLine = true,
+                )
+                OutlinedTextField(
+                    anonKey, { anonKey = it },
+                    label = { Text("Anon (public) key") },
+                    modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
+                    singleLine = true,
+                )
+                if (backend.isCustom) {
+                    androidx.compose.material3.TextButton(
+                        onClick = { backend.clearCustom(); relaunchApp(context) },
+                        modifier = Modifier.padding(top = 4.dp),
+                    ) { Text("Reset to default server") }
+                }
+            }
+        },
+        confirmButton = {
+            androidx.compose.material3.TextButton(
+                onClick = { backend.setCustom(url, anonKey); relaunchApp(context) },
+                enabled = valid,
+            ) { Text("Save & restart") }
+        },
+        dismissButton = {
+            androidx.compose.material3.TextButton(onClick = onDismiss) { Text("Cancel") }
+        },
+    )
 }

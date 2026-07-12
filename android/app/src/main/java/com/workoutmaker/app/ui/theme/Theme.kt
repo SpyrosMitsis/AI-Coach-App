@@ -95,8 +95,11 @@ private val LightColors = lightColorScheme(
     surfaceContainerHighest = Color(0xFFE9EDE2),
     outline = Color(0xFF72796D),
     outlineVariant = Color(0xFFC2C9BB),
-    error = Color(0xFFB3261E),
-    onError = Color(0xFFFFFFFF),
+    // Soft band-red, matching every other scheme. colorScheme.error doubles as the
+    // "needs attention" band (low adherence, deep fatigue, hard RPE), so a true
+    // alarm red made light mode read as an emergency — calm bands, no emergency reds.
+    error = BandRed,
+    onError = Color(0xFF690005),
     errorContainer = Color(0xFFF9DEDC),
     onErrorContainer = Color(0xFF410E0B),
 )

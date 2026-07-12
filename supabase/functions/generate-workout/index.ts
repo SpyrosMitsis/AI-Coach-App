@@ -42,11 +42,13 @@ import { computeRecovery } from "../_shared/recovery.ts";
 import { llmAccess } from "../_shared/llm_keys.ts";
 import {
   canonicalizeStrengthExercises,
+  compoundForName,
   customExercises,
   exerciseCatalogBlock,
   registerUnknownExercises,
 } from "../_shared/exercise_catalog.ts";
 import { type MainLift, reviewWorkout } from "../_shared/workout_review.ts";
+import { nextTarget } from "../_shared/progression.ts";
 
 const DAY = 86_400_000;
 const daysBetween = (a: string, b: Date) => Math.floor((b.getTime() - new Date(a).getTime()) / DAY);
@@ -230,7 +232,7 @@ Deno.serve(async (req) => {
     let physiologyBlock = "";
     let ivHrZones: { zone: string; min: number; max: number }[] | null = null;
     if (!body.adjustment) {
-      const phys = await intervalsPhysiology(admin, profile);
+      const phys = await intervalsPhysiology(admin, profile, onboarding);
       intervalsApiKey = phys.apiKey;
       physiologyBlock = phys.block;
       ivHrZones = phys.hrZones;
@@ -275,13 +277,14 @@ Deno.serve(async (req) => {
         .order("date", { ascending: false })
         .limit(20);
       const seenLift = new Set<string>();
+      const strengthCustom = await customExercises(admin, userId);
       mainLifts = (mainLiftRows ?? [])
         .filter((r) => {
           if (seenLift.has(r.exercise_name)) return false;
           seenLift.add(r.exercise_name);
           return true;
         })
-        .slice(0, 5)
+        .slice(0, 8)
         .map((r) => {
           const sets = Array.isArray(r.sets) ? r.sets : [];
           // The athlete's TOP working set last time (heaviest), so the model
@@ -299,6 +302,9 @@ Deno.serve(async (req) => {
             lastWeight: top.w,
             lastReps: top.reps,
             lastSets: sets.length,
+            // The app's double-progression target — prompt + review keep the
+            // plan's numbers identical to the logger's ↗ target.
+            target: nextTarget(sets, compoundForName(r.exercise_name, strengthCustom)),
           };
         });
 
@@ -501,7 +507,7 @@ Return the revised workout as JSON only, same schema.`;
       }
     }
 
-    const cost = estimateCostUsd(outcome.provider, outcome.promptTokens, outcome.completionTokens, customPriceFromProfile(outcome.provider, profile));
+    const cost = estimateCostUsd(outcome.provider, outcome.promptTokens, outcome.completionTokens, customPriceFromProfile(outcome.provider, profile), outcome.model);
 
     if (!parsedOk || !validated) {
       await admin.from("generation_logs").insert({
@@ -595,7 +601,7 @@ Return the revised workout as JSON only, same schema.`;
     }
 
     // Recompute cost in case the repair pass replaced `outcome`.
-    const finalCost = estimateCostUsd(outcome.provider, outcome.promptTokens, outcome.completionTokens, customPriceFromProfile(outcome.provider, profile));
+    const finalCost = estimateCostUsd(outcome.provider, outcome.promptTokens, outcome.completionTokens, customPriceFromProfile(outcome.provider, profile), outcome.model);
 
     // 9. persist planned workout + log -------------------------------------
     // Idempotent: replace any incomplete plan already on this date so repeated

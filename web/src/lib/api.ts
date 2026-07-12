@@ -90,7 +90,7 @@ export const api = {
 
   generateWorkout: (args: {
     date?: string;
-    type?: "run" | "ride" | "strength" | "auto";
+    type?: "run" | "ride" | "swim" | "strength" | "auto";
     duration?: number;
     push?: boolean;
     request?: string; // free-text "Friday social 10k with friends"
