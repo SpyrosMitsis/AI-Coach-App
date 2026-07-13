@@ -138,6 +138,13 @@ class MainActivity : ComponentActivity() {
             }
         }
 
+        // Ship any crash captured on a previous run (no-op when none pending).
+        lifecycleScope.launch {
+            runCatching {
+                if (repo.auth.currentUserOrNull() != null) repo.uploadPendingCrashes()
+            }
+        }
+
         // Heal a lost RTDN renewal: if Play knows an active subscription but the
         // profile says free, re-verify server-side. Cheap no-op for everyone else.
         lifecycleScope.launch {

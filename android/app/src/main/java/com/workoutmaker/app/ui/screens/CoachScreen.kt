@@ -20,8 +20,11 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Send
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.History
+import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.PushPin
 import androidx.compose.material.icons.outlined.Delete
 import androidx.compose.material.icons.outlined.PushPin
@@ -41,7 +44,9 @@ import com.workoutmaker.app.ui.components.EmptyState
 import com.workoutmaker.app.ui.components.GhostButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
@@ -115,13 +120,17 @@ internal fun friendlyToolProgress(tool: String): String = when (tool) {
     "plan_week" -> "Planning your week (this can take ~30s)…"
     "generate_workout" -> "Creating your workout…"
     "move_workout" -> "Moving the session…"
+    "set_rest_day" -> "Setting a rest day…"
+    "make_easier" -> "Making the session easier…"
     "set_goal_race" -> "Setting your goal race…"
     "remember" -> "Noting that down…"
     else -> "Working…"
 }
 
 // Tools that mutate the calendar/plan — used to drive the "✓ Updated" result card.
-private val WRITE_TOOL_NAMES = setOf("plan_week", "generate_workout", "move_workout", "set_goal_race")
+private val WRITE_TOOL_NAMES = setOf(
+    "plan_week", "generate_workout", "move_workout", "set_goal_race", "set_rest_day", "make_easier",
+)
 
 // Maps tool names the agentic coach used into a friendly "what I just did" note.
 private fun friendlyTools(tools: List<String>): String {
@@ -137,6 +146,8 @@ private fun friendlyTools(tools: List<String>): String {
             "get_readiness" -> "checked your readiness"
             "get_execution_analysis" -> "reviewed your execution"
             "move_workout" -> "moved a session"
+            "set_rest_day" -> "set a rest day"
+            "make_easier" -> "made the session easier"
             "set_goal_race" -> "set your goal race"
             "remember" -> "noted that for next time"
             else -> t
@@ -364,6 +375,14 @@ class CoachViewModel @Inject constructor(private val repo: WorkoutRepository) : 
         }
     }
 
+    // One-tap retry after a failed turn: drop the trailing error bubble and
+    // re-send the last user message (send() re-appends it).
+    fun retryLast() {
+        val lastUser = messages.value.lastOrNull { it.role == "user" }?.content ?: return
+        messages.value = messages.value.dropLastWhile { it.role != "user" }.dropLast(1)
+        send(lastUser)
+    }
+
     fun finalize(kind: String) {
         sending.value = true
         banner.value = null
@@ -450,7 +469,9 @@ fun CoachScreen(vm: CoachViewModel = hiltViewModel(), onOpenCalendar: () -> Unit
         }
     }
 
-    LaunchedEffect(messages.size) {
+    // Follow both new messages AND streamed growth of the last one.
+    val lastContentLength = messages.lastOrNull()?.content?.length ?: 0
+    LaunchedEffect(messages.size, lastContentLength) {
         if (messages.isNotEmpty()) listState.animateScrollToItem(messages.size - 1)
     }
 
@@ -475,30 +496,75 @@ fun CoachScreen(vm: CoachViewModel = hiltViewModel(), onOpenCalendar: () -> Unit
             }
         }
 
-        LazyColumn(
-            state = listState,
-            modifier = Modifier.weight(1f).fillMaxWidth().padding(horizontal = 12.dp),
-            verticalArrangement = Arrangement.spacedBy(8.dp),
-        ) {
-            items(messages) { msg -> Bubble(msg) }
-            actionWeek?.let { week ->
-                item {
-                    CalendarResultCard(
-                        week,
-                        changed = lastAction,
-                        showReplan = showReplan,
-                        onOpen = onOpenCalendar,
-                        onReplan = { vm.rePlanWeek() },
-                        onDismiss = { vm.dismissActionCard() },
-                    )
+        Box(Modifier.weight(1f).fillMaxWidth()) {
+            LazyColumn(
+                state = listState,
+                modifier = Modifier.fillMaxSize().padding(horizontal = 12.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                items(messages) { msg ->
+                    Box(Modifier.animateItem()) { Bubble(msg) }
+                }
+                // A failed turn gets a one-tap retry directly under it.
+                val last = messages.lastOrNull()
+                if (!sending && last?.role == "assistant" && last.content.startsWith("⚠️")) {
+                    item {
+                        TextButton(onClick = { vm.retryLast() }) { Text("Try again") }
+                    }
+                }
+                actionWeek?.let { week ->
+                    item {
+                        CalendarResultCard(
+                            week,
+                            changed = lastAction,
+                            showReplan = showReplan,
+                            onOpen = onOpenCalendar,
+                            onReplan = { vm.rePlanWeek() },
+                            onDismiss = { vm.dismissActionCard() },
+                        )
+                    }
+                }
+                if (sending) {
+                    item {
+                        Row(Modifier.padding(8.dp), verticalAlignment = Alignment.CenterVertically) {
+                            TypingDots()
+                            Text(
+                                liveStatus ?: "Coach is thinking…",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.padding(start = 10.dp),
+                            )
+                        }
+                    }
                 }
             }
-            if (sending) {
-                item {
-                    Row(Modifier.padding(8.dp), verticalAlignment = Alignment.CenterVertically) {
-                        CircularProgressIndicator(Modifier.padding(end = 8.dp), strokeWidth = 2.dp)
-                        Text(liveStatus ?: "Coach is thinking…", style = MaterialTheme.typography.bodySmall)
-                    }
+
+            // Jump back down when the reader has scrolled up into history.
+            val atBottom by remember {
+                derivedStateOf {
+                    val info = listState.layoutInfo
+                    val lastVisible = info.visibleItemsInfo.lastOrNull()
+                    lastVisible == null || lastVisible.index >= info.totalItemsCount - 1
+                }
+            }
+            val scope = rememberCoroutineScope()
+            androidx.compose.animation.AnimatedVisibility(
+                visible = !atBottom,
+                modifier = Modifier.align(Alignment.BottomEnd).padding(12.dp),
+                enter = androidx.compose.animation.fadeIn(),
+                exit = androidx.compose.animation.fadeOut(),
+            ) {
+                androidx.compose.material3.SmallFloatingActionButton(
+                    onClick = {
+                        scope.launch {
+                            val count = listState.layoutInfo.totalItemsCount
+                            if (count > 0) listState.animateScrollToItem(count - 1)
+                        }
+                    },
+                    containerColor = MaterialTheme.colorScheme.surfaceContainerHigh,
+                    contentColor = MaterialTheme.colorScheme.onSurface,
+                ) {
+                    Icon(Icons.Filled.KeyboardArrowDown, contentDescription = "Scroll to latest")
                 }
             }
         }
@@ -574,6 +640,7 @@ fun CoachScreen(vm: CoachViewModel = hiltViewModel(), onOpenCalendar: () -> Unit
             }
         }
 
+        androidx.compose.material3.HorizontalDivider(color = MaterialTheme.colorScheme.surfaceContainerHigh)
         Row(
             Modifier.fillMaxWidth().padding(12.dp),
             verticalAlignment = Alignment.CenterVertically,
@@ -762,6 +829,33 @@ private fun CalendarResultCard(
     }
 }
 
+// Soft three-dot "coach is typing" indicator.
+@Composable
+internal fun TypingDots() {
+    val transition = androidx.compose.animation.core.rememberInfiniteTransition(label = "typing")
+    Row(horizontalArrangement = Arrangement.spacedBy(4.dp), verticalAlignment = Alignment.CenterVertically) {
+        repeat(3) { i ->
+            val alpha by transition.animateFloat(
+                initialValue = 0.25f,
+                targetValue = 1f,
+                animationSpec = androidx.compose.animation.core.infiniteRepeatable(
+                    animation = androidx.compose.animation.core.tween(500),
+                    repeatMode = androidx.compose.animation.core.RepeatMode.Reverse,
+                    initialStartOffset = androidx.compose.animation.core.StartOffset(i * 160),
+                ),
+                label = "dot$i",
+            )
+            Box(
+                Modifier
+                    .size(7.dp)
+                    .clip(CircleShape)
+                    .background(MaterialTheme.colorScheme.primary.copy(alpha = alpha)),
+            )
+        }
+    }
+}
+
+@OptIn(androidx.compose.foundation.ExperimentalFoundationApi::class)
 @Composable
 private fun Bubble(msg: ChatMessage) {
     val isUser = msg.role == "user"
@@ -779,54 +873,104 @@ private fun Bubble(msg: ChatMessage) {
         return
     }
 
+    val isError = !isUser && msg.content.startsWith("⚠️")
     val shape = if (isUser)
         RoundedCornerShape(18.dp, 18.dp, 4.dp, 18.dp)
     else
         RoundedCornerShape(18.dp, 18.dp, 18.dp, 4.dp)
+
+    // Long-press any assistant bubble to copy its text.
+    val clipboard = androidx.compose.ui.platform.LocalClipboardManager.current
+    val haptics = androidx.compose.ui.platform.LocalHapticFeedback.current
+    val snackbar = com.workoutmaker.app.ui.components.LocalAppSnackbar.current
+
     Row(
         Modifier.fillMaxWidth(),
         horizontalArrangement = if (isUser) Arrangement.End else Arrangement.Start,
+        verticalAlignment = Alignment.Bottom,
     ) {
+        if (!isUser) {
+            com.workoutmaker.app.ui.components.LogoMark(
+                modifier = Modifier.padding(end = 6.dp, bottom = 2.dp),
+                size = 20.dp,
+                animate = false,
+            )
+        }
         Box(
             Modifier
                 .widthIn(max = 320.dp)
                 .clip(shape)
                 .then(
-                    if (isUser) Modifier.background(MaterialTheme.colorScheme.primary)
-                    else Modifier
-                        .background(MaterialTheme.colorScheme.surfaceContainerHigh)
-                        .border(1.dp, MaterialTheme.colorScheme.outlineVariant, shape),
+                    when {
+                        isUser -> Modifier.background(MaterialTheme.colorScheme.primary)
+                        isError -> Modifier.background(MaterialTheme.colorScheme.errorContainer)
+                        else -> Modifier
+                            .background(MaterialTheme.colorScheme.surfaceContainerHigh)
+                            .border(1.dp, MaterialTheme.colorScheme.outlineVariant, shape)
+                    },
+                )
+                .then(
+                    if (!isUser) Modifier.combinedClickable(
+                        onClick = {},
+                        onLongClick = {
+                            clipboard.setText(androidx.compose.ui.text.AnnotatedString(msg.content))
+                            haptics.performHapticFeedback(androidx.compose.ui.hapticfeedback.HapticFeedbackType.LongPress)
+                            snackbar?.show("Copied")
+                        },
+                    ) else Modifier,
                 )
                 .padding(horizontal = 16.dp, vertical = 12.dp),
         ) {
-            if (isUser) {
-                Text(
+            when {
+                isUser -> Text(
                     msg.content,
                     color = MaterialTheme.colorScheme.onPrimary,
                     style = MaterialTheme.typography.bodyMedium,
                 )
-            } else {
-                // The model writes markdown (bold, lists, headers) — render it.
-                com.workoutmaker.app.ui.components.MarkdownText(
+                isError -> Text(
                     msg.content,
-                    color = MaterialTheme.colorScheme.onSurface,
+                    color = MaterialTheme.colorScheme.onErrorContainer,
                     style = MaterialTheme.typography.bodyMedium,
                 )
+                else ->
+                    // The model writes markdown (bold, lists, headers) — render it.
+                    com.workoutmaker.app.ui.components.MarkdownText(
+                        msg.content,
+                        color = MaterialTheme.colorScheme.onSurface,
+                        style = MaterialTheme.typography.bodyMedium,
+                    )
             }
         }
     }
 }
 
+@OptIn(androidx.compose.foundation.ExperimentalFoundationApi::class)
 @Composable
 private fun AssistantText(text: String) {
     val shape = RoundedCornerShape(18.dp, 18.dp, 18.dp, 4.dp)
-    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.Start) {
+    val clipboard = androidx.compose.ui.platform.LocalClipboardManager.current
+    val haptics = androidx.compose.ui.platform.LocalHapticFeedback.current
+    val snackbar = com.workoutmaker.app.ui.components.LocalAppSnackbar.current
+    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.Start, verticalAlignment = Alignment.Bottom) {
+        com.workoutmaker.app.ui.components.LogoMark(
+            modifier = Modifier.padding(end = 6.dp, bottom = 2.dp),
+            size = 20.dp,
+            animate = false,
+        )
         Box(
             Modifier
                 .widthIn(max = 320.dp)
                 .clip(shape)
                 .background(MaterialTheme.colorScheme.surfaceContainerHigh)
                 .border(1.dp, MaterialTheme.colorScheme.outlineVariant, shape)
+                .combinedClickable(
+                    onClick = {},
+                    onLongClick = {
+                        clipboard.setText(androidx.compose.ui.text.AnnotatedString(text))
+                        haptics.performHapticFeedback(androidx.compose.ui.hapticfeedback.HapticFeedbackType.LongPress)
+                        snackbar?.show("Copied")
+                    },
+                )
                 .padding(horizontal = 16.dp, vertical = 12.dp),
         ) {
             com.workoutmaker.app.ui.components.MarkdownText(

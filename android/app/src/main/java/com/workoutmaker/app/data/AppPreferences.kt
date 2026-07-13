@@ -73,6 +73,8 @@ data class AppSettings(
     // Soft monthly AI-spend cap (USD). 0 = no cap; Diagnostics warns when 30-day
     // estimated spend crosses it.
     val spendCapUsd: Double = 0.0,
+    // Morning readiness notification (score + day summary at wake-up).
+    val morningNotify: Boolean = true,
 )
 
 private val Context.dataStore by preferencesDataStore(name = "app_prefs")
@@ -95,6 +97,7 @@ class AppPreferences @Inject constructor(
         val customsCleanupV1 = booleanPreferencesKey("customs_cleanup_v1")
         val spendCap = doublePreferencesKey("spend_cap_usd")
         val lastAccountUid = stringPreferencesKey("last_account_uid")
+        val morningNotify = booleanPreferencesKey("morning_notify")
     }
 
     // The user id that this device's local data (Room strength tables, caches,
@@ -131,6 +134,7 @@ class AppPreferences @Inject constructor(
             themeMode = ThemeMode.fromName(p[Keys.themeMode]),
             themePalette = ThemePalette.fromName(p[Keys.themePalette]),
             spendCapUsd = p[Keys.spendCap] ?: 0.0,
+            morningNotify = p[Keys.morningNotify] ?: true,
         )
     }
 
@@ -144,6 +148,7 @@ class AppPreferences @Inject constructor(
     suspend fun setThemeMode(m: ThemeMode) = edit { it[Keys.themeMode] = m.name }
     suspend fun setThemePalette(p: ThemePalette) = edit { it[Keys.themePalette] = p.name }
     suspend fun setSpendCap(usd: Double) = edit { it[Keys.spendCap] = usd.coerceIn(0.0, 1000.0) }
+    suspend fun setMorningNotify(on: Boolean) = edit { it[Keys.morningNotify] = on }
 
     private suspend fun edit(block: (androidx.datastore.preferences.core.MutablePreferences) -> Unit) {
         context.dataStore.edit(block)

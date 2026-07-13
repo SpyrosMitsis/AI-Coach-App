@@ -89,7 +89,7 @@ class FeedbackPromptWorker @AssistedInject constructor(
         }
         val n = NotificationCompat.Builder(applicationContext, Notifications.CH_REMINDERS)
             .setSmallIcon(android.R.drawable.ic_dialog_info)
-            .setContentTitle("How did it feel?")
+            .setContentTitle("${Notifications.greeting()}. How did it feel?")
             .setContentText("Rate \"$workoutTitle\", your coach uses it to tune the next sessions.")
             .setContentIntent(pi)
             .setAutoCancel(true)

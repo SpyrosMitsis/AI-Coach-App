@@ -124,6 +124,19 @@ class WorkoutRepository @Inject constructor(
         invalidateProfileCache()
     }
 
+    // Upload crash files captured by CrashReporter. Best effort: a file stays
+    // on disk until its insert succeeds (offline, or migration not pushed yet)
+    // or it goes stale; a failed insert stops the batch until next start.
+    suspend fun uploadPendingCrashes() {
+        for (f in com.workoutmaker.app.util.CrashReporter.pending(appContext)) {
+            val rec = com.workoutmaker.app.util.CrashReporter.parse(f)
+            if (rec == null) { f.delete(); continue }
+            val ok = runCatching { supabase.postgrest.from("crash_reports").insert(rec) }
+                .logFailure("uploadPendingCrashes").isSuccess
+            if (ok) f.delete() else break
+        }
+    }
+
     // Permanent server-side account deletion (Play requirement). The edge
     // function cascades through every owned row; afterwards the local session
     // is dead anyway, so clear it like a sign-out.

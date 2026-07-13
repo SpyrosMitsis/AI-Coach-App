@@ -171,7 +171,10 @@ object CacheModule {
     fun provideDb(@ApplicationContext ctx: Context): AppDatabase =
         Room.databaseBuilder(ctx, AppDatabase::class.java, "workoutmaker.db")
             .addMigrations(MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8)
-            .fallbackToDestructiveMigration()
+            // A missed migration must crash in development, not silently wipe
+            // users' local strength history. Downgrades (sideloading an older
+            // build) may still recreate.
+            .fallbackToDestructiveMigrationOnDowngrade()
             .build()
 
     @Provides

@@ -80,6 +80,14 @@ order by coalesce(u.hosted_usd, 0) desc, coalesce(u.byo_usd, 0) desc
 limit 25;
 
 \echo ''
+\echo '=== Crashes (14 days, grouped) ==='
+select version_name, flavor, left(exception, 90) as exception,
+       count(*) as hits, max(created_at) as last_seen
+from crash_reports
+where created_at > now() - interval '14 days'
+group by 1, 2, 3 order by last_seen desc limit 20;
+
+\echo ''
 \echo '=== Recent billing events ==='
 select created_at, source, event_type, outcome, user_id
 from billing_events

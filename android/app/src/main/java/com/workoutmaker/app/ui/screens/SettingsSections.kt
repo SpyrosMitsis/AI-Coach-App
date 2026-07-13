@@ -567,6 +567,8 @@ internal fun NotificationsSection(vm: SettingsViewModel) {
     val s by vm.appSettings.collectAsStateSafe()
     val context = androidx.compose.ui.platform.LocalContext.current
     SectionCard {
+        ToggleRow("Morning readiness summary", "One notification at wake-up with your readiness score and the day's plan.", s.morningNotify) { vm.setMorningNotify(it) }
+        HorizontalDivider(color = MaterialTheme.colorScheme.surfaceContainerHigh)
         ToggleRow("Rest-timer alert", "Notify when a rest period ends, even if the app is in the background.", s.restNotify) { vm.setRestNotify(it) }
         HorizontalDivider(color = MaterialTheme.colorScheme.surfaceContainerHigh)
         ToggleRow("Vibrate on rest end", "Buzz the phone when the rest timer finishes.", s.restVibrate) { vm.setRestVibrate(it) }

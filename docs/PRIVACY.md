@@ -1,6 +1,6 @@
 # Workout Maker — Privacy Policy
 
-_Last updated: 2026-07-12_
+_Last updated: 2026-07-13_
 
 Workout Maker is an open-source training app (AGPL-3.0). This policy covers the
 Android app and web companion when used with the official hosted backend. If you
@@ -27,6 +27,11 @@ and protected by row-level security — no other user can read your rows.
   are used exclusively server-side. They are never sent to any client.
 - **Generation logs**: each AI request's model, token counts, and estimated cost,
   so you can audit your own spend.
+- **Crash diagnostics**: if the app crashes, a technical report (app version,
+  Android version, device model, and the error's stack trace) is stored in your
+  account's rows so the developer can fix the bug. No precise location, no
+  advertising identifiers, no third-party crash SDK; the report never leaves the
+  app's own backend and is deleted with your account.
 - **Approximate location (optional)**: coarse location is used on-device to fetch
   weather for outdoor session planning. It is not stored on the server.
 
@@ -39,6 +44,12 @@ Data leaves the backend only in these flows, each of which you configure yoursel
   and coaching replies, under that provider's privacy terms and your own API key.
 - **Intervals.icu** (optional): planned workouts are pushed to, and completed
   activities pulled from, your Intervals.icu account using your API key.
+- **Hosted AI (Pro subscribers)**: if you subscribe to Pro and leave hosted AI
+  on, coaching and workout generation run on an LLM provider chosen and paid for
+  by the operator (currently DeepSeek) instead of your own key. The same
+  training context is sent as in the bring-your-own-key flow, under that
+  provider's privacy terms. You can switch back to your own keys at any time in
+  Settings.
 
 There are **no ads, no analytics SDKs, no trackers**, and no sale or sharing of
 personal data with anyone.

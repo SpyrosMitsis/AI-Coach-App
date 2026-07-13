@@ -237,6 +237,7 @@ class SettingsViewModel @Inject constructor(
     fun setBarbell(kg: Double) = viewModelScope.launch { prefs.setBarbell(kg) }
     fun setRestVibrate(on: Boolean) = viewModelScope.launch { prefs.setRestVibrate(on) }
     fun setRestNotify(on: Boolean) = viewModelScope.launch { prefs.setRestNotify(on) }
+    fun setMorningNotify(on: Boolean) = viewModelScope.launch { prefs.setMorningNotify(on) }
     fun setRestChime(c: com.workoutmaker.app.data.RestChime) = viewModelScope.launch { prefs.setRestChime(c) }
     fun setKeepScreenOn(on: Boolean) = viewModelScope.launch { prefs.setKeepScreenOn(on) }
     fun setThemeMode(m: com.workoutmaker.app.data.ThemeMode) = viewModelScope.launch { prefs.setThemeMode(m) }
