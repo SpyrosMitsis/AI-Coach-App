@@ -36,6 +36,9 @@ class WorkoutRepository @Inject constructor(
     private val cache: CacheDao,
     private val prefs: AppPreferences,
     private val backend: BackendConfig,
+    private val health: com.workoutmaker.app.health.HealthConnectManager,
+    // The DAO, not StrengthRepository (which depends on this class).
+    private val strengthDao: com.workoutmaker.app.strength.StrengthDao,
 ) {
     private val json = Json { ignoreUnknownKeys = true; encodeDefaults = true }
 
@@ -357,6 +360,71 @@ class WorkoutRepository @Inject constructor(
         if (rows.isNotEmpty()) {
             supabase.postgrest.from("wellness_checkins").upsert(rows, onConflict = "user_id,date")
         }
+    }
+
+    data class HealthSyncResult(
+        val week: List<com.workoutmaker.app.health.HealthSnapshot> = emptyList(),
+        val activitiesUpserted: Int = 0,
+    )
+
+    // One Health Connect sync for every trigger (Home pull-to-refresh, Settings,
+    // Calendar): pushes the 7-day wellness trend, and — only when intervals.icu
+    // is NOT connected — ingests exercise sessions as fallback activities with
+    // an estimated training load. Intervals users get richer versions of the
+    // same sessions from sync-intervals, so the gate avoids cross-source dupes.
+    suspend fun syncHealth(): HealthSyncResult {
+        if (!health.isAvailable) return HealthSyncResult()
+        val week = health.readWeek(7)
+        if (week.isNotEmpty()) submitHealthSnapshots(week)
+        val intervalsConnected = runCatching { intervalsConnection() != null }.getOrDefault(true)
+        if (intervalsConnected) return HealthSyncResult(week)
+        return HealthSyncResult(week, ingestHcExercises())
+    }
+
+    // Health Connect exercise sessions → completed_activities rows ("hc:<uid>").
+    // Upsert on (user_id, intervals_id) keeps re-syncs idempotent.
+    private suspend fun ingestHcExercises(): Int {
+        val sessions = health.readExerciseSessions(30)
+        if (sessions.isEmpty()) return 0
+        // Skip watch-recorded gym sessions the athlete also logged in the app.
+        val earliest = sessions.minOf { it.startMs }
+        val logged = runCatching { strengthDao.workoutsSince(earliest) }.getOrDefault(emptyList())
+        val slackMs = 30 * 60 * 1000L
+        fun overlapsLoggedStrength(s: com.workoutmaker.app.health.HcExercise): Boolean =
+            logged.any { w -> s.startMs < w.endedAt + slackMs && w.startedAt < s.endMs + slackMs }
+        val lthr = runCatching { loadProfile()?.lthr }.getOrNull()
+        val rows = sessions
+            .filterNot { it.type == "Weight training" && overlapsLoggedStrength(it) }
+            .map { s ->
+                val hours = s.durationSec / 3600.0
+                // HR-based estimate when we can (TRIMP-style: an hour at LTHR
+                // ≈ 100 TSS); otherwise the same duration heuristic manual
+                // logging uses (≈ 50 TSS/hour, a moderate effort).
+                val tss = if (s.avgHr != null && lthr != null && lthr > 0) {
+                    val r = s.avgHr.toDouble() / lthr
+                    hours * r * r * 100
+                } else {
+                    (s.durationSec / 60) * 5 / 6.0
+                }
+                HcActivityInsert(
+                    intervals_id = "hc:${s.uid}",
+                    type = s.type,
+                    date = s.date,
+                    duration_seconds = s.durationSec,
+                    distance_m = s.distanceM,
+                    avg_hr = s.avgHr,
+                    tss = Math.round(tss * 10) / 10.0,
+                )
+            }
+        if (rows.isNotEmpty()) {
+            supabase.postgrest.from("completed_activities")
+                .upsert(rows, onConflict = "user_id,intervals_id")
+        }
+        com.workoutmaker.app.util.AppLog.d(
+            "health",
+            "hc exercise ingest: ${sessions.size} sessions, ${rows.size} upserted",
+        )
+        return rows.size
     }
 
     // --- Strength logs -------------------------------------------------------

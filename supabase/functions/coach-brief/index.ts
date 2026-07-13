@@ -16,6 +16,7 @@ import { customPriceFromProfile, estimateCostUsd, llmGenerateWithFallback } from
 import { computeRecovery } from "../_shared/recovery.ts";
 import { BRIEF_SYSTEM, buildBriefPrompt, trainingPhase } from "../_shared/prompt.ts";
 import { memoryDocsBlock, memoryFromProfile } from "../_shared/agent_memory.ts";
+import { applyFallbackFitness } from "../_shared/load.ts";
 
 const DAY = 86_400_000;
 const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
@@ -62,7 +63,9 @@ Deno.serve(async (req) => {
         .eq("user_id", userId).eq("date", today),
     ]);
 
-    const acts = activities ?? [];
+    // No intervals-provided CTL in the window? Fill estimated values from
+    // stored TSS so Form still reads for athletes without intervals.icu.
+    const acts = await applyFallbackFitness(admin, userId, today, activities ?? []);
     const wells = wellness ?? [];
     const isNum = (v: unknown): v is number => typeof v === "number";
 

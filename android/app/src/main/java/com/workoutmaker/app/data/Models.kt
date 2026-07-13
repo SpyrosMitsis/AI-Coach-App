@@ -305,6 +305,19 @@ data class ManualActivityInsert(
     val tss: Double? = null,
 )
 
+// A Health Connect exercise session pushed as a fallback activity when
+// intervals.icu isn't connected (intervals_id = "hc:<record uid>").
+@Serializable
+data class HcActivityInsert(
+    val intervals_id: String,
+    val type: String,
+    val date: String,
+    val duration_seconds: Int? = null,
+    val distance_m: Double? = null,
+    val avg_hr: Int? = null,
+    val tss: Double? = null,
+)
+
 // A past activity pulled from Intervals.icu (or logged manually) into
 // completed_activities. data_json holds the full Intervals object for the
 // detail view (avg/max HR & power, elevation, calories, pace, name…).

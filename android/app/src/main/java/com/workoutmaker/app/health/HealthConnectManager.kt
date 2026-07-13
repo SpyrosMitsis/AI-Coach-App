@@ -3,12 +3,15 @@ package com.workoutmaker.app.health
 import android.content.Context
 import androidx.health.connect.client.HealthConnectClient
 import androidx.health.connect.client.permission.HealthPermission
+import androidx.health.connect.client.records.DistanceRecord
+import androidx.health.connect.client.records.ExerciseSessionRecord
 import androidx.health.connect.client.records.HeartRateRecord
 import androidx.health.connect.client.records.HeartRateVariabilityRmssdRecord
 import androidx.health.connect.client.records.RestingHeartRateRecord
 import androidx.health.connect.client.records.SleepSessionRecord
 import androidx.health.connect.client.records.StepsRecord
 import androidx.health.connect.client.records.Vo2MaxRecord
+import androidx.health.connect.client.request.AggregateRequest
 import androidx.health.connect.client.request.ReadRecordsRequest
 import androidx.health.connect.client.time.TimeRangeFilter
 import dagger.hilt.android.qualifiers.ApplicationContext
@@ -34,6 +37,18 @@ data class HealthSnapshot(
         hrvRmssd != null || restingHr != null || sleepMinutes != null || steps != null || vo2max != null
 }
 
+/** A workout session read from Health Connect (any watch brand's app writes these). */
+data class HcExercise(
+    val uid: String,
+    val type: String,          // app-friendly: "Run", "Ride", "Weight training", …
+    val date: String,          // local calendar date of the session start
+    val startMs: Long,
+    val endMs: Long,
+    val durationSec: Int,
+    val distanceM: Double? = null,
+    val avgHr: Int? = null,
+)
+
 @Singleton
 class HealthConnectManager @Inject constructor(
     @ApplicationContext private val context: Context,
@@ -45,6 +60,8 @@ class HealthConnectManager @Inject constructor(
         HealthPermission.getReadPermission(SleepSessionRecord::class),
         HealthPermission.getReadPermission(StepsRecord::class),
         HealthPermission.getReadPermission(Vo2MaxRecord::class),
+        HealthPermission.getReadPermission(ExerciseSessionRecord::class),
+        HealthPermission.getReadPermission(DistanceRecord::class),
     )
 
     /** SDK_AVAILABLE / SDK_UNAVAILABLE / SDK_UNAVAILABLE_PROVIDER_UPDATE_REQUIRED. */
@@ -179,6 +196,69 @@ class HealthConnectManager @Inject constructor(
             if (snap.hasAny) out.add(snap)
         }
         return out
+    }
+
+    /**
+     * Read the last [days] days of exercise sessions (the fallback activity
+     * source when intervals.icu isn't connected). Per session, avg HR and
+     * total distance are aggregated over the session's time range. Empty on
+     * missing permission or no data (same best-effort stance as readWeek).
+     */
+    suspend fun readExerciseSessions(days: Int = 30): List<HcExercise> {
+        val zone = ZoneId.systemDefault()
+        val now = Instant.now()
+        val window = TimeRangeFilter.between(now.minus(Duration.ofDays(days.toLong())), now)
+        val sessions = runCatching {
+            client.readRecords(ReadRecordsRequest(ExerciseSessionRecord::class, window)).records
+        }.getOrDefault(emptyList())
+        return sessions.mapNotNull { s ->
+            val durationSec = Duration.between(s.startTime, s.endTime).seconds.toInt()
+            if (durationSec < 60) return@mapNotNull null // discard sub-minute noise
+            val range = TimeRangeFilter.between(s.startTime, s.endTime)
+            val avgHr = runCatching {
+                client.aggregate(AggregateRequest(setOf(HeartRateRecord.BPM_AVG), range))[HeartRateRecord.BPM_AVG]?.toInt()
+            }.getOrNull()
+            val distance = runCatching {
+                client.aggregate(AggregateRequest(setOf(DistanceRecord.DISTANCE_TOTAL), range))[DistanceRecord.DISTANCE_TOTAL]?.inMeters
+            }.getOrNull()
+            HcExercise(
+                uid = s.metadata.id,
+                type = exerciseTypeName(s.exerciseType),
+                date = s.startTime.atZone(zone).toLocalDate().toString(),
+                startMs = s.startTime.toEpochMilli(),
+                endMs = s.endTime.toEpochMilli(),
+                durationSec = durationSec,
+                distanceM = distance,
+                avgHr = avgHr,
+            )
+        }
+    }
+
+    // Names are chosen to satisfy the app's type matching (adaptWeek's
+    // typeMatches, daily-summary's sportOf). Unknown types map to "Other",
+    // NOT "Workout": "workout" substring-matches planned strength and would
+    // auto-complete gym sessions from any unclassified activity.
+    private fun exerciseTypeName(type: Int): String = when (type) {
+        ExerciseSessionRecord.EXERCISE_TYPE_RUNNING,
+        ExerciseSessionRecord.EXERCISE_TYPE_RUNNING_TREADMILL,
+        -> "Run"
+        ExerciseSessionRecord.EXERCISE_TYPE_WALKING -> "Walk"
+        ExerciseSessionRecord.EXERCISE_TYPE_BIKING,
+        ExerciseSessionRecord.EXERCISE_TYPE_BIKING_STATIONARY,
+        -> "Ride"
+        ExerciseSessionRecord.EXERCISE_TYPE_SWIMMING_POOL,
+        ExerciseSessionRecord.EXERCISE_TYPE_SWIMMING_OPEN_WATER,
+        -> "Swim"
+        ExerciseSessionRecord.EXERCISE_TYPE_STRENGTH_TRAINING,
+        ExerciseSessionRecord.EXERCISE_TYPE_WEIGHTLIFTING,
+        ExerciseSessionRecord.EXERCISE_TYPE_CALISTHENICS,
+        -> "Weight training"
+        ExerciseSessionRecord.EXERCISE_TYPE_ROWING,
+        ExerciseSessionRecord.EXERCISE_TYPE_ROWING_MACHINE,
+        -> "Row"
+        ExerciseSessionRecord.EXERCISE_TYPE_HIKING -> "Hike"
+        ExerciseSessionRecord.EXERCISE_TYPE_ELLIPTICAL -> "Elliptical"
+        else -> "Other"
     }
 
     private data class Sleep(val total: Int, val deep: Int?, val rem: Int?)

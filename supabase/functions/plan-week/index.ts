@@ -19,6 +19,7 @@ import {
   WEEK_SYSTEM_PROMPT,
 } from "../_shared/prompt.ts";
 import { createEvent, deleteEvent, latestFitness } from "../_shared/intervals.ts";
+import { applyFallbackFitness } from "../_shared/load.ts";
 import { renderIntervalsWorkout } from "../_shared/intervals_workout.ts";
 import { adherenceBlock, executionBlock, goalBlock, intervalsPhysiology } from "../_shared/context.ts";
 import { memoryDocsBlock, memoryFromProfile } from "../_shared/agent_memory.ts";
@@ -69,7 +70,9 @@ async function planForUser(admin: SupabaseClient, userId: string, start: string,
     .from("completed_activities")
     .select("type, date, distance_m, tss, ctl, atl")
     .eq("user_id", userId).gte("date", since28).order("date", { ascending: false });
-  const acts28 = activities ?? [];
+  // No intervals-provided CTL in the window? Fill estimated values from
+  // stored TSS so fitness/goal context still works without intervals.icu.
+  const acts28 = await applyFallbackFitness(admin, userId, today, activities ?? []);
   const acts14 = acts28.filter((a) => (a.date ?? "") >= since14);
   const runs = acts14.filter((a) => (a.type ?? "").toLowerCase().includes("run"));
 

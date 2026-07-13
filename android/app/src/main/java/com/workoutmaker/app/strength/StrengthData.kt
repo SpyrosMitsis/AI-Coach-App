@@ -139,6 +139,11 @@ interface StrengthDao {
     @Query("SELECT startedAt FROM strength_workout")
     suspend fun allStartedAts(): List<Long>
 
+    // Workouts that ended after a timestamp — used to skip Health Connect
+    // exercise sessions that were also logged in the app (double-count guard).
+    @Query("SELECT * FROM strength_workout WHERE endedAt >= :since")
+    suspend fun workoutsSince(since: Long): List<WorkoutEntity>
+
     // All local workout ids — used to pull-merge only cloud workouts we lack.
     @Query("SELECT id FROM strength_workout")
     suspend fun allWorkoutIds(): List<String>

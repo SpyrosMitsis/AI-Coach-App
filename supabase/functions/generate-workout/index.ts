@@ -27,6 +27,7 @@ import {
   validateWorkout,
 } from "../_shared/prompt.ts";
 import { createEvent, deleteEvent, latestFitness } from "../_shared/intervals.ts";
+import { applyFallbackFitness } from "../_shared/load.ts";
 import { renderIntervalsWorkout } from "../_shared/intervals_workout.ts";
 import {
   adherenceBlock,
@@ -101,7 +102,9 @@ Deno.serve(async (req) => {
       .eq("user_id", userId)
       .gte("date", since28)
       .order("date", { ascending: false });
-    const acts28 = activities ?? [];
+    // No intervals-provided CTL in the window? Fill estimated values from
+    // stored TSS so fitness/goal context still works without intervals.icu.
+    const acts28 = await applyFallbackFitness(admin, userId, date, activities ?? []);
     const acts = acts28.filter((a) => (a.date ?? "") >= since14); // last 14d view
 
     // ACWR = (last 7d load) / (last 28d avg-per-week load). 0.8-1.3 is the

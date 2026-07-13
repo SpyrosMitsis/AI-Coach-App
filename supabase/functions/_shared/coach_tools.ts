@@ -7,6 +7,7 @@ import type { SupabaseClient } from "jsr:@supabase/supabase-js@2";
 
 import { computeRecovery } from "./recovery.ts";
 import { freshnessWord, recoveryWord } from "./prompt.ts";
+import { applyFallbackFitness } from "./load.ts";
 
 const DAY = 86400000;
 const iso = (d: number) => new Date(d).toISOString().slice(0, 10);
@@ -35,7 +36,7 @@ export const TOOL_CATALOG: ToolDef[] = [
   {
     name: "get_recent_activities", kind: "read", args: "{ days?: number = 14 }",
     schema: { type: "object", properties: { days: { type: "number", description: "Lookback window in days (default 14, max 60)" } } },
-    description: "Recently completed activities from Intervals.icu (type, date, distance, duration, HR, TSS).",
+    description: "Recently completed activities recorded by the athlete's watch or Intervals.icu (type, date, distance, duration, HR, TSS).",
   },
   {
     name: "get_planned_week", kind: "read", args: "{ week_start?: 'YYYY-MM-DD' }",
@@ -168,7 +169,9 @@ export async function executeTool(
         const { data } = await admin.from("completed_activities")
           .select("date, tss, ctl, atl").eq("user_id", userId).gte("date", since)
           .order("date", { ascending: false });
-        const a = data ?? [];
+        // No intervals-provided CTL? Fill estimated values from stored TSS so
+        // the coach still sees a fitness signal without intervals.icu.
+        const a = await applyFallbackFitness(admin, userId, iso(Date.now()), data ?? []);
         const fit = a.find((r) => r.ctl != null) ?? { ctl: 0, atl: 0 };
         const ctl = fit.ctl ?? 0, atl = fit.atl ?? 0;
         const since7 = iso(Date.now() - 7 * DAY);
