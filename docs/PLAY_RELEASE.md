@@ -18,22 +18,40 @@ none of it can be automated from here.
 
 ## Declarations (start early — these have review lead time)
 
-- **Privacy policy URL** (required, gates everything): publish `docs/PRIVACY.md`
-  publicly and paste its URL. The public GitHub blob URL works, or the web app's
-  domain if preferred.
+- **Privacy policy URL** (required, gates everything): the web app now serves it
+  at **`https://<web-app-domain>/privacy`** (public, no sign-in; mirrors
+  `docs/PRIVACY.md` — keep the two in sync). Use that URL everywhere below.
 - **Health apps declaration** (required because of Health Connect READ
   permissions; review can take **weeks** — file with the first closed-testing
-  build): purpose = fitness & wellness coaching; data read: heart rate, resting
-  HR, HRV, sleep, steps, VO₂max; used for readiness scoring and workout
-  personalization; not used for ads.
+  build). Ready-to-paste answers:
+  - App type: fitness and wellness app (coaching / training planner).
+  - Health Connect data types READ: exercise/sleep group — Sleep;
+    vitals group — Heart rate, Heart rate variability (RMSSD), Resting heart
+    rate; activity group — Steps; fitness group — VO₂max. The app WRITES
+    nothing to Health Connect.
+  - Purpose of access: computing a daily readiness/recovery score and
+    personalizing the user's training plan and coaching advice, all shown to
+    the user inside the app. Data is processed in the app's own backend
+    (Supabase, row-level-security scoped to the user's account).
+  - Data handling: not used for advertising; never sold; not shared with data
+    brokers. Shared only with processors the user configures (their chosen LLM
+    provider and optionally Intervals.icu) or the operator's hosted LLM for Pro
+    subscribers, solely to deliver the coaching feature.
+  - User control: permissions are optional and revocable in Health Connect;
+    account deletion (in-app or `https://<web-app-domain>/delete-account`)
+    removes all stored health summaries.
+  - Privacy policy URL: `https://<web-app-domain>/privacy`.
 - **Data safety form** (must mirror the privacy policy):
   - Collected: email (account), health & fitness data (app functionality),
-    approximate location (optional, app functionality, not stored server-side).
-  - Shared: training context → user-configured LLM provider; workouts ↔
-    Intervals.icu (both user-initiated, user-supplied keys).
+    approximate location (optional, app functionality, not stored server-side),
+    **crash logs / diagnostics** (app functionality: app version, device model,
+    OS version, stack trace; stored in the app's own backend, no third-party
+    SDK, deleted with the account).
+  - Shared: training context → user-configured LLM provider (or the operator's
+    hosted LLM for Pro); workouts ↔ Intervals.icu (both user-initiated).
   - All data encrypted in transit; deletion path = in-app + web URL
     (`https://<web-app-domain>/delete-account`).
-  - No ads, no analytics, no data sold.
+  - No ads, no analytics SDKs, no data sold.
 - **SCHEDULE_EXACT_ALARM declaration**: user-initiated rest timer (accepted use
   case; the app already falls back to inexact alarms when not granted).
 - **Foreground service (health) declaration**: keeps the live workout session
@@ -73,6 +91,13 @@ Code side is in the repo (`verify-purchase` / `play-rtdn` edge fns, migration 35
 1. **Subscription product**: Play Console → Monetize → Subscriptions → create
    product id **`pro`** (must match `PRO_PRODUCT_ID` in
    `billing/BillingGateway.kt`) with one base plan (e.g. monthly).
+1b. **Tip products** (Settings → Support the developer): Play Console →
+   Monetize → In-app products → create one-time products **`tip_small`**,
+   **`tip_medium`**, **`tip_large`** (e.g. 2 / 5 / 10 EUR; ids must match
+   `TIP_PRODUCT_IDS` in `billing/BillingGateway.kt`). The app consumes each
+   purchase so tips are repeatable; no server verification is involved.
+   (The foss build shows a Ko-fi link instead — set the real Ko-fi URL in
+   `SettingsSections.kt` `KOFI_URL` before release.)
 2. **Service account**: GCP project → enable *Google Play Android Developer
    API* → create a service account + JSON key → in Play Console → Users &
    permissions, grant it *View financial data* + *Manage orders*. Then

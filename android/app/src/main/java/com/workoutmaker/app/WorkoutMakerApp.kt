@@ -17,6 +17,8 @@ class WorkoutMakerApp : Application(), Configuration.Provider {
 
     override fun onCreate() {
         super.onCreate()
+        // First: capture uncaught exceptions to disk (uploaded on next start).
+        com.workoutmaker.app.util.CrashReporter.install(this)
         com.workoutmaker.app.notify.Notifications.ensureChannels(this)
         // Schedule the recurring 7am wellness check-in reminder.
         CheckinReminderScheduler.schedule(this)

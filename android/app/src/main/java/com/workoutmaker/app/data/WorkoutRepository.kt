@@ -39,6 +39,7 @@ class WorkoutRepository @Inject constructor(
     private val health: com.workoutmaker.app.health.HealthConnectManager,
     // The DAO, not StrengthRepository (which depends on this class).
     private val strengthDao: com.workoutmaker.app.strength.StrengthDao,
+    @dagger.hilt.android.qualifiers.ApplicationContext private val appContext: android.content.Context,
 ) {
     private val json = Json { ignoreUnknownKeys = true; encodeDefaults = true }
 
@@ -77,10 +78,65 @@ class WorkoutRepository @Inject constructor(
 
     suspend fun signOut() {
         supabase.auth.signOut()
+        // Don't leak one account's local data into the next sign-in.
+        clearLocalAccountData()
+    }
+
+    // --- Account scoping -------------------------------------------------
+    // Local state (Room strength tables, offline caches, onboarding flag, the
+    // in-memory exercise registry) belongs to exactly one account. Called on
+    // every entry into the authenticated app; wipes when the signed-in user
+    // differs from the data's owner, so a new account on the same device never
+    // sees the previous account's rows and the sync workers never push them
+    // into the wrong cloud.
+    suspend fun ensureAccountScope() {
+        val uid = supabase.auth.currentUserOrNull()?.id ?: return
+        val owner = runCatching { prefs.lastAccountUid() }.getOrNull()
+        if (owner == uid) return
+        if (owner == null) {
+            // Pre-guard install: adopt the current user instead of wiping, so
+            // updating the app doesn't discard unsynced local data.
+            runCatching { prefs.setLastAccountUid(uid) }
+            return
+        }
+        com.workoutmaker.app.util.AppLog.i("repo", "account changed, wiping per-account local state")
+        clearLocalAccountData()
+        runCatching { prefs.setLastAccountUid(uid) }
+    }
+
+    private suspend fun clearLocalAccountData() {
         invalidateProfileCache()
         runCatching { prefs.setOnboardingComplete(false) }
-        // Don't leak one account's cached data into the next sign-in.
-        runCatching { cache.clearWorkouts(); cache.clearSummaries(); cache.clearBriefs() }
+        runCatching { cache.clearWorkouts(); cache.clearSummaries(); cache.clearBriefs(); cache.clearWeekReviews() }
+        runCatching {
+            strengthDao.clearSets(); strengthDao.clearWorkouts()
+            strengthDao.clearRoutineItems(); strengthDao.clearRoutines()
+            strengthDao.clearCustomExercises(); strengthDao.clearFavorites()
+            strengthDao.clearTombstones()
+            com.workoutmaker.app.strength.ExerciseCatalog.resetCustom()
+        }.logFailure("clearLocalAccountData/strength")
+        // A half-finished logger session from the previous account must not
+        // resume under the new one.
+        runCatching { java.io.File(appContext.filesDir, "active_session.json").delete() }
+    }
+
+    // A deep link (email confirm / recovery) imported a session without going
+    // through signIn(), so the profile-row cache may belong to someone else.
+    fun onSessionImported() {
+        invalidateProfileCache()
+    }
+
+    // Upload crash files captured by CrashReporter. Best effort: a file stays
+    // on disk until its insert succeeds (offline, or migration not pushed yet)
+    // or it goes stale; a failed insert stops the batch until next start.
+    suspend fun uploadPendingCrashes() {
+        for (f in com.workoutmaker.app.util.CrashReporter.pending(appContext)) {
+            val rec = com.workoutmaker.app.util.CrashReporter.parse(f)
+            if (rec == null) { f.delete(); continue }
+            val ok = runCatching { supabase.postgrest.from("crash_reports").insert(rec) }
+                .logFailure("uploadPendingCrashes").isSuccess
+            if (ok) f.delete() else break
+        }
     }
 
     // Permanent server-side account deletion (Play requirement). The edge

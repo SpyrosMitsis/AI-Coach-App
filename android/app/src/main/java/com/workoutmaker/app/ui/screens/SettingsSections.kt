@@ -387,6 +387,51 @@ internal fun ProSection(vm: SettingsViewModel) {
     }
 }
 
+// Ko-fi page used by builds without Play Billing (foss). TODO: replace the
+// placeholder handle with the real Ko-fi page before release.
+internal const val KOFI_URL = "https://ko-fi.com/PLACEHOLDER"
+
+@Composable
+internal fun SupportSection(vm: SettingsViewModel) {
+    val context = androidx.compose.ui.platform.LocalContext.current
+    SectionCard(title = "Support the developer") {
+        Text(
+            "This app is free and open source. If it helps your training, a small tip keeps it alive.",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        if (vm.tipsSupported) {
+            val busy = vm.tipBusy.collectAsStateSafe().value
+            val status = vm.tipStatus.collectAsStateSafe().value
+            Row(
+                Modifier.fillMaxWidth(),
+                horizontalArrangement = androidx.compose.foundation.layout.Arrangement.spacedBy(8.dp),
+            ) {
+                listOf(
+                    "tip_small" to "2 €",
+                    "tip_medium" to "5 €",
+                    "tip_large" to "10 €",
+                ).forEach { (id, label) ->
+                    androidx.compose.material3.OutlinedButton(
+                        onClick = { (context as? android.app.Activity)?.let { vm.sendTip(it, id) } },
+                        enabled = !busy,
+                        modifier = Modifier.weight(1f),
+                    ) { Text(if (busy) "…" else label) }
+                }
+            }
+            status?.let {
+                Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.primary)
+            }
+        } else {
+            val uriHandler = androidx.compose.ui.platform.LocalUriHandler.current
+            Button(
+                onClick = { runCatching { uriHandler.openUri(KOFI_URL) } },
+                modifier = Modifier.fillMaxWidth(),
+            ) { Text("Tip on Ko-fi") }
+        }
+    }
+}
+
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
 internal fun AiSection(vm: SettingsViewModel) {
@@ -522,6 +567,8 @@ internal fun NotificationsSection(vm: SettingsViewModel) {
     val s by vm.appSettings.collectAsStateSafe()
     val context = androidx.compose.ui.platform.LocalContext.current
     SectionCard {
+        ToggleRow("Morning readiness summary", "One notification at wake-up with your readiness score and the day's plan.", s.morningNotify) { vm.setMorningNotify(it) }
+        HorizontalDivider(color = MaterialTheme.colorScheme.surfaceContainerHigh)
         ToggleRow("Rest-timer alert", "Notify when a rest period ends, even if the app is in the background.", s.restNotify) { vm.setRestNotify(it) }
         HorizontalDivider(color = MaterialTheme.colorScheme.surfaceContainerHigh)
         ToggleRow("Vibrate on rest end", "Buzz the phone when the rest timer finishes.", s.restVibrate) { vm.setRestVibrate(it) }

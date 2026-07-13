@@ -24,6 +24,18 @@ object Notifications {
     const val CH_WORKOUT = "active_workout"
     const val ID_REST_OVER = 2001
 
+    // Time-aware greeting so a reminder that fires late never says "Good
+    // morning" at 3pm. A few variants per slot, rotated by day of year, keep
+    // the daily notification from reading word-for-word identical.
+    fun greeting(now: java.time.LocalDateTime = java.time.LocalDateTime.now()): String {
+        val pool = when (now.hour) {
+            in 0..11 -> listOf("Good morning", "Morning", "New day")
+            in 12..16 -> listOf("Good afternoon", "Afternoon", "Midday check")
+            else -> listOf("Good evening", "Evening", "Day's end")
+        }
+        return pool[now.dayOfYear % pool.size]
+    }
+
     fun ensureChannels(ctx: Context) {
         val nm = ctx.getSystemService(NotificationManager::class.java) ?: return
         nm.createNotificationChannel(

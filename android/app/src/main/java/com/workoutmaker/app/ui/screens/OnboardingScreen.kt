@@ -82,7 +82,19 @@ class OnboardingViewModel @Inject constructor(
             }
         }
     }
-    fun recheck() = viewModelScope.launch { complete.value = repo.isOnboardingComplete() }
+    fun currentUserId(): String? = repo.auth.currentUserOrNull()?.id
+
+    // Re-runs whenever the authenticated user changes (OnboardingGate keys on
+    // the uid): first scope-checks local per-account data, then asks the server
+    // whether onboarding is done. Never serves a previous user's answer.
+    private var checkedUid: String? = null
+    fun recheck() = viewModelScope.launch {
+        val uid = currentUserId()
+        if (uid != checkedUid) complete.value = null
+        checkedUid = uid
+        repo.ensureAccountScope()
+        complete.value = repo.isOnboardingComplete()
+    }
 
     fun buyPro(activity: android.app.Activity) = viewModelScope.launch {
         proBusy.value = true
@@ -295,7 +307,7 @@ private fun ProOnboardingCard(vm: OnboardingViewModel) {
             )
         } else {
             Text(
-                "Skip the API keys. Pro runs the coach and workout generation on a fast hosted model, with a fair-use allowance. Manage or cancel any time in Settings.",
+                "Skip the API keys. Pro runs the coach and workout generation on a fast hosted model, with a fair-use allowance. It also supports the developer and keeps this app alive. Manage or cancel any time in Settings.",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
@@ -318,11 +330,16 @@ private fun ByoKeyCard(vm: OnboardingViewModel) {
     val busy by vm.busy.collectAsStateSafe()
     SectionCard(title = "Bring your own key (free)") {
         Text(
-            "This app is free, you bring your own LLM key, so generations cost only what your provider charges (often pennies, or free tiers). Pick one to start.",
+            "This app is free and you bring your own LLM key. You pay your provider directly for what you use. Pick one to start.",
             style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
         FlowRowProviders(vm)
-        Text("Get a free key: ${vm.provider.freeKeyUrl}", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.primary)
+        if (vm.provider.freeKeyUrl.isNotBlank()) {
+            // Only Groq and Gemini actually have free tiers; don't promise one
+            // for the paid providers.
+            val keyLabel = if (vm.provider.freeTier) "Get a free key" else "Get an API key"
+            Text("$keyLabel: ${vm.provider.freeKeyUrl}", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.primary)
+        }
         OutlinedTextField(key, { key = it }, label = { Text("${vm.provider.label} API key") },
             visualTransformation = PasswordVisualTransformation(), modifier = Modifier.fillMaxWidth())
         Button(onClick = { vm.testKey(key) }, enabled = !busy && key.isNotBlank(), modifier = Modifier.fillMaxWidth()) {

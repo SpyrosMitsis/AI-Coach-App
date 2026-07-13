@@ -36,6 +36,7 @@ import { corsHeaders } from "../_shared/cors.ts";
 import { COACH_SYSTEM_PROMPT, finalizeInstruction, freshnessWord, recoveryWord, trainingPhase } from "../_shared/prompt.ts";
 import type { LlmProvider } from "../_shared/types.ts";
 import { executeTool, nativeToolDefs, toolCatalogPrompt } from "../_shared/coach_tools.ts";
+import { looksLikeStall } from "../_shared/coach_eval.ts";
 import { runNativeToolLoop, supportsNativeTools } from "../_shared/llm_native_tools.ts";
 
 // Tool-use protocol appended to the coach system prompt for chat mode. The
@@ -94,26 +95,22 @@ function cleanReply(text: string): string {
 
 // Tools that mutate the athlete's plan/calendar. The anti-stall guard uses this
 // to tell "the coach actually acted" from "the coach only talked about acting".
-const WRITE_TOOLS = new Set(["plan_week", "generate_workout", "move_workout", "set_goal_race"]);
+const WRITE_TOOLS = new Set([
+  "plan_week",
+  "generate_workout",
+  "move_workout",
+  "set_goal_race",
+  "set_rest_day",
+  "make_easier",
+]);
 
-// A reply "stalls" when it promises a plan change in the future tense or asks the
-// athlete to wait, instead of calling the tool. Two cheap gates keep false
-// positives bounded (worst case: one wasted corrective turn): an explicit stall
-// phrase, OR a future-intent marker sitting next to a plan-action verb.
-const STALL_PHRASES =
-  /\b(let me (?:review|check|look|take a look|pull up|analyz|see)|give me a (?:moment|sec|minute)|one (?:moment|sec)|hold on|bear with me|i'?ll get (?:back|right back)|i'?ll proceed|i will proceed|i'?ll go ahead)\b/i;
-const FUTURE_INTENT = /\b(i'?ll|i will|i'?m going to|i am going to|let me|going to)\b/i;
-const PLAN_VERB =
-  /\b(adjust|updat|chang|modif|revis|re-?plan|plan|schedul|reschedul|mov|shift|push|reduc|lower|cut|increas|build|creat|generat|put together|draft|design|tweak|swap|regenerat|tailor|rework)\w*/i;
-function looksLikeStall(text: string): boolean {
-  if (!text) return false;
-  if (STALL_PHRASES.test(text)) return true;
-  return FUTURE_INTENT.test(text) && PLAN_VERB.test(text);
-}
+// The stall heuristic ("promised a plan change instead of calling the tool")
+// lives in _shared/coach_eval.ts so the golden-set eval scores models with the
+// exact same rule the runtime guard uses.
 
 const STALL_NUDGE =
   "You described an action but did not perform it, no tool was called this turn. " +
-  "If you intend to change the plan, call the tool NOW (plan_week / generate_workout / move_workout / set_goal_race), read the result, and report what you DID in the past tense. " +
+  "If you intend to change the plan, call the tool NOW (plan_week / generate_workout / move_workout / set_rest_day / make_easier / set_goal_race), read the result, and report what you DID in the past tense. " +
   "If no change is actually needed, answer plainly without promising any future work.";
 
 // Supabase Edge runtime keeps the worker alive for promises passed to
@@ -201,7 +198,13 @@ Deno.serve(async (req) => {
     const since28 = new Date(Date.now() - 28 * DAY).toISOString().slice(0, 10);
     const since7 = new Date(Date.now() - 7 * DAY).toISOString().slice(0, 10);
     const today = new Date().toISOString().slice(0, 10);
-    const [{ data: acts }, { data: todayPlanned }, { data: wellness }] = await Promise.all([
+    // Monday of the current week, for the inline adherence line.
+    const weekStart = (() => {
+      const d = new Date(today);
+      d.setUTCDate(d.getUTCDate() - ((d.getUTCDay() + 6) % 7));
+      return d.toISOString().slice(0, 10);
+    })();
+    const [{ data: acts }, { data: todayPlanned }, { data: wellness }, { data: weekPlanned }] = await Promise.all([
       admin.from("completed_activities")
         .select("type, date, distance_m, tss, ctl, atl")
         .eq("user_id", userId).gte("date", since28).order("date", { ascending: false }),
@@ -211,6 +214,9 @@ Deno.serve(async (req) => {
       admin.from("wellness_checkins")
         .select("date, energy, soreness, sleep_score, hrv_rmssd, resting_hr, zepp_sleep_minutes")
         .eq("user_id", userId).gte("date", since7).order("date", { ascending: false }),
+      admin.from("planned_workouts")
+        .select("type, completed, date")
+        .eq("user_id", userId).gte("date", weekStart).lte("date", today),
     ]);
     // No intervals-provided CTL in the window? Fill estimated values from
     // stored TSS so the coach still sees a fitness signal without intervals.icu.
@@ -248,6 +254,21 @@ Deno.serve(async (req) => {
     );
     const weeklyTss = Math.round(a.filter((r) => (r.date ?? "") >= since7).reduce((s2, r) => s2 + (r.tss ?? 0), 0));
 
+    // Week adherence + recovery direction, as words (voice rule: the coach
+    // interprets, it doesn't recite numbers).
+    const weekSessions = (weekPlanned ?? []).filter((p) => p.type !== "rest");
+    const weekDone = weekSessions.filter((p) => p.completed).length;
+    const adherenceLine = weekSessions.length
+      ? `completed ${weekDone} of ${weekSessions.length} planned sessions so far`
+      : "no sessions planned yet";
+    const recoveryTrendWord = (() => {
+      const h = recovery.hrv?.deltaPct ?? 0;
+      const r = recovery.rhr?.deltaPct ?? 0;
+      const up = (h > 0.03 ? 1 : 0) + (r < -0.02 ? 1 : 0);
+      const down = (h < -0.03 ? 1 : 0) + (r > 0.02 ? 1 : 0);
+      return up > down ? "improving" : down > up ? "declining" : "steady";
+    })();
+
     // Digest of the most recent sessions so "how did my workouts go?" never
     // gets "I can't see your workouts" — deeper detail still comes from tools.
     const recentLines = a.slice(0, 6).map((r) => {
@@ -263,7 +284,8 @@ Deno.serve(async (req) => {
 - Available days: ${(onboarding.days as string[] | undefined)?.join(", ") ?? "unknown"}; session length: ${onboarding.session_duration ?? "?"} min
 - Equipment: ${onboarding.equipment ?? "unknown"}; injuries: ${onboarding.injury_history ?? "none noted"}
 - Form/freshness: ${freshnessWord(ctl - atl)} (TSB ${(ctl - atl).toFixed(0)})
-- Recovery today: ${recoveryWord(recovery.band)} (${recovery.score}/100); weekly load so far ~${weeklyTss} TSS, background only, don't quote it unless they ask
+- Recovery today: ${recoveryWord(recovery.band)} (${recovery.score}/100), trend ${recoveryTrendWord}; weekly load so far ~${weeklyTss} TSS, background only, don't quote it unless they ask
+- This week: ${adherenceLine}
 - Today's plan: ${todayLine}
 - Last completed sessions (newest first): ${recentLines.join(" | ") || "none recorded in the last 28 days"}
 - ~${weeklyKm.toFixed(0)} km/week recently; training phase: ${trainingPhase(weeksToGoal)}` +

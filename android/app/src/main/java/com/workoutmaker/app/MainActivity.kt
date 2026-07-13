@@ -99,6 +99,9 @@ class MainActivity : ComponentActivity() {
             return
         }
         supabase.handleDeeplinks(intent) { session ->
+            // The imported session may belong to a different user than the
+            // cached profile row (e.g. confirming a brand-new account).
+            repo.onSessionImported()
             if (session.type == "recovery" || data.path?.contains("reset") == true) {
                 com.workoutmaker.app.data.AuthDeepLinks.recoveryPending.value = true
             }
@@ -132,6 +135,13 @@ class MainActivity : ComponentActivity() {
             }
             com.workoutmaker.app.data.AuthDeepLinks.recoveryPending.collect { pending ->
                 authFlags.edit().putBoolean("recovery_pending", pending).apply()
+            }
+        }
+
+        // Ship any crash captured on a previous run (no-op when none pending).
+        lifecycleScope.launch {
+            runCatching {
+                if (repo.auth.currentUserOrNull() != null) repo.uploadPendingCrashes()
             }
         }
 

@@ -34,8 +34,9 @@ export async function middleware(request: NextRequest) {
   // form requires a public web deletion path.
   // /reset-password too: the recovery link arrives signed-out and carries its
   // credentials as a token_hash query param the form verifies on submit.
+  // /privacy likewise: the Play listing and Health Connect declaration link it.
   const isPublic = isAuthRoute || path.startsWith("/auth") || path === "/delete-account" ||
-    path === "/reset-password";
+    path === "/reset-password" || path === "/privacy";
 
   if (!user && !isPublic) {
     return NextResponse.redirect(new URL("/login", request.url));

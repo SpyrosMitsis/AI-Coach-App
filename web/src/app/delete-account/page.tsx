@@ -32,10 +32,7 @@ export default function DeleteAccountPage() {
       <p className="text-sm text-muted-foreground">
         Data previously pushed to Intervals.icu or sent to your chosen LLM provider is
         governed by those services and must be deleted there. See the{" "}
-        <a
-          className="underline"
-          href="https://github.com/SpyrosMitsis/AI-Coach-App/blob/main/docs/PRIVACY.md"
-        >
+        <a className="underline" href="/privacy">
           privacy policy
         </a>
         .
