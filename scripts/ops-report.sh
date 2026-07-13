@@ -58,6 +58,28 @@ where g.hosted and g.created_at >= date_trunc('month', now())
 group by 1, 2 order by usd desc nulls last limit 10;
 
 \echo ''
+\echo '=== Per-user cost picture (30 days: hosted vs BYO, top feature) ==='
+with per_user as (
+  select user_id,
+         count(*)                                                   as calls,
+         coalesce(sum(prompt_tokens + completion_tokens), 0)        as tokens,
+         round(sum(estimated_cost_usd) filter (where hosted)::numeric, 4)     as hosted_usd,
+         round(sum(estimated_cost_usd) filter (where not hosted)::numeric, 4) as byo_usd,
+         mode() within group (order by feature)                     as top_feature
+  from generation_logs
+  where created_at > now() - interval '30 days'
+  group by 1
+)
+select u.user_id, p.plan, u.calls, u.tokens,
+       coalesce(u.hosted_usd, 0) as hosted_usd,
+       coalesce(u.byo_usd, 0)    as byo_usd,
+       u.top_feature
+from per_user u
+left join user_profiles p on p.id = u.user_id
+order by coalesce(u.hosted_usd, 0) desc, coalesce(u.byo_usd, 0) desc
+limit 25;
+
+\echo ''
 \echo '=== Recent billing events ==='
 select created_at, source, event_type, outcome, user_id
 from billing_events

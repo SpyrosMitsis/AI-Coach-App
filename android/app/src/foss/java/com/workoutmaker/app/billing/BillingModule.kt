@@ -11,8 +11,10 @@ import javax.inject.Singleton
 // surface; BYO keys (the free tier) is the whole product here.
 private object NoBilling : BillingGateway {
     override val supported = false
+    override val tipsSupported = false
     override suspend fun purchase(activity: Activity, obfuscatedUserId: String): String? = null
     override suspend fun currentPurchaseToken(): String? = null
+    override suspend fun tip(activity: Activity, productId: String): Boolean = false
 }
 
 @Module

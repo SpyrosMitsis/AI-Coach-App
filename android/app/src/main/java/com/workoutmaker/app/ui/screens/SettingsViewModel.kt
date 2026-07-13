@@ -159,6 +159,21 @@ class SettingsViewModel @Inject constructor(
             .onSuccess { planStatus.value = planStatus.value.copy(useHostedAi = on) }
     }
 
+    // --- Support the developer (one-time tips / Ko-fi) ----------------------
+    // Same section in both flavors; only the rail differs: Play builds tip
+    // through Play Billing, foss builds open Ko-fi in the browser.
+    val tipsSupported: Boolean get() = billing.tipsSupported
+    val tipBusy = MutableStateFlow(false)
+    val tipStatus = MutableStateFlow<String?>(null)
+
+    fun sendTip(activity: android.app.Activity, productId: String) = viewModelScope.launch {
+        tipBusy.value = true
+        tipStatus.value = null
+        val ok = runCatching { billing.tip(activity, productId) }.getOrDefault(false)
+        tipStatus.value = if (ok) "Thank you! Every tip helps." else "Tip not completed. Nothing was charged."
+        tipBusy.value = false
+    }
+
     // CSV import (Strong / Hevy) lives in Settings → Import data.
     val importStatus = MutableStateFlow<String?>(null)
     val importBusy = MutableStateFlow(false)

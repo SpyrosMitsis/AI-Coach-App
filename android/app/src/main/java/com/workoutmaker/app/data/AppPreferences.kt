@@ -94,7 +94,16 @@ class AppPreferences @Inject constructor(
         val onboardingComplete = booleanPreferencesKey("onboarding_complete")
         val customsCleanupV1 = booleanPreferencesKey("customs_cleanup_v1")
         val spendCap = doublePreferencesKey("spend_cap_usd")
+        val lastAccountUid = stringPreferencesKey("last_account_uid")
     }
+
+    // The user id that this device's local data (Room strength tables, caches,
+    // onboarding flag) belongs to. Compared on every sign-in so a different
+    // account never sees or syncs the previous account's local rows.
+    suspend fun lastAccountUid(): String? =
+        context.dataStore.data.firstOrNull()?.get(Keys.lastAccountUid)
+
+    suspend fun setLastAccountUid(uid: String) = edit { it[Keys.lastAccountUid] = uid }
 
     // One-time migration guard: collapse reworded custom exercises onto their
     // bundled-catalog twin (e.g. "Machine Lat Pulldown" → "Lat Pulldown").

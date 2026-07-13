@@ -73,6 +73,13 @@ Code side is in the repo (`verify-purchase` / `play-rtdn` edge fns, migration 35
 1. **Subscription product**: Play Console → Monetize → Subscriptions → create
    product id **`pro`** (must match `PRO_PRODUCT_ID` in
    `billing/BillingGateway.kt`) with one base plan (e.g. monthly).
+1b. **Tip products** (Settings → Support the developer): Play Console →
+   Monetize → In-app products → create one-time products **`tip_small`**,
+   **`tip_medium`**, **`tip_large`** (e.g. 2 / 5 / 10 EUR; ids must match
+   `TIP_PRODUCT_IDS` in `billing/BillingGateway.kt`). The app consumes each
+   purchase so tips are repeatable; no server verification is involved.
+   (The foss build shows a Ko-fi link instead — set the real Ko-fi URL in
+   `SettingsSections.kt` `KOFI_URL` before release.)
 2. **Service account**: GCP project → enable *Google Play Android Developer
    API* → create a service account + JSON key → in Play Console → Users &
    permissions, grant it *View financial data* + *Manage orders*. Then

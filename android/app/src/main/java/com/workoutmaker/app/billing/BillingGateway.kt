@@ -18,7 +18,19 @@ interface BillingGateway {
     // used on resume to re-verify (e.g. purchase completed while offline,
     // or verify-purchase failed after a successful buy).
     suspend fun currentPurchaseToken(): String?
+
+    // One-time tip products through Play Billing. False on the foss flavor,
+    // where the Support section opens Ko-fi instead.
+    val tipsSupported: Boolean
+
+    // Launches the tip purchase flow and consumes the purchase so the same
+    // tip can be bought again. Returns true when the purchase completed.
+    // A tip grants nothing, so there is no server verification.
+    suspend fun tip(activity: Activity, productId: String): Boolean
 }
 
 // The single subscription product; must match the Play Console product id.
 const val PRO_PRODUCT_ID = "pro"
+
+// One-time tip products (Support the developer); must match Play Console.
+val TIP_PRODUCT_IDS = listOf("tip_small", "tip_medium", "tip_large")

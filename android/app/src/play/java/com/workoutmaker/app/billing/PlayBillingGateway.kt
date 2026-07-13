@@ -120,6 +120,92 @@ class PlayBillingGateway @Inject constructor(
         }
     }
 
+    override val tipsSupported = true
+
+    private suspend fun tipProductDetails(productId: String): ProductDetails? {
+        val params = QueryProductDetailsParams.newBuilder()
+            .setProductList(
+                listOf(
+                    QueryProductDetailsParams.Product.newBuilder()
+                        .setProductId(productId)
+                        .setProductType(BillingClient.ProductType.INAPP)
+                        .build(),
+                ),
+            )
+            .build()
+        return suspendCancellableCoroutine { cont ->
+            client.queryProductDetailsAsync(params) { result, details ->
+                if (!cont.isActive) return@queryProductDetailsAsync
+                if (result.responseCode != BillingClient.BillingResponseCode.OK) {
+                    AppLog.w("billing", "tip product query failed: ${result.debugMessage}")
+                }
+                cont.resume(details.firstOrNull())
+            }
+        }
+    }
+
+    private suspend fun consume(purchaseToken: String): Boolean =
+        suspendCancellableCoroutine { cont ->
+            val params = com.android.billingclient.api.ConsumeParams.newBuilder()
+                .setPurchaseToken(purchaseToken)
+                .build()
+            client.consumeAsync(params) { result, _ ->
+                if (result.responseCode != BillingClient.BillingResponseCode.OK) {
+                    AppLog.w("billing", "consume failed: ${result.debugMessage}")
+                }
+                if (cont.isActive) cont.resume(result.responseCode == BillingClient.BillingResponseCode.OK)
+            }
+        }
+
+    // A tip whose consume failed (crash, offline) would auto-refund after 3
+    // days; sweep and consume any lingering tip purchases before a new flow.
+    private suspend fun consumePendingTips() {
+        val params = QueryPurchasesParams.newBuilder()
+            .setProductType(BillingClient.ProductType.INAPP)
+            .build()
+        val pending: List<Purchase> = suspendCancellableCoroutine { cont ->
+            client.queryPurchasesAsync(params) { result, purchases ->
+                if (!cont.isActive) return@queryPurchasesAsync
+                cont.resume(
+                    if (result.responseCode == BillingClient.BillingResponseCode.OK) purchases else emptyList(),
+                )
+            }
+        }
+        pending
+            .filter { it.purchaseState == Purchase.PurchaseState.PURCHASED }
+            .filter { it.products.any { p -> p in TIP_PRODUCT_IDS } }
+            .forEach { runCatching { consume(it.purchaseToken) } }
+    }
+
+    override suspend fun tip(activity: Activity, productId: String): Boolean {
+        if (!connect()) return false
+        consumePendingTips()
+        val product = tipProductDetails(productId) ?: return false
+
+        val token = suspendCancellableCoroutine<String?> { cont ->
+            purchaseWaiter = { t -> if (cont.isActive) cont.resume(t) }
+            val params = BillingFlowParams.newBuilder()
+                .setProductDetailsParamsList(
+                    listOf(
+                        BillingFlowParams.ProductDetailsParams.newBuilder()
+                            .setProductDetails(product)
+                            .build(),
+                    ),
+                )
+                .build()
+            val launch = client.launchBillingFlow(activity, params)
+            if (launch.responseCode != BillingClient.BillingResponseCode.OK) {
+                purchaseWaiter = null
+                if (cont.isActive) cont.resume(null)
+            }
+            cont.invokeOnCancellation { purchaseWaiter = null }
+        } ?: return false
+
+        // Consume = acknowledge for one-time products, and makes it repeatable.
+        runCatching { consume(token) }
+        return true
+    }
+
     override suspend fun currentPurchaseToken(): String? {
         if (!connect()) return null
         val params = QueryPurchasesParams.newBuilder()

@@ -33,6 +33,7 @@ import androidx.compose.material.icons.outlined.Notifications
 import androidx.compose.material.icons.outlined.Palette
 import androidx.compose.material.icons.outlined.Person
 import androidx.compose.material.icons.outlined.Psychology
+import androidx.compose.material.icons.outlined.VolunteerActivism
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.material3.TextButton
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
@@ -115,6 +116,7 @@ internal val SETTINGS_GROUPS = listOf(
     )),
     SettingsGroup("Account", listOf(
         SettingsItem("account", Icons.Outlined.AccountCircle, "About & account", "Version & sign out"),
+        SettingsItem("support", Icons.Outlined.VolunteerActivism, "Support the developer", "Tips keep this app alive"),
     )),
 )
 
@@ -206,6 +208,7 @@ internal fun SettingsDetail(id: String, vm: SettingsViewModel, onBack: () -> Uni
                 "data" -> DataSection(vm)
                 "diagnostics" -> DiagnosticsSection(vm)
                 "account" -> AccountSection(vm)
+                "support" -> SupportSection(vm)
             }
         }
     }

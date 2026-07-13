@@ -99,6 +99,9 @@ class MainActivity : ComponentActivity() {
             return
         }
         supabase.handleDeeplinks(intent) { session ->
+            // The imported session may belong to a different user than the
+            // cached profile row (e.g. confirming a brand-new account).
+            repo.onSessionImported()
             if (session.type == "recovery" || data.path?.contains("reset") == true) {
                 com.workoutmaker.app.data.AuthDeepLinks.recoveryPending.value = true
             }

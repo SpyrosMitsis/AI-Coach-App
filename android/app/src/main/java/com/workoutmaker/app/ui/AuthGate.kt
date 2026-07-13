@@ -184,6 +184,10 @@ private fun OnboardingGate(
     content: @Composable () -> Unit,
     vm: com.workoutmaker.app.ui.screens.OnboardingViewModel = hiltViewModel(),
 ) {
+    // Keyed on the signed-in user: an account switch in the same process (e.g.
+    // sign out then sign up) must re-run the scope guard + onboarding check
+    // instead of serving the previous user's cached answer.
+    androidx.compose.runtime.LaunchedEffect(vm.currentUserId()) { vm.recheck() }
     val complete by vm.complete.collectAsStateSafe()
     when (complete) {
         true -> content()

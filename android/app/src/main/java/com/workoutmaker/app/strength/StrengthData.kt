@@ -109,6 +109,30 @@ data class DatedSet(
 
 @Dao
 interface StrengthDao {
+    // Account-scope wipe: local strength data belongs to ONE signed-in user;
+    // these run together (see WorkoutRepository.clearLocalStrengthData) when
+    // the device switches accounts so nothing leaks or cross-syncs.
+    @Query("DELETE FROM strength_workout")
+    suspend fun clearWorkouts()
+
+    @Query("DELETE FROM strength_set")
+    suspend fun clearSets()
+
+    @Query("DELETE FROM strength_routine")
+    suspend fun clearRoutines()
+
+    @Query("DELETE FROM strength_routine_item")
+    suspend fun clearRoutineItems()
+
+    @Query("DELETE FROM strength_custom_exercise")
+    suspend fun clearCustomExercises()
+
+    @Query("DELETE FROM strength_favorite")
+    suspend fun clearFavorites()
+
+    @Query("DELETE FROM strength_tombstone")
+    suspend fun clearTombstones()
+
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insertWorkout(w: WorkoutEntity)
 

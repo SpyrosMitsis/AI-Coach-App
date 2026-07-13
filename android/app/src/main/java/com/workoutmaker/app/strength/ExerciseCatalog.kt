@@ -137,6 +137,10 @@ object ExerciseCatalog {
     fun registerCustom(list: List<Exercise>) { customByName = list.associateBy { it.name } }
     fun custom(): List<Exercise> = customByName.values.toList()
 
+    // Account switch: the registry is process-global, so it must be emptied
+    // along with the Room tables or the next user still sees the old customs.
+    fun resetCustom() { customByName = emptyMap() }
+
     /** Built-ins plus any registered custom exercises. */
     fun combined(): List<Exercise> = all + customByName.values
 
