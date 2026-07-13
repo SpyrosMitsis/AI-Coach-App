@@ -130,6 +130,10 @@ export interface PlanDecision {
   obfuscatedAccountId: string | null;
 }
 
+// The one subscription product that grants Pro. Must match the app's
+// billing/BillingGateway.kt PRO_PRODUCT_ID and the Play Console product id.
+export const PRO_PRODUCT_ID = "pro";
+
 // Pure state → plan mapping (unit-tested). CANCELED keeps entitlement until
 // expiry (auto-renew off ≠ refunded); ON_HOLD/PAUSED/REVOKED/EXPIRED do not.
 export function planFromSubscription(sub: SubscriptionV2, now = new Date()): PlanDecision {
@@ -147,7 +151,10 @@ export function planFromSubscription(sub: SubscriptionV2, now = new Date()): Pla
     "SUBSCRIPTION_STATE_IN_GRACE_PERIOD",
     "SUBSCRIPTION_STATE_CANCELED",
   ]);
-  const entitled = entitledStates.has(state) &&
+  // Entitlement requires the *pro* product specifically: a valid token for
+  // some other (e.g. cheaper future) subscription must not unlock Pro.
+  const hasProProduct = (sub.lineItems ?? []).some((li) => li.productId === PRO_PRODUCT_ID);
+  const entitled = entitledStates.has(state) && hasProProduct &&
     expiryMs !== null && expiryMs > now.getTime();
 
   return {

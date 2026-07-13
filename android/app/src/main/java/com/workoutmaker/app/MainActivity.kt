@@ -5,6 +5,7 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.core.splashscreen.SplashScreen.Companion.installSplashScreen
 import androidx.lifecycle.lifecycleScope
+import io.github.jan.supabase.gotrue.auth
 import io.github.jan.supabase.gotrue.handleDeeplinks
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material.icons.Icons
@@ -49,6 +50,7 @@ import com.workoutmaker.app.data.ThemeMode
 import dagger.hilt.android.AndroidEntryPoint
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.SharingStarted
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
@@ -112,6 +114,26 @@ class MainActivity : ComponentActivity() {
         installSplashScreen()
         super.onCreate(savedInstanceState)
         handleAuthLink(intent)
+
+        // A recovery link's session survives a process kill, but the in-memory
+        // recoveryPending flag doesn't — without persistence, kill+relaunch
+        // would skip the forced password change. Mirror the flag to disk and
+        // re-arm the dialog once the stored session has been restored.
+        val authFlags = getSharedPreferences("auth_flags", MODE_PRIVATE)
+        lifecycleScope.launch {
+            if (authFlags.getBoolean("recovery_pending", false)) {
+                val restored = supabase.auth.sessionStatus.first {
+                    it is io.github.jan.supabase.gotrue.SessionStatus.Authenticated ||
+                        it is io.github.jan.supabase.gotrue.SessionStatus.NotAuthenticated
+                }
+                if (restored is io.github.jan.supabase.gotrue.SessionStatus.Authenticated) {
+                    com.workoutmaker.app.data.AuthDeepLinks.recoveryPending.value = true
+                }
+            }
+            com.workoutmaker.app.data.AuthDeepLinks.recoveryPending.collect { pending ->
+                authFlags.edit().putBoolean("recovery_pending", pending).apply()
+            }
+        }
 
         // Heal a lost RTDN renewal: if Play knows an active subscription but the
         // profile says free, re-verify server-side. Cheap no-op for everyone else.

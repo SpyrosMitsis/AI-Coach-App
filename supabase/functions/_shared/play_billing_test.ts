@@ -53,6 +53,14 @@ Deno.test("play: latest expiry wins across line items", () => {
   assertEquals(d.expiresAt, new Date(FUTURE).toISOString());
 });
 
+Deno.test("play: a non-pro product never entitles, even active and unexpired", () => {
+  const d = planFromSubscription({
+    subscriptionState: "SUBSCRIPTION_STATE_ACTIVE",
+    lineItems: [{ productId: "some-other-sub", expiryTime: FUTURE }],
+  }, NOW);
+  assertEquals(d.plan, "free");
+});
+
 Deno.test("play: pending ack + obfuscated account id surface for the callers", () => {
   const d = planFromSubscription(sub("SUBSCRIPTION_STATE_ACTIVE", FUTURE, {
     acknowledgementState: "ACKNOWLEDGEMENT_STATE_PENDING",
