@@ -5,6 +5,7 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.core.splashscreen.SplashScreen.Companion.installSplashScreen
 import androidx.lifecycle.lifecycleScope
+import io.github.jan.supabase.gotrue.handleDeeplinks
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Chat
@@ -78,10 +79,39 @@ class ThemeViewModel @Inject constructor(prefs: AppPreferences) : ViewModel() {
 class MainActivity : ComponentActivity() {
     @Inject lateinit var billing: com.workoutmaker.app.billing.BillingGateway
     @Inject lateinit var repo: com.workoutmaker.app.data.WorkoutRepository
+    @Inject lateinit var supabase: io.github.jan.supabase.SupabaseClient
+
+    // Auth email links (workoutmaker://auth/...) re-enter here; import the
+    // session and route recovery links to the set-new-password dialog.
+    private fun handleAuthLink(intent: android.content.Intent?) {
+        val data = intent?.data ?: return
+        if (data.scheme != "workoutmaker" || data.host != "auth") return
+        val fragment = data.fragment ?: ""
+        if (fragment.contains("error")) {
+            com.workoutmaker.app.data.AuthDeepLinks.message.value =
+                if (fragment.contains("otp_expired")) {
+                    "That link has expired or was already used. If you were confirming your email it's likely already confirmed: just sign in. For a password reset, request a fresh link."
+                } else {
+                    "That sign-in link didn't work. Try again."
+                }
+            return
+        }
+        supabase.handleDeeplinks(intent) { session ->
+            if (session.type == "recovery" || data.path?.contains("reset") == true) {
+                com.workoutmaker.app.data.AuthDeepLinks.recoveryPending.value = true
+            }
+        }
+    }
+
+    override fun onNewIntent(intent: android.content.Intent) {
+        super.onNewIntent(intent)
+        handleAuthLink(intent)
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         installSplashScreen()
         super.onCreate(savedInstanceState)
+        handleAuthLink(intent)
 
         // Heal a lost RTDN renewal: if Play knows an active subscription but the
         // profile says free, re-verify server-side. Cheap no-op for everyone else.
@@ -105,6 +135,10 @@ class MainActivity : ComponentActivity() {
             WorkoutMakerTheme(palette = palette.palette(), darkTheme = dark) {
                 Surface {
                     AuthGate { MainScaffold() }
+                    // Password-recovery deep link: ask for the new password on
+                    // top of whatever is showing.
+                    val recovery by com.workoutmaker.app.data.AuthDeepLinks.recoveryPending.collectAsState()
+                    if (recovery) com.workoutmaker.app.ui.screens.SetNewPasswordDialog(repo)
                 }
             }
         }

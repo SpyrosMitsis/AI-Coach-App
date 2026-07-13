@@ -28,7 +28,13 @@ object AppModule {
             // Multi-week block planning (plan-block) can run for a while; give
             // function calls plenty of headroom over the ~10s default.
             requestTimeout = 150.seconds
-            install(Auth)
+            install(Auth) {
+                // Email links (confirmation, password recovery) deep-link back
+                // into the app as workoutmaker://auth — MainActivity feeds them
+                // to handleDeeplinks, which imports the session.
+                scheme = "workoutmaker"
+                host = "auth"
+            }
             install(Postgrest)
             install(Realtime)
             install(Functions)

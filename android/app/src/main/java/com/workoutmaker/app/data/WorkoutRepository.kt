@@ -54,12 +54,22 @@ class WorkoutRepository @Inject constructor(
     }
 
     suspend fun signUp(email: String, password: String) =
-        supabase.auth.signUpWith(Email) { this.email = email; this.password = password }
+        // The confirmation email deep-links back into the app (and signs the
+        // user straight in, so onboarding starts immediately).
+        supabase.auth.signUpWith(Email, redirectUrl = "workoutmaker://auth/confirmed") {
+            this.email = email
+            this.password = password
+        }
 
-    // Sends the Supabase recovery email; the link opens the web app's
-    // /reset-password page where a new password can be set.
+    // Sends the Supabase recovery email; the link deep-links back into the
+    // app, which then shows the set-new-password dialog.
     suspend fun resetPassword(email: String) {
-        supabase.auth.resetPasswordForEmail(email)
+        supabase.auth.resetPasswordForEmail(email, redirectUrl = "workoutmaker://auth/reset")
+    }
+
+    // After a recovery deep link imported a session, this sets the new password.
+    suspend fun updatePassword(newPassword: String) {
+        supabase.auth.updateUser { password = newPassword }
     }
 
     suspend fun signOut() {

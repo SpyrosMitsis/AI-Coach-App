@@ -55,6 +55,7 @@ import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import com.workoutmaker.app.data.BackendConfig
+import kotlinx.coroutines.launch
 import com.workoutmaker.app.ui.AuthViewModel
 import com.workoutmaker.app.ui.collectAsStateSafe
 import com.workoutmaker.app.ui.components.BreathingBackdrop
@@ -247,6 +248,21 @@ internal fun LoginScreen(vm: AuthViewModel) {
                     )
                 }
 
+                // Notes arriving via auth deep links (expired/used email links).
+                val deepLinkMsg by com.workoutmaker.app.data.AuthDeepLinks.message.collectAsStateSafe()
+                androidx.compose.runtime.DisposableEffect(Unit) {
+                    onDispose { com.workoutmaker.app.data.AuthDeepLinks.message.value = null }
+                }
+                AnimatedVisibility(visible = deepLinkMsg != null, enter = expandVertically() + fadeIn(), exit = shrinkVertically() + fadeOut()) {
+                    Text(
+                        deepLinkMsg ?: "",
+                        color = MaterialTheme.colorScheme.primary,
+                        style = MaterialTheme.typography.bodySmall,
+                        textAlign = TextAlign.Center,
+                        modifier = Modifier.fillMaxWidth().padding(top = 12.dp),
+                    )
+                }
+
                 // Self-hosters: point this install at their own Supabase project.
                 var showServerDialog by remember { mutableStateOf(false) }
                 TextButton(
@@ -326,5 +342,69 @@ private fun CustomServerDialog(backend: BackendConfig, onDismiss: () -> Unit) {
         dismissButton = {
             TextButton(onClick = onDismiss) { Text("Cancel") }
         },
+    )
+}
+
+// Shown (over whatever screen is up) after a password-recovery deep link has
+// imported its session; saving calls auth.updateUser with the new password.
+@Composable
+fun SetNewPasswordDialog(repo: com.workoutmaker.app.data.WorkoutRepository) {
+    var pw by remember { mutableStateOf("") }
+    var confirm by remember { mutableStateOf("") }
+    var msg by remember { mutableStateOf<String?>(null) }
+    var busy by remember { mutableStateOf(false) }
+    val scope = androidx.compose.runtime.rememberCoroutineScope()
+    val dismiss = { com.workoutmaker.app.data.AuthDeepLinks.recoveryPending.value = false }
+
+    AlertDialog(
+        onDismissRequest = { if (!busy) dismiss() },
+        title = { Text("Set a new password") },
+        text = {
+            Column {
+                Text(
+                    "You followed a password reset link. Pick a new password for your account.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                OutlinedTextField(
+                    pw, { pw = it }, label = { Text("New password") },
+                    visualTransformation = PasswordVisualTransformation(),
+                    modifier = Modifier.fillMaxWidth().padding(top = 12.dp),
+                    singleLine = true,
+                )
+                OutlinedTextField(
+                    confirm, { confirm = it }, label = { Text("Repeat new password") },
+                    visualTransformation = PasswordVisualTransformation(),
+                    modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
+                    singleLine = true,
+                )
+                msg?.let {
+                    Text(
+                        it,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onErrorContainer,
+                        modifier = Modifier.padding(top = 8.dp),
+                    )
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(
+                enabled = !busy,
+                onClick = {
+                    if (pw.length < 6) { msg = "Use at least 6 characters."; return@TextButton }
+                    if (pw != confirm) { msg = "The two passwords don't match."; return@TextButton }
+                    busy = true
+                    msg = null
+                    scope.launch {
+                        runCatching { repo.updatePassword(pw) }
+                            .onSuccess { dismiss() }
+                            .onFailure { msg = it.message ?: "Couldn't save the new password. Try again." }
+                        busy = false
+                    }
+                },
+            ) { Text(if (busy) "Saving…" else "Save password") }
+        },
+        dismissButton = { TextButton(onClick = dismiss, enabled = !busy) { Text("Cancel") } },
     )
 }
