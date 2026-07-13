@@ -355,14 +355,26 @@ fun SetNewPasswordDialog(repo: com.workoutmaker.app.data.WorkoutRepository) {
     var busy by remember { mutableStateOf(false) }
     val scope = androidx.compose.runtime.rememberCoroutineScope()
     val dismiss = { com.workoutmaker.app.data.AuthDeepLinks.recoveryPending.value = false }
+    // The reset link itself signed the user in, so backing out of the dialog
+    // must not leave that session usable: cancelling signs out again. The only
+    // way to stay signed in through a recovery link is to set a new password.
+    val cancel: () -> Unit = {
+        if (!busy) {
+            busy = true
+            scope.launch {
+                runCatching { repo.signOut() }
+                dismiss()
+            }
+        }
+    }
 
     AlertDialog(
-        onDismissRequest = { if (!busy) dismiss() },
+        onDismissRequest = cancel,
         title = { Text("Set a new password") },
         text = {
             Column {
                 Text(
-                    "You followed a password reset link. Pick a new password for your account.",
+                    "You followed a password reset link. Pick a new password to stay signed in. Cancelling signs you out.",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
@@ -405,6 +417,6 @@ fun SetNewPasswordDialog(repo: com.workoutmaker.app.data.WorkoutRepository) {
                 },
             ) { Text(if (busy) "Saving…" else "Save password") }
         },
-        dismissButton = { TextButton(onClick = dismiss, enabled = !busy) { Text("Cancel") } },
+        dismissButton = { TextButton(onClick = cancel, enabled = !busy) { Text("Cancel") } },
     )
 }
