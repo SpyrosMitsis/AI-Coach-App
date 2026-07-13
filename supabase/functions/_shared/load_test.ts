@@ -75,7 +75,9 @@ Deno.test("applyFallbackFitness: fills ctl/atl by date when no row has ctl", asy
     { date: "2026-07-12", tss: 42 },
   ];
   const admin = adminStub(history);
-  const rows = [
+  // Explicit annotation: an all-null literal would infer ctl/atl as type
+  // `null`, making the filled-in numbers a type error below.
+  const rows: { date: string; tss: number; ctl: number | null; atl: number | null }[] = [
     { date: "2026-07-10", tss: 84, ctl: null, atl: null },
     { date: "2026-07-12", tss: 42, ctl: null, atl: null },
   ];
