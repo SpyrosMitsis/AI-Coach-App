@@ -423,46 +423,46 @@ fun QuoteBlock(text: String, modifier: Modifier = Modifier) {
 /** Plain-language copy for each metric, kept in one place. */
 object Metrics {
     const val READINESS =
-        "Your Ready-to-Train score (0–100) estimates how primed your body is for hard work " +
+        "Your Ready-to-Train score (0-100) estimates how primed your body is for hard work " +
         "*today*. It blends three things pulled each morning:\n\n" +
-        "• Wellness — your own check-in (energy, soreness, sleep).\n" +
-        "• HRV change — heart-rate variability vs your baseline; a big drop signals stress or " +
+        "• Wellness: your own check-in (energy, soreness, sleep).\n" +
+        "• HRV change: heart-rate variability vs your baseline; a big drop signals stress or " +
         "incomplete recovery.\n" +
-        "• Resting-HR change — an elevated resting heart rate points to fatigue or illness.\n\n" +
-        "Green (≈67+) = go hard if planned. Amber (≈34–66) = train, but ease off. " +
+        "• Resting-HR change: an elevated resting heart rate points to fatigue or illness.\n\n" +
+        "Green (≈67+) = go hard if planned. Amber (≈34-66) = train, but ease off. " +
         "Red (≈<34) = recover; the plan will pull intensity back.\n\n" +
-        "It's a guide, not a verdict — how you actually feel still wins."
+        "It's a guide, not a verdict, how you actually feel still wins."
 
     const val RECOVERY =
-        "Recovery (0–100) is how well your body has bounced back, read from overnight signals:\n\n" +
-        "• HRV vs baseline — heart-rate variability; higher than your norm = well recovered, a " +
+        "Recovery (0-100) is how well your body has bounced back, read from overnight signals:\n\n" +
+        "• HRV vs baseline: heart-rate variability; higher than your norm = well recovered, a " +
         "sharp drop = stress or incomplete recovery.\n" +
-        "• Resting HR vs baseline — an elevated resting heart rate points to fatigue or illness.\n" +
-        "• Sleep — last night's duration vs your personal average and a ~7.5h target.\n" +
-        "• Wellness — your subjective check-in (energy, soreness, sleep quality).\n\n" +
+        "• Resting HR vs baseline: an elevated resting heart rate points to fatigue or illness.\n" +
+        "• Sleep: last night's duration vs your personal average and a ~7.5h target.\n" +
+        "• Wellness: your subjective check-in (energy, soreness, sleep quality).\n\n" +
         "Green = recovered, push if planned. Amber = moderate, keep quality light. Red = " +
         "under-recovered, and the AI will pull intensity and volume back when it builds your session."
 
     const val WELLNESS =
         "Wellness is the average of your daily check-in: energy, soreness, and sleep quality, " +
-        "each rated 1–5. It feeds the readiness score and nudges the AI to back off when you're " +
-        "run-down. Log it honestly — garbage in, garbage out."
+        "each rated 1-5. It feeds the readiness score and nudges the AI to back off when you're " +
+        "run-down. Log it honestly, garbage in, garbage out."
 
     const val TSS =
-        "TSS (Training Stress Score) is one number for how much a session taxes you — combining " +
+        "TSS (Training Stress Score) is one number for how much a session taxes you, combining " +
         "duration and intensity. A steady easy hour ≈ 50; a hard hour ≈ 100+. It's how the planner " +
         "balances your week and tracks load, so a short brutal interval session and a long easy run " +
         "can be compared fairly."
 
     const val FITNESS =
         "These come from Intervals.icu and model your training load over time:\n\n" +
-        "• Fitness (CTL) — your 42-day rolling average load. Climbs slowly as you train " +
+        "• Fitness (CTL): your 42-day rolling average load. Climbs slowly as you train " +
         "consistently; this is your engine.\n" +
-        "• Fatigue (ATL) — your 7-day average load. Rises and falls fast with recent hard days.\n" +
+        "• Fatigue (ATL): your 7-day average load. Rises and falls fast with recent hard days.\n" +
         "• Form (TSB) = Fitness − Fatigue. Positive = fresh/tapered; deeply negative = buried in " +
         "fatigue. Race on slightly positive form.\n" +
-        "• Ramp — how fast Fitness is rising. Too fast is an injury risk; the load guardrail watches this.\n\n" +
-        "The curve shows Fitness vs Fatigue over recent weeks — you want Fitness trending up with " +
+        "• Ramp: how fast Fitness is rising. Too fast is an injury risk; the load guardrail watches this.\n\n" +
+        "The curve shows Fitness vs Fatigue over recent weeks, you want Fitness trending up with " +
         "Fatigue swinging beneath it."
 
     const val WEEK_CARD =

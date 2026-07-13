@@ -248,7 +248,7 @@ internal fun ZoneTables(lthr: Int?, thresholdPace: String?, ftp: Int?) {
     val powerZones = ftp?.let { com.workoutmaker.app.data.Zones.powerZonesFromFtp(it) }.orEmpty()
 
     if (hrZones.isNotEmpty()) SectionCard(title = "Heart-rate zones") {
-        hrZones.forEach { z -> ZoneRow(z.name, "${z.min}–${z.max} bpm") }
+        hrZones.forEach { z -> ZoneRow(z.name, "${z.min}-${z.max} bpm") }
     }
     if (paceZones.isNotEmpty()) SectionCard(title = "Pace zones") {
         paceZones.forEach { z -> ZoneRow(z.name, z.range) }

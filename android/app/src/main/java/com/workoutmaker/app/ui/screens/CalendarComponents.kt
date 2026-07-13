@@ -314,7 +314,7 @@ internal fun ActivityCard(act: CompletedActivity, planned: PlannedWorkout?, onCl
         // Hint when this isn't what was on the plan that day.
         planned?.let { p ->
             if (p.type != "rest" && !p.completed && !looksLike(p.type, act.type)) {
-                Text("Off-plan — ${p.type} was scheduled", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.secondary)
+                Text("Off-plan, ${p.type} was scheduled", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.secondary)
             }
         }
     }

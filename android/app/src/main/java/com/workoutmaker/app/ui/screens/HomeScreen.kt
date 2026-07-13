@@ -348,7 +348,7 @@ class HomeViewModel @Inject constructor(
                 )
             }
         }.onSuccess {
-            feedbackStatus.value = "✓ Marked done — your next workout will adapt."
+            feedbackStatus.value = "✓ Marked done, your next workout will adapt."
             repo.refreshMemory()
             load()
         }.onFailure { feedbackStatus.value = it.message }
@@ -453,7 +453,7 @@ fun HomeScreen(
     val syncNote = when {
         !isToday -> "$dateStr · history"
         offline -> "$dateStr · offline" +
-            (lastSyncAt?.let { " — data from ${hhmm(it)}" } ?: " — showing last data")
+            (lastSyncAt?.let { ", data from ${hhmm(it)}" } ?: ", showing last data")
         lastSyncAt != null -> "$dateStr · synced ${hhmm(lastSyncAt!!)}"
         else -> dateStr
     }
@@ -743,7 +743,7 @@ fun HomeScreen(
                     textDecoration = androidx.compose.ui.text.style.TextDecoration.LineThrough,
                 )
                 Text(
-                    if (isToday) "Skipped — rest matters too. The plan will adapt and rebuild gradually."
+                    if (isToday) "Skipped, rest matters too. The plan will adapt and rebuild gradually."
                     else "Skipped that day.",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -834,7 +834,7 @@ fun HomeScreen(
                             SectionLabel("How hard was it? (RPE)", color = MaterialTheme.colorScheme.onSurfaceVariant)
                             RpeBars(selected = rpe, onSelect = { rpe = it })
                             Text(
-                                rpe?.let { "RPE $it — ${rpeWord(it)}" }
+                                rpe?.let { "RPE $it, ${rpeWord(it)}" }
                                     ?: "Tap a bar: 1 = very easy, 10 = max effort (optional)",
                                 style = MaterialTheme.typography.bodySmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -879,7 +879,7 @@ private fun ManualRecoveryDialog(onDismiss: () -> Unit, onSave: (Double?, Int?, 
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                 Text(
-                    "Fill in what you know — leave the rest blank. Saved for today.",
+                    "Fill in what you know, leave the rest blank. Saved for today.",
                     style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
                 androidx.compose.material3.OutlinedTextField(
@@ -1068,7 +1068,7 @@ private fun LoadGuard(s: com.workoutmaker.app.data.FitnessSummary) {
     val (color, headline, detail) = when {
         ratio >= 1.5 -> Triple(
             MaterialTheme.colorScheme.error, "High overload risk",
-            "Fatigue is well above your fitness (ratio %.2f). Take easy days — an injury/illness spike zone.".format(ratio))
+            "Fatigue is well above your fitness (ratio %.2f). Take easy days, an injury/illness spike zone.".format(ratio))
         ratio >= 1.3 || s.ramp >= 8 -> Triple(
             com.workoutmaker.app.ui.theme.amberAccent(), "Ramping fast",
             "Building quickly (ratio %.2f, ramp %+.1f). Fine short-term; don't hold it for many weeks.".format(ratio, s.ramp))
@@ -1077,7 +1077,7 @@ private fun LoadGuard(s: com.workoutmaker.app.data.FitnessSummary) {
             "Load is low relative to fitness (ratio %.2f). Good for a taper; otherwise add volume.".format(ratio))
         else -> Triple(
             MaterialTheme.colorScheme.primary, "Load well managed",
-            "Fatigue:fitness ratio %.2f sits in the productive 0.8–1.3 range.".format(ratio))
+            "Fatigue:fitness ratio %.2f sits in the productive 0.8-1.3 range.".format(ratio))
     }
     Row(
         Modifier.fillMaxWidth().padding(top = 8.dp)
@@ -1446,7 +1446,7 @@ private fun WeekReviewCard(mod: Modifier, wr: com.workoutmaker.app.data.WeekRevi
         note?.takeIf { it.isNotBlank() }?.let { QuoteBlock(it) }
         if (wr.sessions == 0 && wr.adherence.planned == 0) {
             Text(
-                "No sessions logged yet this week — it fills in as you train.",
+                "No sessions logged yet this week, it fills in as you train.",
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
@@ -1623,7 +1623,7 @@ private fun RecoveryStaleBanner(syncedDate: String?) {
     val msg = if (syncedDate == null) {
         "No recovery data has synced yet. Pull down to sync your watch."
     } else {
-        "Watch hasn't synced since ${friendlyDate(syncedDate)} — today's HRV, resting HR " +
+        "Watch hasn't synced since ${friendlyDate(syncedDate)}, today's HRV, resting HR " +
             "and sleep may be missing. Pull down to refresh."
     }
     Row(

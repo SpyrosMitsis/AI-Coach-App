@@ -212,7 +212,7 @@ fun CalendarScreen(vm: CalendarViewModel = hiltViewModel(), onOpenStrength: () -
             banner?.let { Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.primary) }
             if (pendingSync > 0) {
                 Text(
-                    "⟳ $pendingSync change${if (pendingSync > 1) "s" else ""} saved offline — will sync when you're back online.",
+                    "⟳ $pendingSync change${if (pendingSync > 1) "s" else ""} saved offline, will sync when you're back online.",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
@@ -350,7 +350,7 @@ fun CalendarScreen(vm: CalendarViewModel = hiltViewModel(), onOpenStrength: () -
                         if (w.type == "rest") {
                             // A rest day needs no action — show it as already
                             // handled so the day reads as "done" at a glance.
-                            Text("✓ Rest day — recovery is the plan", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.primary)
+                            Text("✓ Rest day, recovery is the plan", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.primary)
                         } else {
                             if (w.completed) {
                                 Row(verticalAlignment = Alignment.CenterVertically) {
@@ -361,7 +361,7 @@ fun CalendarScreen(vm: CalendarViewModel = hiltViewModel(), onOpenStrength: () -
                             } else if (w.skipped) {
                                 Row(verticalAlignment = Alignment.CenterVertically) {
                                     Text(
-                                        "Skipped — the plan will adapt.",
+                                        "Skipped, the plan will adapt.",
                                         style = MaterialTheme.typography.labelMedium,
                                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                                     )

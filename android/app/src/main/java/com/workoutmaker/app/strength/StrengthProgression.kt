@@ -156,13 +156,13 @@ object VolumeBalance {
         val pull = (map["Back"] ?: 0) + (map["Biceps"] ?: 0)
         if (push >= 4 && pull >= 4) {
             val r = push.toDouble() / pull
-            if (r > 1.5) warns.add(BalanceWarning("Push:pull ${fmt(r)}:1 — add pulling volume to balance the shoulders."))
-            if (r < 0.66) warns.add(BalanceWarning("Pull-dominant (${fmt(1 / r)}:1) — add pressing volume."))
+            if (r > 1.5) warns.add(BalanceWarning("Push:pull ${fmt(r)}:1, add pulling volume to balance the shoulders."))
+            if (r < 0.66) warns.add(BalanceWarning("Pull-dominant (${fmt(1 / r)}:1), add pressing volume."))
         }
         val quad = map["Quads"] ?: 0
         val post = (map["Hamstrings"] ?: 0) + (map["Glutes"] ?: 0)
         if (quad >= 4 && post >= 4 && quad.toDouble() / post > 1.6) {
-            warns.add(BalanceWarning("Quad-dominant — add hamstring/glute work to protect the knees."))
+            warns.add(BalanceWarning("Quad-dominant, add hamstring/glute work to protect the knees."))
         }
         return warns
     }
@@ -190,16 +190,16 @@ object Deload {
     }
 
     fun analyze(weeks: List<WeeklyVolume>): DeloadAdvice {
-        if (weeks.size < 4) return DeloadAdvice(false, "Building base — not enough history to call a deload yet.")
+        if (weeks.size < 4) return DeloadAdvice(false, "Building base, not enough history to call a deload yet.")
         val recent = weeks.takeLast(4)
         // Genuine week-over-week growth (>3% each), not merely flat volume.
         val monotonicUp = recent.zipWithNext().all { (a, b) -> b.volume > a.volume * 1.03 }
         val rpes = recent.mapNotNull { it.avgRpe }
         val rpeHighRising = rpes.size >= 3 && rpes.last() >= 8.3 && rpes.last() >= rpes.first() - 0.1
         return when {
-            monotonicUp -> DeloadAdvice(true, "Volume has climbed 4 weeks straight — take a deload (~60% volume) so adaptations can catch up.")
-            rpeHighRising -> DeloadAdvice(true, "Average RPE is high and not dropping — back off to ~60% volume this week to shed fatigue.")
-            else -> DeloadAdvice(false, "Fatigue looks manageable — keep progressing.")
+            monotonicUp -> DeloadAdvice(true, "Volume has climbed 4 weeks straight, take a deload (~60% volume) so adaptations can catch up.")
+            rpeHighRising -> DeloadAdvice(true, "Average RPE is high and not dropping, back off to ~60% volume this week to shed fatigue.")
+            else -> DeloadAdvice(false, "Fatigue looks manageable, keep progressing.")
         }
     }
 }

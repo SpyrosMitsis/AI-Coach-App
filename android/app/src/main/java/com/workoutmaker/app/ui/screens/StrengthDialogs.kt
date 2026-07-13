@@ -175,7 +175,7 @@ internal fun RoutineEditorDialog(
                     modifier = Modifier.fillMaxWidth(),
                 )
                 if (items.isEmpty()) {
-                    Text("No exercises yet — add one below.",
+                    Text("No exercises yet, add one below.",
                         style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
                 Column(
@@ -362,7 +362,7 @@ internal fun PlateCalcDialog(settings: com.workoutmaker.app.data.AppSettings, on
                 OutlinedTextField(target, { target = it }, label = { Text("Target total (${unit.suffix})") },
                     singleLine = true, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal))
                 Text("Barbell ${unit.format(settings.barbellKg)} ${unit.suffix} + per side:", style = MaterialTheme.typography.bodySmall)
-                if (plates.isEmpty()) Text("— just the bar", style = MaterialTheme.typography.bodyMedium)
+                if (plates.isEmpty()) Text("- just the bar", style = MaterialTheme.typography.bodyMedium)
                 plates.forEach { p ->
                     Text("${p.count} × ${unit.format(p.plate)} ${unit.suffix}", style = MaterialTheme.typography.bodyLarge, color = MaterialTheme.colorScheme.primary)
                 }

@@ -168,7 +168,7 @@ internal fun RequestSessionDialog(date: LocalDate, onDismiss: () -> Unit, onSubm
                         androidx.compose.material3.FilterChip(selected = type == k, onClick = { type = k }, label = { Text(label) })
                     }
                 }
-                Text("It'll be 🔒 locked — your weekly AI re-plan will schedule around it, not over it.",
+                Text("It'll be 🔒 locked, your weekly AI re-plan will schedule around it, not over it.",
                     style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
         },

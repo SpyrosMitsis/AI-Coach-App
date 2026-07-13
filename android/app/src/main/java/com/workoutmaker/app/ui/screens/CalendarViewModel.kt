@@ -126,7 +126,7 @@ class CalendarViewModel @Inject constructor(
                 val cached = repo.cachedPlannedWorkouts()
                 if (cached.isNotEmpty() && workouts.value.isEmpty()) {
                     workouts.value = cached
-                    banner.value = "Offline — showing your last synced plan."
+                    banner.value = "Offline, showing your last synced plan."
                 }
             }
         runCatching { repo.templates() }.onSuccess { templates.value = it }
@@ -148,7 +148,7 @@ class CalendarViewModel @Inject constructor(
         loading.value = true
         banner.value = "Syncing your latest activities from Intervals.icu…"
         runCatching { repo.syncIntervals() }
-            .onSuccess { banner.value = "✓ Synced — your recent activities are up to date."; load() }
+            .onSuccess { banner.value = "✓ Synced, your recent activities are up to date."; load() }
             .onFailure { banner.value = "Sync failed: ${it.message}" }
         loading.value = false
     }
@@ -229,7 +229,7 @@ class CalendarViewModel @Inject constructor(
     // #3: lock/unlock a session so the weekly re-planner leaves it fixed.
     fun toggleLock(w: PlannedWorkout) = viewModelScope.launch {
         runCatching { repo.setLocked(w.id, !w.locked) }
-            .onSuccess { banner.value = if (!w.locked) "🔒 Locked — re-planning won't touch it" else "Unlocked"; load() }
+            .onSuccess { banner.value = if (!w.locked) "🔒 Locked, re-planning won't touch it" else "Unlocked"; load() }
             .onFailure { banner.value = "Couldn't update: ${it.message}" }
     }
 
@@ -241,7 +241,7 @@ class CalendarViewModel @Inject constructor(
         runCatching { repo.requestSession(date.toString(), request, type) }
             .onSuccess { r ->
                 banner.value = if (r.workout_id != null) "✓ Locked-in “${r.workout?.title ?: "session"}” on $date"
-                else "AI couldn't build it — check your AI provider key in Settings."
+                else "AI couldn't build it, check your AI provider key in Settings."
                 load()
             }
             .onFailure { banner.value = "Failed: ${it.message}" }

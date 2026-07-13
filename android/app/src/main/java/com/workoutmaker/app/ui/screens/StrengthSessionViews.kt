@@ -430,7 +430,7 @@ internal fun RateEffortView(vm: StrengthViewModel) {
             Spacer(Modifier.height(4.dp))
             Row(verticalAlignment = Alignment.Bottom) {
                 Text(
-                    rpe?.toString() ?: "–",
+                    rpe?.toString() ?: "-",
                     style = MaterialTheme.typography.displayLarge,
                     fontWeight = FontWeight.Bold,
                     color = accent,
@@ -799,7 +799,7 @@ internal fun SetRow(
             }
             // Tap a previous result to copy it straight into this set's fields.
             Text(
-                prev?.let { if (cardio) "${it.reps} min" else "${it.weightKg.toInt()}×${it.reps}" } ?: "—",
+                prev?.let { if (cardio) "${it.reps} min" else "${it.weightKg.toInt()}×${it.reps}" } ?: "-",
                 Modifier.width(56.dp)
                     .then(
                         if (prev != null) Modifier.clickable {

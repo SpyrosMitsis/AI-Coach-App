@@ -190,7 +190,7 @@ class StrengthRepository @Inject constructor(
     // --- B4: instantiate a program as routines ----------------------------
     suspend fun createProgram(program: StrengthProgram): Int {
         for (day in program.days) {
-            saveRoutine("${program.name} — ${day.name}", day.exercises)
+            saveRoutine("${program.name}, ${day.name}", day.exercises)
         }
         return program.days.size
     }
@@ -478,7 +478,7 @@ class StrengthRepository @Inject constructor(
         // Session-volume PR: the whole workout out-totals your previous best ever.
         // Shown first as the headline. Skipped for a first-ever workout.
         if (priorBestWorkoutVolume > 0.0 && totalVolume > priorBestWorkoutVolume + 1e-6) {
-            prHits.add(0, PrHit("session_volume", "Biggest workout yet — ${totalVolume.toInt()} kg total"))
+            prHits.add(0, PrHit("session_volume", "Biggest workout yet, ${totalVolume.toInt()} kg total"))
         }
 
         val durationSec = ((endedAt - startedAt) / 1000).toInt().coerceAtLeast(0)

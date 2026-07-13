@@ -50,8 +50,8 @@ fun friendlyError(error: Any?): String {
         listOf(
             "unable to resolve host", "failed to connect", "network", "timeout",
             "timed out", "unreachable", "no address associated", "connection",
-        ).any { it in low } -> "Can't reach the server — check your connection."
-        "unauthor" in low || "401" in low -> "Your session expired — please sign in again."
+        ).any { it in low } -> "Can't reach the server, check your connection."
+        "unauthor" in low || "401" in low -> "Your session expired, please sign in again."
         msg.length > 140 -> "Something went wrong. Please try again."
         else -> msg
     }

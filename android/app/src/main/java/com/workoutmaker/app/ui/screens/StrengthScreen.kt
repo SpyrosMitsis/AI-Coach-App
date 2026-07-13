@@ -228,7 +228,7 @@ internal fun StrengthHomeView(vm: StrengthViewModel, onOpenHistory: () -> Unit =
     ) { mod ->
         status?.let { Text(it, mod, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.primary) }
         if (pendingSync > 0) {
-            Text("⟳ $pendingSync change${if (pendingSync > 1) "s" else ""} saved offline — will sync when you're back online.",
+            Text("⟳ $pendingSync change${if (pendingSync > 1) "s" else ""} saved offline, will sync when you're back online.",
                 mod, style = MaterialTheme.typography.bodySmall, color = amberAccent())
         }
 
@@ -262,7 +262,7 @@ internal fun StrengthHomeView(vm: StrengthViewModel, onOpenHistory: () -> Unit =
 
         SectionCard(mod, title = "Routines") {
             Text(
-                "A reusable template for a single session — your exercises pre-loaded so you can start a workout in one tap (e.g. “Push Day”).",
+                "A reusable template for a single session, your exercises pre-loaded so you can start a workout in one tap (e.g. “Push Day”).",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
@@ -406,7 +406,7 @@ internal fun DeloadBanner(mod: Modifier, reason: String) {
 @Composable
 internal fun WeeklyVolumeCard(mod: Modifier, report: WeeklyReport) {
     SectionCard(mod, title = "This week's volume") {
-        Text("${report.totalHardSets} hard sets · target 10–20 per muscle",
+        Text("${report.totalHardSets} hard sets · target 10-20 per muscle",
             style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
         if (report.muscleVolume.isEmpty()) {
             Text("Log a session to see per-muscle volume.", style = MaterialTheme.typography.bodySmall,
@@ -444,7 +444,7 @@ internal fun ProgramsCard(mod: Modifier, programs: List<StrengthProgram>, onAdd:
     SectionCard(mod, title = "Programs") {
         Text(
             "A multi-week training plan (e.g. a 3-day full-body block). Adding one creates a routine for " +
-                "each training day, and auto-progression bumps the loads week to week — so a program is " +
+                "each training day, and auto-progression bumps the loads week to week, so a program is " +
                 "really a set of routines that work together over time.",
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,

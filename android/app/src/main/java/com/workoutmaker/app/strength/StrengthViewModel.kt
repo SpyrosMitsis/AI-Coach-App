@@ -273,7 +273,7 @@ class StrengthViewModel @Inject constructor(
             val restored = runCatching { repo.restoreIfEmpty() }.getOrElse {
                 // Only reachable when local history is empty (post-reinstall), so
                 // an empty screen here would silently mask un-restored history.
-                status.value = "Couldn't restore your history from the cloud — check your connection and reopen this tab"
+                status.value = "Couldn't restore your history from the cloud, check your connection and reopen this tab"
                 0
             }
             if (restored > 0) status.value = "Restored $restored workouts from the cloud"
@@ -503,12 +503,12 @@ class StrengthViewModel @Inject constructor(
         status.value = "Generating today's lift with AI…"
         val w = runCatching { repo.generateAiStrength(durationMin) }.getOrNull()
         if (w == null || w.type != "strength" || w.sections.isEmpty()) {
-            status.value = "AI couldn't build a strength session — check your provider key & profile."
+            status.value = "AI couldn't build a strength session, check your provider key & profile."
         } else {
             reset()
             workoutName = w.title.ifBlank { "AI Strength" }
             seedFromWorkout(w)
-            status.value = "✓ AI session ready — adjust and log"
+            status.value = "✓ AI session ready, adjust and log"
             nav.value = StrengthNav.Active
             startTick()
             persistSession()
@@ -562,7 +562,7 @@ class StrengthViewModel @Inject constructor(
         linkedPlannedId = s.plannedId
         linkedPlannedDate = s.date
         seedFromWorkout(s.workout)
-        status.value = "Logging your planned session — tick sets as you go"
+        status.value = "Logging your planned session, tick sets as you go"
         nav.value = StrengthNav.Active
         startTick()
         persistSession()
@@ -900,7 +900,7 @@ class StrengthViewModel @Inject constructor(
                     if (p.linkedId != null) runCatching { repo.markPlannedWorkoutDone(p.linkedId, true) }
                     status.value = when {
                         p.editId != null -> "✓ Workout updated"
-                        p.linkedId != null -> "✓ Logged — planned session marked done"
+                        p.linkedId != null -> "✓ Logged, planned session marked done"
                         result.prs.isEmpty() -> "✓ Workout saved"
                         else -> "✓ Saved · ${result.prs.size} new PR${if (result.prs.size > 1) "s" else ""}! 🎉"
                     }

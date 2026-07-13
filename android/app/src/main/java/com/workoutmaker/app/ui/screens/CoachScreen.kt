@@ -69,7 +69,7 @@ import kotlinx.serialization.json.contentOrNull
 import javax.inject.Inject
 
 private const val GREETING =
-    "Hey! I'm your coach — and I can see your real data. Ask me things like " +
+    "Hey! I'm your coach, and I can see your real data. Ask me things like " +
         "“how's my fitness looking?”, “plan my week”, “am I overtraining?”, or " +
         "“set my goal race to the Berlin marathon on 2026-09-27”. I'll check your " +
         "numbers, then plan, generate, or adjust your training for you."
@@ -90,17 +90,17 @@ private const val STARTER_FITNESS =
         "down, and the one thing I should focus on this week. Use the real numbers."
 private const val STARTER_PLAN_WEEK =
     "Plan my full training week. Check my fitness, readiness, recent sessions and goal " +
-        "first, then build the complete week and put it on my calendar — don't ask me to " +
+        "first, then build the complete week and put it on my calendar, don't ask me to " +
         "confirm each day. When it's scheduled, summarize the week and why it's built that way."
 private const val STARTER_EXPLAIN_TODAY =
     "Look at today's planned workout and explain exactly why it's the right session for me " +
-        "today — how it fits my current fitness, fatigue and goal. If it doesn't match how " +
+        "today, how it fits my current fitness, fatigue and goal. If it doesn't match how " +
         "I'm likely feeling, propose a specific adjustment and offer to apply it."
 private const val STARTER_MAKE_TODAY =
     "Make me today's workout. Check my readiness, recent training and goal, pick the right " +
         "type and intensity yourself, generate it and put it on my calendar, then tell me the plan."
 private const val STARTER_RECENT =
-    "Review how my recent training has actually gone — how I executed the sessions versus the " +
+    "Review how my recent training has actually gone, how I executed the sessions versus the " +
         "plan. Tell me what's going well, what's lagging, and the most useful change to make next."
 
 // Live progress line while the agentic loop runs ("checking your fitness…").
@@ -547,7 +547,7 @@ fun CoachScreen(vm: CoachViewModel = hiltViewModel(), onOpenCalendar: () -> Unit
             ) {
                 GhostButton(
                     onClick = {
-                        vm.send("Yes — apply that to my real calendar now and push it to my watch, then confirm exactly what you scheduled.")
+                        vm.send("Yes, apply that to my real calendar now and push it to my watch, then confirm exactly what you scheduled.")
                     },
                     enabled = !sending,
                     modifier = Modifier.weight(1f),
