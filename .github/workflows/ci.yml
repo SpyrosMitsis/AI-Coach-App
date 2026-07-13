@@ -20,7 +20,9 @@ jobs:
       - name: Type-check all functions
         run: deno check */index.ts _shared/*.ts
       - name: Unit tests
-        run: deno test _shared/
+        # --allow-all matches scripts/dev.sh deno:test — several suites read
+        # Deno.env (entitlement/llm/quota) and source files (dash-free contract).
+        run: deno test --allow-all _shared/
 
   web:
     name: Web (Next.js)
@@ -54,4 +56,7 @@ jobs:
       - uses: gradle/actions/setup-gradle@v4
       - name: Unit tests
         # SUPABASE_URL/ANON_KEY default to "" when unset — fine for unit tests.
-        run: ./gradlew testDebugUnitTest --no-daemon
+        # Flavor-qualified tasks: plain testDebugUnitTest stopped existing when
+        # the play/foss flavors were introduced. Running both also compiles
+        # both flavors' sources in CI.
+        run: ./gradlew testPlayDebugUnitTest testFossDebugUnitTest --no-daemon

@@ -10,6 +10,7 @@
 import { handleOptions, json } from "../_shared/cors.ts";
 import { adminClient, getUserId } from "../_shared/supabase.ts";
 import { computeRecovery } from "../_shared/recovery.ts";
+import { applyFallbackFitness } from "../_shared/load.ts";
 import { hostedLlm } from "../_shared/entitlement.ts";
 
 const DAY = 86_400_000;
@@ -64,7 +65,9 @@ Deno.serve(async (req) => {
     })[0] ?? null;
 
     const wells = wellness ?? [];
-    const acts = activities ?? [];
+    // No intervals-provided CTL in the window? Fill estimated values from
+    // stored TSS so the TSB sparkline and goal trend work without intervals.icu.
+    const acts = await applyFallbackFitness(admin, userId, today, activities ?? []);
 
     // --- recovery: HRV/RHR/sleep trends → 0-100 score (shared module) --------
     // wellness_checkins is the single source of truth: sync-intervals mirrors
@@ -207,8 +210,10 @@ Deno.serve(async (req) => {
       }
       const phase = weeksToGoal == null ? "General / maintenance"
         : weeksToGoal <= 2 ? "Taper" : weeksToGoal <= 6 ? "Peak" : weeksToGoal <= 14 ? "Build" : "Base";
+      // acts is ordered ASCENDING here (unlike goalBlock's descending input),
+      // so the trend is newest minus oldest.
       const ctlVals = acts.filter((a) => a.ctl != null).map((a) => Number(a.ctl));
-      const ctlTrend = ctlVals.length >= 2 ? Math.round((ctlVals[0] - ctlVals[ctlVals.length - 1]) * 10) / 10 : 0;
+      const ctlTrend = ctlVals.length >= 2 ? Math.round((ctlVals[ctlVals.length - 1] - ctlVals[0]) * 10) / 10 : 0;
       const onTrack = ctlTrend > 1 ? "Fitness building, on track"
         : ctlTrend < -1 ? (phase === "Taper" ? "Tapering as planned" : "Fitness slipping, rebuild consistency")
         : "Holding steady";

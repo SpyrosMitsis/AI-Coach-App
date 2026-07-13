@@ -203,6 +203,9 @@ class HomeViewModel @Inject constructor(
         if (!isViewingToday) { load(); return@launch }
         refreshing.value = true
         runCatching { repo.syncIntervals() }
+        // Health Connect too — wellness always, plus watch workouts as fallback
+        // activities when intervals isn't connected (the "sync your watch" copy).
+        runCatching { repo.syncHealth() }
         load().join()
         refreshing.value = false
     }

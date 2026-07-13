@@ -142,14 +142,22 @@ class CalendarViewModel @Inject constructor(
         loading.value = false
     }
 
-    // Pull the latest activities from Intervals.icu so actuals are current
-    // before adapting / reviewing the week.
+    // Pull the latest activities (Intervals.icu and/or Health Connect) so
+    // actuals are current before adapting / reviewing the week.
     fun syncNow() = viewModelScope.launch {
         loading.value = true
-        banner.value = "Syncing your latest activities from Intervals.icu…"
-        runCatching { repo.syncIntervals() }
-            .onSuccess { banner.value = "✓ Synced, your recent activities are up to date."; load() }
-            .onFailure { banner.value = "Sync failed: ${it.message}" }
+        banner.value = "Syncing your latest activities…"
+        runCatching { repo.syncHealth() }
+        val hasIntervals = runCatching { repo.intervalsConnection() != null }.getOrDefault(false)
+        if (hasIntervals) {
+            runCatching { repo.syncIntervals() }
+                .onSuccess { banner.value = "✓ Synced, your recent activities are up to date."; load() }
+                .onFailure { banner.value = "Sync failed: ${it.message}" }
+        } else {
+            // No intervals connection: Health Connect was the sync.
+            banner.value = "✓ Synced, your recent activities are up to date."
+            load()
+        }
         loading.value = false
     }
 
@@ -157,8 +165,9 @@ class CalendarViewModel @Inject constructor(
     // Intervals.icu, then re-plan the rest of the week around it.
     fun adapt(weekStart: LocalDate) = viewModelScope.launch {
         adapting.value = true
-        banner.value = "Syncing Intervals.icu, then adapting your plan to what you did…"
+        banner.value = "Syncing your activities, then adapting your plan to what you did…"
         runCatching { repo.syncIntervals() } // best-effort: work from the freshest actuals
+        runCatching { repo.syncHealth() }    // watch workouts too (fallback source)
         runCatching { repo.adaptWeek(weekStart.toString(), LocalDate.now().toString()) }
             .onSuccess { r ->
                 banner.value = r.error?.let { "Couldn't fully adapt: $it" } ?: "✓ ${r.message}"

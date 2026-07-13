@@ -24,6 +24,7 @@ import {
   llmGenerateWithFallback,
 } from "../_shared/llm.ts";
 import { computeRecovery } from "../_shared/recovery.ts";
+import { applyFallbackFitness } from "../_shared/load.ts";
 import {
   compressThread,
   memoryDocsBlock,
@@ -211,7 +212,9 @@ Deno.serve(async (req) => {
         .select("date, energy, soreness, sleep_score, hrv_rmssd, resting_hr, zepp_sleep_minutes")
         .eq("user_id", userId).gte("date", since7).order("date", { ascending: false }),
     ]);
-    const a = acts ?? [];
+    // No intervals-provided CTL in the window? Fill estimated values from
+    // stored TSS so the coach still sees a fitness signal without intervals.icu.
+    const a = await applyFallbackFitness(admin, userId, today, acts ?? []);
     const fitnessRow = a.find((r) => r.ctl != null);
     const ctl = fitnessRow?.ctl ?? 0;
     const atl = fitnessRow?.atl ?? 0;

@@ -246,18 +246,21 @@ class SettingsViewModel @Inject constructor(
     fun syncHealth() = viewModelScope.launch {
         healthStatus.value = "Reading Health Connect (7-day trend)…"
         runCatching {
-            val week = health.readWeek(7)
-            if (week.isEmpty()) {
+            // Shared implementation with Home/Calendar: wellness week + watch
+            // workouts (the latter only when intervals.icu isn't connected).
+            val result = repo.syncHealth()
+            val week = result.week
+            if (week.isEmpty() && result.activitiesUpserted == 0) {
                 healthStatus.value = "No HRV/HR/sleep data found in Health Connect yet."
                 return@launch
             }
-            repo.submitHealthSnapshots(week)
-            val today = week.firstOrNull { it.date == java.time.LocalDate.now().toString() } ?: week.first()
+            val today = week.firstOrNull { it.date == java.time.LocalDate.now().toString() } ?: week.firstOrNull()
             healthStatus.value = buildString {
                 append("✓ Synced ${week.size} days")
-                today.hrvRmssd?.let { append(" · HRV ${"%.0f".format(it)}ms") }
-                today.restingHr?.let { append(" · RHR $it") }
-                today.sleepMinutes?.let { append(" · sleep ${it / 60}h${it % 60}m") }
+                today?.hrvRmssd?.let { append(" · HRV ${"%.0f".format(it)}ms") }
+                today?.restingHr?.let { append(" · RHR $it") }
+                today?.sleepMinutes?.let { append(" · sleep ${it / 60}h${it % 60}m") }
+                if (result.activitiesUpserted > 0) append(" · ${result.activitiesUpserted} workouts")
             }
         }.onFailure { healthStatus.value = "Failed: ${it.message}" }
     }
