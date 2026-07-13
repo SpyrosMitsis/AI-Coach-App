@@ -1,32 +1,30 @@
 package com.workoutmaker.app.ui
 
+import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.scaleIn
+import androidx.compose.animation.togetherWith
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.padding
-import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
-import androidx.compose.material3.OutlinedButton
-import androidx.compose.material3.OutlinedTextField
-import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.rememberCoroutineScope
-import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.focus.focusRequester
-import androidx.compose.ui.text.input.PasswordVisualTransformation
-import androidx.compose.ui.unit.dp
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.workoutmaker.app.data.BackendConfig
 import com.workoutmaker.app.data.WorkoutRepository
+import com.workoutmaker.app.ui.screens.LoginScreen
 import dagger.hilt.android.lifecycle.HiltViewModel
 import io.github.jan.supabase.gotrue.SessionStatus
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -35,23 +33,23 @@ import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.launch
 import javax.inject.Inject
 
-// Supabase auth errors are terse and technical — translate the common ones.
+// Supabase auth errors are terse and technical. Translate the common ones.
 internal fun friendlyAuthError(t: Throwable): String {
-    val m = t.message ?: return "Something went wrong — please try again."
+    val m = t.message ?: return "Something went wrong. Please try again."
     return when {
         m.contains("Invalid login credentials", true) -> "Wrong email or password."
         m.contains("Email not confirmed", true) ->
-            "Your email isn't confirmed yet — check your inbox for the confirmation link."
+            "Your email isn't confirmed yet. Check your inbox for the confirmation link."
         m.contains("already registered", true) ->
-            "An account with this email already exists — sign in instead."
-        m.contains("Password should be", true) -> "Password is too short — use at least 6 characters."
+            "An account with this email already exists. Sign in instead."
+        m.contains("Password should be", true) -> "Password is too short. Use at least 6 characters."
         m.contains("rate limit", true) || m.contains("too many", true) ->
-            "Too many attempts — wait a minute and try again."
+            "Too many attempts. Wait a minute and try again."
         m.contains("is invalid", true) || m.contains("validate email", true) ->
             "That doesn't look like a valid email address."
         m.contains("Unable to resolve host", true) || m.contains("Failed to connect", true) ||
             m.contains("timeout", true) || m.contains("No address associated", true) ->
-            "Can't reach the server — check your internet connection."
+            "Can't reach the server. Check your internet connection."
         else -> m
     }
 }
@@ -99,10 +97,10 @@ class AuthViewModel @Inject constructor(
         info.value = null
         runCatching { repo.signUp(email.trim(), pw) }
             .onSuccess {
-                // With email confirmation enabled there's no session yet — say
+                // With email confirmation enabled there's no session yet. Say
                 // what to do instead of failing silently.
                 if (repo.auth.currentSessionOrNull() == null) {
-                    info.value = "Almost there — confirm your email from the link in your inbox, then sign in."
+                    info.value = "Almost there. Confirm your email from the link in your inbox, then sign in."
                 }
             }
             .onFailure { error.value = friendlyAuthError(it) }
@@ -117,28 +115,58 @@ class AuthViewModel @Inject constructor(
         busy.value = true
         error.value = null
         runCatching { repo.resetPassword(email.trim()) }
-            .onSuccess { info.value = "Check your email — we sent you a link to set a new password." }
+            .onSuccess { info.value = "Check your email. We sent you a link to set a new password." }
             .onFailure { error.value = friendlyAuthError(it) }
         busy.value = false
     }
 }
 
+// Coarse routing bucket so the gate can animate between whole surfaces.
+private enum class GateState { Login, App, Spinner }
+
 @Composable
 fun AuthGate(vm: AuthViewModel = hiltViewModel(), content: @Composable () -> Unit) {
     val status by vm.sessionStatus.collectAsStateSafe()
     val offlineWithSession by vm.offlineWithSession.collectAsStateSafe()
-    when (status) {
-        is SessionStatus.Authenticated -> OnboardingGate(content)
-        is SessionStatus.NotAuthenticated -> LoginScreen(vm)
+
+    val bucket = when (status) {
+        is SessionStatus.Authenticated -> GateState.App
+        is SessionStatus.NotAuthenticated -> GateState.Login
         // Can't reach the server: with a locally-saved session, enter the app on
         // cached data (the SDK keeps retrying and signs in when back online).
-        // Without one there's no account to show — fall back to the login form.
+        // Without one there's no account to show, so fall back to the login form.
         is SessionStatus.NetworkError -> when (offlineWithSession) {
-            true -> OnboardingGate(content)
-            false -> LoginScreen(vm)
-            null -> CenteredSpinner()
+            true -> GateState.App
+            false -> GateState.Login
+            null -> GateState.Spinner
         }
-        else -> CenteredSpinner()
+        else -> GateState.Spinner
+    }
+
+    // Success buzz only on an actual Login → App transition, not on cold-start
+    // session restore (which goes Spinner → App).
+    val haptics = LocalHapticFeedback.current
+    val previous = remember { mutableStateOf<GateState?>(null) }
+    LaunchedEffect(bucket) {
+        if (previous.value == GateState.Login && bucket == GateState.App) {
+            haptics.performHapticFeedback(HapticFeedbackType.LongPress)
+        }
+        previous.value = bucket
+    }
+
+    AnimatedContent(
+        targetState = bucket,
+        transitionSpec = {
+            (fadeIn(tween(350)) + scaleIn(initialScale = 0.98f, animationSpec = tween(350)))
+                .togetherWith(fadeOut(tween(150)))
+        },
+        label = "authGate",
+    ) { state ->
+        when (state) {
+            GateState.App -> OnboardingGate(content)
+            GateState.Login -> LoginScreen(vm)
+            GateState.Spinner -> CenteredSpinner()
+        }
     }
 }
 
@@ -160,161 +188,6 @@ private fun OnboardingGate(
     when (complete) {
         true -> content()
         false -> com.workoutmaker.app.ui.screens.OnboardingScreen(vm)
-        null -> Column(
-            Modifier.fillMaxSize(),
-            verticalArrangement = Arrangement.Center,
-            horizontalAlignment = Alignment.CenterHorizontally,
-        ) { CircularProgressIndicator() }
+        null -> CenteredSpinner()
     }
-}
-
-@Composable
-private fun LoginScreen(vm: AuthViewModel) {
-    var email by remember { mutableStateOf("") }
-    var pw by remember { mutableStateOf("") }
-    val error by vm.error.collectAsStateSafe()
-    val info by vm.info.collectAsStateSafe()
-    val busy by vm.busy.collectAsStateSafe()
-
-    Column(
-        Modifier.fillMaxSize().padding(24.dp),
-        verticalArrangement = Arrangement.Center,
-        horizontalAlignment = Alignment.CenterHorizontally,
-    ) {
-        Text("Workout Maker", style = androidx.compose.material3.MaterialTheme.typography.headlineMedium)
-        Text(
-            "AI running & strength, synced to your Amazfit.",
-            style = androidx.compose.material3.MaterialTheme.typography.bodyMedium,
-            modifier = Modifier.padding(top = 4.dp, bottom = 24.dp),
-        )
-        val focus = androidx.compose.ui.platform.LocalFocusManager.current
-        val pwFocus = remember { androidx.compose.ui.focus.FocusRequester() }
-        OutlinedTextField(
-            email, { email = it }, label = { Text("Email") },
-            modifier = Modifier.fillMaxWidth(),
-            singleLine = true,
-            keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(
-                keyboardType = androidx.compose.ui.text.input.KeyboardType.Email,
-                imeAction = androidx.compose.ui.text.input.ImeAction.Next,
-            ),
-            keyboardActions = androidx.compose.foundation.text.KeyboardActions(
-                onNext = { pwFocus.requestFocus() },
-            ),
-        )
-        OutlinedTextField(
-            pw, { pw = it }, label = { Text("Password") },
-            visualTransformation = PasswordVisualTransformation(),
-            modifier = Modifier.fillMaxWidth().padding(top = 8.dp)
-                .focusRequester(pwFocus),
-            singleLine = true,
-            keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(
-                keyboardType = androidx.compose.ui.text.input.KeyboardType.Password,
-                imeAction = androidx.compose.ui.text.input.ImeAction.Done,
-            ),
-            keyboardActions = androidx.compose.foundation.text.KeyboardActions(
-                onDone = { focus.clearFocus(); vm.signIn(email, pw) },
-            ),
-        )
-        Button({ vm.signIn(email, pw) }, Modifier.fillMaxWidth().padding(top = 16.dp), enabled = !busy) { Text("Sign in") }
-        OutlinedButton({ vm.signUp(email, pw) }, Modifier.fillMaxWidth().padding(top = 8.dp), enabled = !busy) { Text("Create account") }
-        androidx.compose.material3.TextButton(
-            onClick = { vm.forgotPassword(email) },
-            modifier = Modifier.fillMaxWidth().padding(top = 4.dp),
-            enabled = !busy,
-        ) {
-            Text(
-                "Forgot password?",
-                style = androidx.compose.material3.MaterialTheme.typography.labelMedium,
-                color = androidx.compose.material3.MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-        }
-        // onErrorContainer, not error: light-mode error is the pastel band fill,
-        // which is unreadable as foreground text on the light paper.
-        error?.let { Text(it, color = androidx.compose.material3.MaterialTheme.colorScheme.onErrorContainer, modifier = Modifier.padding(top = 12.dp)) }
-        info?.let {
-            Text(
-                it,
-                color = androidx.compose.material3.MaterialTheme.colorScheme.primary,
-                modifier = Modifier.padding(top = 12.dp),
-            )
-        }
-
-        // Self-hosters: point this install at their own Supabase project.
-        var showServerDialog by remember { mutableStateOf(false) }
-        androidx.compose.material3.TextButton(
-            onClick = { showServerDialog = true },
-            modifier = Modifier.fillMaxWidth().padding(top = 16.dp),
-            enabled = !busy,
-        ) {
-            Text(
-                if (vm.backend.isCustom) "Server: ${vm.backend.url.removePrefix("https://").removePrefix("http://")}"
-                else "Advanced: custom server",
-                style = androidx.compose.material3.MaterialTheme.typography.labelSmall,
-                color = androidx.compose.material3.MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-        }
-        if (showServerDialog) CustomServerDialog(vm.backend) { showServerDialog = false }
-    }
-}
-
-// Restarting the process is the price of the Supabase client being a Hilt
-// singleton built at startup — a settings change can't rebuild it in place.
-private fun relaunchApp(context: android.content.Context) {
-    val intent = context.packageManager.getLaunchIntentForPackage(context.packageName)
-    intent?.addFlags(
-        android.content.Intent.FLAG_ACTIVITY_NEW_TASK or android.content.Intent.FLAG_ACTIVITY_CLEAR_TASK,
-    )
-    context.startActivity(intent)
-    Runtime.getRuntime().exit(0)
-}
-
-@Composable
-private fun CustomServerDialog(backend: BackendConfig, onDismiss: () -> Unit) {
-    val context = androidx.compose.ui.platform.LocalContext.current
-    var url by remember { mutableStateOf(if (backend.isCustom) backend.url else "") }
-    var anonKey by remember { mutableStateOf(if (backend.isCustom) backend.anonKey else "") }
-    val valid = url.trim().startsWith("http") && anonKey.trim().isNotEmpty()
-
-    androidx.compose.material3.AlertDialog(
-        onDismissRequest = onDismiss,
-        title = { Text("Custom server") },
-        text = {
-            Column {
-                Text(
-                    "Point the app at your own Supabase project (see docs/SELF_HOSTING.md). " +
-                        "The app restarts to apply the change.",
-                    style = androidx.compose.material3.MaterialTheme.typography.bodySmall,
-                    color = androidx.compose.material3.MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-                OutlinedTextField(
-                    url, { url = it },
-                    label = { Text("Supabase URL") },
-                    placeholder = { Text("https://your-ref.supabase.co") },
-                    modifier = Modifier.fillMaxWidth().padding(top = 12.dp),
-                    singleLine = true,
-                )
-                OutlinedTextField(
-                    anonKey, { anonKey = it },
-                    label = { Text("Anon (public) key") },
-                    modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
-                    singleLine = true,
-                )
-                if (backend.isCustom) {
-                    androidx.compose.material3.TextButton(
-                        onClick = { backend.clearCustom(); relaunchApp(context) },
-                        modifier = Modifier.padding(top = 4.dp),
-                    ) { Text("Reset to default server") }
-                }
-            }
-        },
-        confirmButton = {
-            androidx.compose.material3.TextButton(
-                onClick = { backend.setCustom(url, anonKey); relaunchApp(context) },
-                enabled = valid,
-            ) { Text("Save & restart") }
-        },
-        dismissButton = {
-            androidx.compose.material3.TextButton(onClick = onDismiss) { Text("Cancel") }
-        },
-    )
 }

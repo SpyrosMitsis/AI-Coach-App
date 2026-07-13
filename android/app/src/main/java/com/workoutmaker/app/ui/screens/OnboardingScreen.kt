@@ -1,18 +1,25 @@
 package com.workoutmaker.app.ui.screens
 
+import androidx.compose.animation.core.animateDpAsState
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.togetherWith
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
 import androidx.compose.material3.FilterChip
-import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
@@ -43,7 +50,10 @@ import kotlinx.coroutines.launch
 import javax.inject.Inject
 
 @HiltViewModel
-class OnboardingViewModel @Inject constructor(private val repo: WorkoutRepository) : ViewModel() {
+class OnboardingViewModel @Inject constructor(
+    private val repo: WorkoutRepository,
+    private val billing: com.workoutmaker.app.billing.BillingGateway,
+) : ViewModel() {
     val complete = MutableStateFlow<Boolean?>(null)
     val step = MutableStateFlow(0)
     val profile = MutableStateFlow(TrainingProfile())
@@ -53,8 +63,37 @@ class OnboardingViewModel @Inject constructor(private val repo: WorkoutRepositor
     val busy = MutableStateFlow(false)
     var provider by androidx.compose.runtime.mutableStateOf(LlmProvider.GROQ)
 
-    init { recheck() }
+    // Zero-setup Pro path: shown only when this build can bill AND this server
+    // hosts an LLM key. The one summary fetch also warms the Room cache.
+    val hostedAvailable = MutableStateFlow(false)
+    val proActive = MutableStateFlow(false)
+    val proBusy = MutableStateFlow(false)
+    val proError = MutableStateFlow<String?>(null)
+
+    init {
+        recheck()
+        if (billing.supported) {
+            viewModelScope.launch {
+                runCatching {
+                    val summary = repo.dailySummary()
+                    hostedAvailable.value = summary.server?.hosted_ai == true
+                    proActive.value = repo.planStatus().isPro
+                }
+            }
+        }
+    }
     fun recheck() = viewModelScope.launch { complete.value = repo.isOnboardingComplete() }
+
+    fun buyPro(activity: android.app.Activity) = viewModelScope.launch {
+        proBusy.value = true
+        proError.value = null
+        when (val r = com.workoutmaker.app.billing.purchaseAndVerify(activity, billing, repo)) {
+            is com.workoutmaker.app.billing.ProPurchaseResult.Success -> proActive.value = true
+            is com.workoutmaker.app.billing.ProPurchaseResult.Cancelled -> Unit
+            is com.workoutmaker.app.billing.ProPurchaseResult.Failed -> proError.value = r.message
+        }
+        proBusy.value = false
+    }
 
     fun update(t: (TrainingProfile) -> TrainingProfile) { profile.value = t(profile.value) }
     fun next() { step.value = (step.value + 1).coerceAtMost(2) }
@@ -104,15 +143,35 @@ fun OnboardingScreen(vm: OnboardingViewModel = hiltViewModel()) {
     val busy by vm.busy.collectAsStateSafe()
     val finishStatus by vm.finishStatus.collectAsStateSafe()
 
+    androidx.compose.foundation.layout.Box(Modifier.fillMaxSize()) {
+    com.workoutmaker.app.ui.components.BreathingBackdrop(Modifier.fillMaxSize(), intensity = 0.6f)
     Column(Modifier.fillMaxSize().padding(20.dp).verticalScroll(rememberScrollState())) {
         Text("Welcome", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.Bold)
         Text("Let's set up your coach", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
-        LinearProgressIndicator(progress = { (step + 1) / 3f }, modifier = Modifier.fillMaxWidth().padding(vertical = 12.dp))
+        StepDots(step, total = 3, modifier = Modifier.padding(vertical = 14.dp))
 
-        when (step) {
-            0 -> StepGoal(profile, vm)
-            1 -> StepKey(vm)
-            else -> StepConnect(vm)
+        // Directional slide between steps, in the app's tween(240) language.
+        androidx.compose.animation.AnimatedContent(
+            targetState = step,
+            transitionSpec = {
+                val forward = targetState > initialState
+                val enter = androidx.compose.animation.slideInHorizontally(
+                    androidx.compose.animation.core.tween(240),
+                ) { if (forward) it / 3 else -it / 3 } + androidx.compose.animation.fadeIn(androidx.compose.animation.core.tween(240))
+                val exit = androidx.compose.animation.slideOutHorizontally(
+                    androidx.compose.animation.core.tween(240),
+                ) { if (forward) -it / 3 else it / 3 } + androidx.compose.animation.fadeOut(androidx.compose.animation.core.tween(150))
+                enter.togetherWith(exit)
+            },
+            label = "onboardingStep",
+        ) { s ->
+            Column {
+                when (s) {
+                    0 -> StepGoal(profile, vm)
+                    1 -> StepKey(vm)
+                    else -> StepConnect(vm)
+                }
+            }
         }
 
         Spacer16()
@@ -136,6 +195,31 @@ fun OnboardingScreen(vm: OnboardingViewModel = hiltViewModel()) {
         }
         if (step < 2) {
             TextButton(onClick = { vm.finish() }, modifier = Modifier.fillMaxWidth()) { Text("Skip setup for now") }
+        }
+    }
+    }
+}
+
+// Step pills: the active one stretches, in the palette's primary.
+@Composable
+private fun StepDots(step: Int, total: Int, modifier: Modifier = Modifier) {
+    Row(modifier, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+        repeat(total) { i ->
+            val active = i == step
+            val width by animateDpAsState(
+                targetValue = if (active) 24.dp else 8.dp,
+                animationSpec = tween(300),
+                label = "dot$i",
+            )
+            Box(
+                Modifier
+                    .width(width)
+                    .height(8.dp)
+                    .background(
+                        if (active) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outlineVariant,
+                        shape = RoundedCornerShape(50),
+                    ),
+            )
         }
     }
 }
@@ -172,12 +256,69 @@ private fun StepGoal(profile: TrainingProfile, vm: OnboardingViewModel) {
 
 @Composable
 private fun StepKey(vm: OnboardingViewModel) {
+    val hosted by vm.hostedAvailable.collectAsStateSafe()
+    val proActive by vm.proActive.collectAsStateSafe()
+    var byoExpanded by rememberSaveable { mutableStateOf(false) }
+
+    if (hosted) {
+        ProOnboardingCard(vm)
+        Spacer16()
+    }
+    // A subscribed user never sees key setup unless they ask for it.
+    if (!hosted || !proActive || byoExpanded) {
+        ByoKeyCard(vm)
+    } else {
+        TextButton(onClick = { byoExpanded = true }, modifier = Modifier.fillMaxWidth()) {
+            Text(
+                "Prefer your own key? Set one up anyway",
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+    }
+}
+
+// The zero-setup path: subscribe here and skip keys entirely.
+@Composable
+private fun ProOnboardingCard(vm: OnboardingViewModel) {
+    val proActive by vm.proActive.collectAsStateSafe()
+    val proBusy by vm.proBusy.collectAsStateSafe()
+    val proError by vm.proError.collectAsStateSafe()
+    val context = androidx.compose.ui.platform.LocalContext.current
+
+    SectionCard(title = if (proActive) "Pro is active" else "Pro: zero setup") {
+        if (proActive) {
+            Text(
+                "✓ You're set. Your coach and workouts run on our hosted AI, nothing to configure.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.primary,
+            )
+        } else {
+            Text(
+                "Skip the API keys. Pro runs the coach and workout generation on a fast hosted model, with a fair-use allowance. Manage or cancel any time in Settings.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Button(
+                onClick = { (context as? android.app.Activity)?.let { vm.buyPro(it) } },
+                enabled = !proBusy,
+                modifier = Modifier.fillMaxWidth(),
+            ) { Text(if (proBusy) "Working…" else "Get Pro") }
+            proError?.let {
+                Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onErrorContainer)
+            }
+        }
+    }
+}
+
+@Composable
+private fun ByoKeyCard(vm: OnboardingViewModel) {
     var key by rememberSaveable { mutableStateOf("") }
     val status by vm.keyStatus.collectAsStateSafe()
     val busy by vm.busy.collectAsStateSafe()
-    SectionCard(title = "Add an AI key") {
+    SectionCard(title = "Bring your own key (free)") {
         Text(
-            "This app is free — you bring your own LLM key, so generations cost only what your provider charges (often pennies, or free tiers). Pick one to start.",
+            "This app is free, you bring your own LLM key, so generations cost only what your provider charges (often pennies, or free tiers). Pick one to start.",
             style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
         FlowRowProviders(vm)
