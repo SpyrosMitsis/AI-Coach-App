@@ -100,3 +100,28 @@ Deno.test("fallback: all fail → throws with the attempt log", async () => {
     ));
   assert(String(err).includes("no api key configured"));
 });
+
+Deno.test("openrouter: routes to its endpoint with attribution headers", async () => {
+  let seenUrl = "";
+  let seenHeaders: Headers | undefined;
+  const orig = globalThis.fetch;
+  globalThis.fetch = ((input: URL | Request | string, init?: RequestInit) => {
+    seenUrl = String(input instanceof Request ? input.url : input);
+    seenHeaders = new Headers(init?.headers);
+    return Promise.resolve(openAiResponse("hi from openrouter"));
+  }) as typeof fetch;
+  try {
+    const out = await llmGenerateWithFallback(
+      ["openrouter"] as LlmProvider[],
+      { prompt: "hi", systemPrompt: "sys" },
+      () => Promise.resolve("sk-or-test"),
+    );
+    assertEquals(out.provider, "openrouter");
+    assertEquals(out.model, "openrouter/auto");
+    assert(seenUrl.startsWith("https://openrouter.ai/api/v1/chat/completions"));
+    assertEquals(seenHeaders?.get("X-Title"), "Workout Maker");
+    assert(!!seenHeaders?.get("HTTP-Referer"));
+  } finally {
+    globalThis.fetch = orig;
+  }
+});

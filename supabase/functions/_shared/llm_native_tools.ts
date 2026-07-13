@@ -13,6 +13,10 @@ import type { LlmProvider } from "./types.ts";
 import { anthropicAcceptsTemperature, openAiModernParams, PROVIDERS } from "./llm.ts";
 import type { ChatMessage } from "./llm.ts";
 
+// Per-step deadline — one hung tool-call step shouldn't run to the platform
+// wall-clock and stall the whole agentic loop.
+const STEP_TIMEOUT_MS = 60_000;
+
 export interface NativeToolDef {
   name: string;
   description: string;
@@ -33,10 +37,14 @@ export interface NativeLoopArgs {
 export interface NativeLoopResult {
   text: string;
   toolsUsed: string[];
+  // Summed token usage across every API call the loop made (for cost logging).
+  promptTokens: number;
+  completionTokens: number;
+  model: string;
 }
 
 export function supportsNativeTools(p: LlmProvider): boolean {
-  return p === "anthropic" || p === "openai" || p === "deepseek" || p === "groq";
+  return p === "anthropic" || p === "openai" || p === "deepseek" || p === "groq" || p === "openrouter";
 }
 
 export async function runNativeToolLoop(args: NativeLoopArgs): Promise<NativeLoopResult> {
@@ -50,6 +58,8 @@ export async function runNativeToolLoop(args: NativeLoopArgs): Promise<NativeLoo
 async function anthropicLoop(args: NativeLoopArgs): Promise<NativeLoopResult> {
   const model = args.model ?? PROVIDERS.anthropic.model;
   const toolsUsed: string[] = [];
+  let promptTokens = 0;
+  let completionTokens = 0;
   // deno-lint-ignore no-explicit-any
   const msgs: any[] = args.messages.map((m) => ({ role: m.role, content: m.content }));
 
@@ -69,16 +79,19 @@ async function anthropicLoop(args: NativeLoopArgs): Promise<NativeLoopResult> {
         messages: msgs,
         tools: args.tools,
       }),
+      signal: AbortSignal.timeout(STEP_TIMEOUT_MS),
     });
     if (!res.ok) throw new Error(`anthropic HTTP ${res.status}: ${await res.text()}`);
     const data = await res.json();
+    promptTokens += data.usage?.input_tokens ?? 0;
+    completionTokens += data.usage?.output_tokens ?? 0;
     // deno-lint-ignore no-explicit-any
     const content: any[] = data.content ?? [];
     const toolUses = content.filter((b) => b.type === "tool_use");
 
     if (data.stop_reason !== "tool_use" || toolUses.length === 0) {
       const text = content.filter((b) => b.type === "text").map((b) => b.text).join("");
-      return { text, toolsUsed };
+      return { text, toolsUsed, promptTokens, completionTokens, model };
     }
 
     msgs.push({ role: "assistant", content });
@@ -90,7 +103,7 @@ async function anthropicLoop(args: NativeLoopArgs): Promise<NativeLoopResult> {
     }
     msgs.push({ role: "user", content: results });
   }
-  return { text: "", toolsUsed };
+  return { text: "", toolsUsed, promptTokens, completionTokens, model };
 }
 
 // ---------------------------------------------------------------------------
@@ -101,6 +114,7 @@ const OPENAI_BASES: Partial<Record<LlmProvider, string>> = {
   openai: "https://api.openai.com/v1",
   deepseek: "https://api.deepseek.com/v1",
   groq: "https://api.groq.com/openai/v1",
+  openrouter: "https://openrouter.ai/api/v1",
 };
 
 async function openAiCompatibleLoop(args: NativeLoopArgs): Promise<NativeLoopResult> {
@@ -108,6 +122,8 @@ async function openAiCompatibleLoop(args: NativeLoopArgs): Promise<NativeLoopRes
   if (!base) throw new Error(`no native tool support for ${args.provider}`);
   const model = args.model ?? PROVIDERS[args.provider].model;
   const toolsUsed: string[] = [];
+  let promptTokens = 0;
+  let completionTokens = 0;
 
   // deno-lint-ignore no-explicit-any
   const msgs: any[] = [
@@ -122,7 +138,13 @@ async function openAiCompatibleLoop(args: NativeLoopArgs): Promise<NativeLoopRes
   for (let step = 0; step < (args.maxSteps ?? 6); step++) {
     const res = await fetch(`${base}/chat/completions`, {
       method: "POST",
-      headers: { "Content-Type": "application/json", Authorization: `Bearer ${args.apiKey}` },
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${args.apiKey}`,
+        ...(args.provider === "openrouter"
+          ? { "HTTP-Referer": "https://github.com/workout-maker", "X-Title": "Workout Maker" }
+          : {}),
+      },
       body: JSON.stringify({
         model,
         messages: msgs,
@@ -131,14 +153,17 @@ async function openAiCompatibleLoop(args: NativeLoopArgs): Promise<NativeLoopRes
           ? { max_completion_tokens: 2500 }
           : { temperature: 0.6, max_tokens: 2500 }),
       }),
+      signal: AbortSignal.timeout(STEP_TIMEOUT_MS),
     });
     if (!res.ok) throw new Error(`${args.provider} HTTP ${res.status}: ${await res.text()}`);
     const data = await res.json();
+    promptTokens += data.usage?.prompt_tokens ?? 0;
+    completionTokens += data.usage?.completion_tokens ?? 0;
     const msg = data.choices?.[0]?.message;
     if (!msg) throw new Error(`${args.provider}: empty completion`);
 
     const calls = msg.tool_calls ?? [];
-    if (!calls.length) return { text: msg.content ?? "", toolsUsed };
+    if (!calls.length) return { text: msg.content ?? "", toolsUsed, promptTokens, completionTokens, model };
 
     msgs.push(msg);
     for (const call of calls) {
@@ -150,5 +175,5 @@ async function openAiCompatibleLoop(args: NativeLoopArgs): Promise<NativeLoopRes
       msgs.push({ role: "tool", tool_call_id: call.id, content: obs });
     }
   }
-  return { text: "", toolsUsed };
+  return { text: "", toolsUsed, promptTokens, completionTokens, model };
 }

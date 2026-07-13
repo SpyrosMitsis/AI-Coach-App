@@ -32,7 +32,9 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.material3.pulltorefresh.PullToRefreshBox
+import androidx.compose.foundation.clickable
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.outlined.Info
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Icon
@@ -57,6 +59,13 @@ import androidx.compose.ui.unit.sp
 fun ScreenScaffold(
     title: String,
     subtitle: String? = null,
+    // Small uppercase kicker above the title. Each screen passes one that names
+    // its job (e.g. "DAILY READINESS") so the top bar is contextual, not a fixed
+    // brand stamp.
+    eyebrow: String = "BIO-METRICS",
+    // When set, the title becomes a tappable control (gets a small caret) — used
+    // by Home to turn the date headline into a date picker.
+    onTitleClick: (() -> Unit)? = null,
     actions: @Composable () -> Unit = {},
     navigationIcon: @Composable () -> Unit = {},
     scrollable: Boolean = true,
@@ -67,11 +76,17 @@ fun ScreenScaffold(
     Scaffold(
         topBar = {
             TopAppBar(
+                // Roomier than the default 64.dp so the eyebrow/title/subtitle
+                // block isn't squashed.
+                expandedHeight = 84.dp,
                 navigationIcon = navigationIcon,
                 title = {
-                    Column {
+                    Column(
+                        Modifier.padding(vertical = 4.dp),
+                        verticalArrangement = Arrangement.spacedBy(2.dp),
+                    ) {
                         Text(
-                            "BIO-METRICS",
+                            eyebrow,
                             style = MaterialTheme.typography.labelSmall,
                             color = MaterialTheme.colorScheme.primary,
                             letterSpacing = 2.sp,
@@ -80,13 +95,29 @@ fun ScreenScaffold(
                         // One line each: the app bar has a fixed height, so a long
                         // title (e.g. a workout name) wrapping would get clipped by
                         // the content below instead of ellipsized.
-                        Text(
-                            title,
-                            style = MaterialTheme.typography.headlineSmall,
-                            fontWeight = FontWeight.Bold,
-                            maxLines = 1,
-                            overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
-                        )
+                        androidx.compose.foundation.layout.Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            modifier = if (onTitleClick != null) {
+                                Modifier.clip(RoundedCornerShape(8.dp)).clickable { onTitleClick() }
+                                    .padding(end = 6.dp)
+                            } else Modifier,
+                        ) {
+                            Text(
+                                title,
+                                style = MaterialTheme.typography.headlineSmall,
+                                fontWeight = FontWeight.Bold,
+                                maxLines = 1,
+                                overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
+                            )
+                            if (onTitleClick != null) {
+                                Icon(
+                                    Icons.Filled.KeyboardArrowDown,
+                                    contentDescription = "Change date",
+                                    modifier = Modifier.size(22.dp).padding(start = 2.dp),
+                                    tint = MaterialTheme.colorScheme.primary,
+                                )
+                            }
+                        }
                         if (subtitle != null) {
                             Text(
                                 subtitle,
@@ -267,10 +298,10 @@ fun MetaChip(text: String) {
     Box(
         Modifier
             .clip(RoundedCornerShape(50))
-            .background(com.workoutmaker.app.ui.theme.Moss.copy(alpha = 0.45f))
+            .background(com.workoutmaker.app.ui.theme.mossAccent().copy(alpha = 0.45f))
             .padding(horizontal = 10.dp, vertical = 4.dp),
     ) {
-        Text(text, style = MaterialTheme.typography.labelMedium, color = com.workoutmaker.app.ui.theme.Sage)
+        Text(text, style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.primary)
     }
 }
 
@@ -301,6 +332,54 @@ fun InsetStat(label: String, value: String, modifier: Modifier = Modifier) {
     }
 }
 
+/**
+ * A single metric tile: small uppercase label above a prominent value, on an
+ * inset (recessed) background. Reads as a clean stat block — use several in a
+ * [StatTileGrid] instead of stacking full-width [InsetStat] rows.
+ */
+@Composable
+fun StatTile(label: String, value: String, modifier: Modifier = Modifier) {
+    Column(
+        modifier
+            .clip(RoundedCornerShape(12.dp))
+            .background(MaterialTheme.colorScheme.surfaceContainerLowest)
+            .padding(horizontal = 14.dp, vertical = 12.dp),
+        verticalArrangement = Arrangement.spacedBy(3.dp),
+    ) {
+        Text(
+            label.uppercase(),
+            style = MaterialTheme.typography.labelSmall,
+            letterSpacing = 0.6.sp,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        Text(value, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+    }
+}
+
+/**
+ * Lays metric tiles out in equal-width columns: a single row when there are ≤3
+ * stats, otherwise a 2-column grid. Trailing gaps keep tiles aligned.
+ */
+@Composable
+fun StatTileGrid(items: List<Pair<String, String>>, modifier: Modifier = Modifier) {
+    if (items.isEmpty()) return
+    val columns = if (items.size <= 3) items.size else 2
+    Column(modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        items.chunked(columns).forEach { row ->
+            androidx.compose.foundation.layout.Row(
+                // Match every tile in a row to the tallest one, so a stat whose
+                // label fits on one line (e.g. "Form (TSB)") isn't shorter than its
+                // two-line neighbours ("Fitness (CTL)").
+                Modifier.fillMaxWidth().height(androidx.compose.foundation.layout.IntrinsicSize.Max),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                row.forEach { (l, v) -> StatTile(l, v, Modifier.weight(1f).fillMaxHeight()) }
+                repeat(columns - row.size) { Box(Modifier.weight(1f)) }
+            }
+        }
+    }
+}
+
 /** Ghost (secondary) button: 1px warm-sand border, transparent fill. */
 @Composable
 fun GhostButton(onClick: () -> Unit, modifier: Modifier = Modifier, enabled: Boolean = true, content: @Composable androidx.compose.foundation.layout.RowScope.() -> Unit) {
@@ -309,7 +388,7 @@ fun GhostButton(onClick: () -> Unit, modifier: Modifier = Modifier, enabled: Boo
         modifier = modifier,
         enabled = enabled,
         shape = RoundedCornerShape(10.dp),
-        border = androidx.compose.foundation.BorderStroke(1.dp, com.workoutmaker.app.ui.theme.Sand.copy(alpha = 0.6f)),
+        border = androidx.compose.foundation.BorderStroke(1.dp, MaterialTheme.colorScheme.secondary.copy(alpha = 0.6f)),
         colors = androidx.compose.material3.ButtonDefaults.outlinedButtonColors(contentColor = MaterialTheme.colorScheme.onSurface),
         content = content,
     )
@@ -344,46 +423,46 @@ fun QuoteBlock(text: String, modifier: Modifier = Modifier) {
 /** Plain-language copy for each metric, kept in one place. */
 object Metrics {
     const val READINESS =
-        "Your Ready-to-Train score (0–100) estimates how primed your body is for hard work " +
+        "Your Ready-to-Train score (0-100) estimates how primed your body is for hard work " +
         "*today*. It blends three things pulled each morning:\n\n" +
-        "• Wellness — your own check-in (energy, soreness, sleep).\n" +
-        "• HRV change — heart-rate variability vs your baseline; a big drop signals stress or " +
+        "• Wellness: your own check-in (energy, soreness, sleep).\n" +
+        "• HRV change: heart-rate variability vs your baseline; a big drop signals stress or " +
         "incomplete recovery.\n" +
-        "• Resting-HR change — an elevated resting heart rate points to fatigue or illness.\n\n" +
-        "Green (≈67+) = go hard if planned. Amber (≈34–66) = train, but ease off. " +
+        "• Resting-HR change: an elevated resting heart rate points to fatigue or illness.\n\n" +
+        "Green (≈67+) = go hard if planned. Amber (≈34-66) = train, but ease off. " +
         "Red (≈<34) = recover; the plan will pull intensity back.\n\n" +
-        "It's a guide, not a verdict — how you actually feel still wins."
+        "It's a guide, not a verdict, how you actually feel still wins."
 
     const val RECOVERY =
-        "Recovery (0–100) is how well your body has bounced back, read from overnight signals:\n\n" +
-        "• HRV vs baseline — heart-rate variability; higher than your norm = well recovered, a " +
+        "Recovery (0-100) is how well your body has bounced back, read from overnight signals:\n\n" +
+        "• HRV vs baseline: heart-rate variability; higher than your norm = well recovered, a " +
         "sharp drop = stress or incomplete recovery.\n" +
-        "• Resting HR vs baseline — an elevated resting heart rate points to fatigue or illness.\n" +
-        "• Sleep — last night's duration vs your personal average and a ~7.5h target.\n" +
-        "• Wellness — your subjective check-in (energy, soreness, sleep quality).\n\n" +
+        "• Resting HR vs baseline: an elevated resting heart rate points to fatigue or illness.\n" +
+        "• Sleep: last night's duration vs your personal average and a ~7.5h target.\n" +
+        "• Wellness: your subjective check-in (energy, soreness, sleep quality).\n\n" +
         "Green = recovered, push if planned. Amber = moderate, keep quality light. Red = " +
         "under-recovered, and the AI will pull intensity and volume back when it builds your session."
 
     const val WELLNESS =
         "Wellness is the average of your daily check-in: energy, soreness, and sleep quality, " +
-        "each rated 1–5. It feeds the readiness score and nudges the AI to back off when you're " +
-        "run-down. Log it honestly — garbage in, garbage out."
+        "each rated 1-5. It feeds the readiness score and nudges the AI to back off when you're " +
+        "run-down. Log it honestly, garbage in, garbage out."
 
     const val TSS =
-        "TSS (Training Stress Score) is one number for how much a session taxes you — combining " +
+        "TSS (Training Stress Score) is one number for how much a session taxes you, combining " +
         "duration and intensity. A steady easy hour ≈ 50; a hard hour ≈ 100+. It's how the planner " +
         "balances your week and tracks load, so a short brutal interval session and a long easy run " +
         "can be compared fairly."
 
     const val FITNESS =
         "These come from Intervals.icu and model your training load over time:\n\n" +
-        "• Fitness (CTL) — your 42-day rolling average load. Climbs slowly as you train " +
+        "• Fitness (CTL): your 42-day rolling average load. Climbs slowly as you train " +
         "consistently; this is your engine.\n" +
-        "• Fatigue (ATL) — your 7-day average load. Rises and falls fast with recent hard days.\n" +
+        "• Fatigue (ATL): your 7-day average load. Rises and falls fast with recent hard days.\n" +
         "• Form (TSB) = Fitness − Fatigue. Positive = fresh/tapered; deeply negative = buried in " +
         "fatigue. Race on slightly positive form.\n" +
-        "• Ramp — how fast Fitness is rising. Too fast is an injury risk; the load guardrail watches this.\n\n" +
-        "The curve shows Fitness vs Fatigue over recent weeks — you want Fitness trending up with " +
+        "• Ramp: how fast Fitness is rising. Too fast is an injury risk; the load guardrail watches this.\n\n" +
+        "The curve shows Fitness vs Fatigue over recent weeks, you want Fitness trending up with " +
         "Fatigue swinging beneath it."
 
     const val WEEK_CARD =

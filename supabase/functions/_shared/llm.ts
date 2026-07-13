@@ -11,6 +11,9 @@
 // ============================================================================
 
 import type { LlmProvider, LlmResult } from "./types.ts";
+import { logger } from "./log.ts";
+
+const log = logger("llm");
 
 export interface ProviderSpec {
   label: string;
@@ -20,6 +23,16 @@ export interface ProviderSpec {
   outputPer1M: number;
   getFreeKeyUrl: string;
 }
+
+// Per-request deadline for a (non-streaming) provider call. Without it a hung
+// provider runs to the platform wall-clock, and the agentic coach loop compounds
+// that across up to ~12 sequential calls. AbortSignal.timeout auto-cleans.
+const LLM_TIMEOUT_MS = 60_000;
+
+// COST-SAFETY INVARIANT: every adapter below hardcodes 2,500 max output tokens
+// (and llm_native_tools.ts does the same). The hosted-AI quota math in
+// _shared/quota.ts assumes this ceiling; do not raise it without re-running
+// the per-call cost estimates in docs/PLAY_RELEASE.md.
 
 export const PROVIDERS: Record<LlmProvider, ProviderSpec> = {
   anthropic: {
@@ -57,18 +70,88 @@ export const PROVIDERS: Record<LlmProvider, ProviderSpec> = {
     outputPer1M: 0.79,
     getFreeKeyUrl: "https://console.groq.com/keys",
   },
+  openrouter: {
+    // OpenAI-compatible aggregator at a fixed endpoint. Default model is the
+    // auto-router; the user can override with any OpenRouter model id. Pricing
+    // varies per underlying model, so cost shows ~$0 unless a price override is
+    // set (customPriceFromProfile also covers openrouter).
+    label: "OpenRouter",
+    model: "openrouter/auto",
+    inputPer1M: 0,
+    outputPer1M: 0,
+    getFreeKeyUrl: "https://openrouter.ai/keys",
+  },
+  custom: {
+    // User-supplied OpenAI-compatible endpoint. No fixed model (the user types
+    // it) and no pricing (self-hosted/unknown → cost shows ~$0).
+    label: "Custom (OpenAI-compatible)",
+    model: "",
+    inputPer1M: 0,
+    outputPer1M: 0,
+    getFreeKeyUrl: "",
+  },
 };
+
+// Per-1M-token prices to use instead of the provider's defaults — set for the
+// custom (BYO) provider, which has no fixed pricing.
+export interface PriceOverride {
+  inputPer1M: number;
+  outputPer1M: number;
+}
+
+// Per-model prices for models that differ from their provider's default. Only
+// covers the Anthropic family — the documented "strong model opt-in" — so a user
+// who selects, say, Haiku or Sonnet instead of the default Opus isn't billed at
+// Opus rates. Other providers fall back to the provider default. Source:
+// Anthropic pricing, USD per 1M tokens.
+const MODEL_PRICES: { test: RegExp; inputPer1M: number; outputPer1M: number }[] = [
+  { test: /opus-4/i, inputPer1M: 5.0, outputPer1M: 25.0 },
+  { test: /sonnet-4/i, inputPer1M: 3.0, outputPer1M: 15.0 },
+  { test: /haiku-4/i, inputPer1M: 1.0, outputPer1M: 5.0 },
+  { test: /fable-5|mythos-5/i, inputPer1M: 10.0, outputPer1M: 50.0 },
+];
+function priceForModel(model: string | undefined): PriceOverride | undefined {
+  if (!model) return undefined;
+  const hit = MODEL_PRICES.find((m) => m.test.test(model));
+  return hit ? { inputPer1M: hit.inputPer1M, outputPer1M: hit.outputPer1M } : undefined;
+}
 
 export function estimateCostUsd(
   provider: LlmProvider,
   promptTokens: number,
   completionTokens: number,
+  override?: PriceOverride,
+  model?: string,
 ): number {
   const p = PROVIDERS[provider];
+  // Precedence: explicit user override (custom/openrouter BYO pricing) →
+  // model-specific price (non-default model on a built-in provider) → provider
+  // default. Without the middle tier a non-default model logged the wrong price.
+  const priced = override ?? priceForModel(model);
+  const inputPer1M = priced?.inputPer1M ?? p.inputPer1M;
+  const outputPer1M = priced?.outputPer1M ?? p.outputPer1M;
   return (
-    (promptTokens / 1_000_000) * p.inputPer1M +
-    (completionTokens / 1_000_000) * p.outputPer1M
+    (promptTokens / 1_000_000) * inputPer1M +
+    (completionTokens / 1_000_000) * outputPer1M
   );
+}
+
+// Build a price override from the user's profile for the providers with no
+// fixed pricing (custom BYO endpoint + OpenRouter, whose cost depends on the
+// chosen model), so their cost isn't hardcoded $0. Returns undefined for the
+// built-in providers (known pricing) or when the user hasn't entered prices.
+export function customPriceFromProfile(
+  provider: LlmProvider | string,
+  profile:
+    | { llm_custom_input_per_1m?: number | null; llm_custom_output_per_1m?: number | null }
+    | null
+    | undefined,
+): PriceOverride | undefined {
+  if ((provider !== "custom" && provider !== "openrouter") || !profile) return undefined;
+  const inp = profile.llm_custom_input_per_1m;
+  const out = profile.llm_custom_output_per_1m;
+  if (typeof inp !== "number" && typeof out !== "number") return undefined;
+  return { inputPer1M: inp ?? 0, outputPer1M: out ?? 0 };
 }
 
 // Rough token estimate when a provider doesn't return usage (~4 chars/token).
@@ -91,6 +174,23 @@ interface GenArgs {
   // JSON-object response mode. Defaults to true (workout generation); pass
   // false for free-form coach chat.
   jsonMode?: boolean;
+  // OpenAI-compatible base URL for the "custom" provider (e.g.
+  // http://host:11434/v1). Ignored by the built-in providers.
+  baseUrl?: string;
+  // Sampling temperature. Defaults to 0.6 (conversational). Structured workout
+  // generation passes a lower value for less variance in the numbers (TSS/load).
+  // Ignored by models that reject the parameter (Opus 4.7+, gpt-5/o-series).
+  temperature?: number;
+  // Reproducible mode for regression/eval runs: forces temperature 0 and passes
+  // a fixed `seed` where the provider supports it (OpenAI-compatible).
+  deterministic?: boolean;
+  seed?: number;
+}
+
+// Resolve the effective temperature for a call (deterministic → 0, else 0.6).
+function tempOf(args: GenArgs): number {
+  if (args.deterministic) return 0;
+  return typeof args.temperature === "number" ? args.temperature : 0.6;
 }
 
 function turns(args: GenArgs): ChatMessage[] {
@@ -110,6 +210,14 @@ export function openAiModernParams(provider: LlmProvider, model: string): boolea
   return provider === "openai" && /^(gpt-5|o\d|chatgpt)/i.test(model);
 }
 
+// Optional ranking/attribution headers OpenRouter uses for its app leaderboard.
+// Purely informational — calls work without them; ignored by every other base.
+function openRouterHeaders(provider: LlmProvider): Record<string, string> {
+  return provider === "openrouter"
+    ? { "HTTP-Referer": "https://github.com/workout-maker", "X-Title": "Workout Maker" }
+    : {};
+}
+
 async function openAiCompatible(
   provider: LlmProvider,
   baseUrl: string,
@@ -126,9 +234,11 @@ async function openAiCompatible(
   if (openAiModernParams(provider, model)) {
     body.max_completion_tokens = 2500;
   } else {
-    body.temperature = 0.6;
+    body.temperature = tempOf(args);
     body.max_tokens = 2500;
   }
+  // Reproducible sampling where supported (OpenAI/DeepSeek/Groq honor `seed`).
+  if (args.deterministic && typeof args.seed === "number") body.seed = args.seed;
   if (args.jsonMode !== false) body.response_format = { type: "json_object" };
 
   const res = await fetch(`${baseUrl}/chat/completions`, {
@@ -136,8 +246,10 @@ async function openAiCompatible(
     headers: {
       "Content-Type": "application/json",
       Authorization: `Bearer ${args.apiKey}`,
+      ...openRouterHeaders(provider),
     },
     body: JSON.stringify(body),
+    signal: AbortSignal.timeout(LLM_TIMEOUT_MS),
   });
 
   if (!res.ok) {
@@ -172,7 +284,7 @@ async function anthropic(args: GenArgs): Promise<LlmResult> {
     system: args.systemPrompt,
     messages: turns(args),
   };
-  if (anthropicAcceptsTemperature(model)) body.temperature = 0.6;
+  if (anthropicAcceptsTemperature(model)) body.temperature = tempOf(args);
   const res = await fetch("https://api.anthropic.com/v1/messages", {
     method: "POST",
     headers: {
@@ -181,6 +293,7 @@ async function anthropic(args: GenArgs): Promise<LlmResult> {
       "anthropic-version": "2023-06-01",
     },
     body: JSON.stringify(body),
+    signal: AbortSignal.timeout(LLM_TIMEOUT_MS),
   });
   if (!res.ok) {
     throw new Error(`anthropic HTTP ${res.status}: ${await res.text()}`);
@@ -206,7 +319,7 @@ async function gemini(args: GenArgs): Promise<LlmResult> {
   const url =
     `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${args.apiKey}`;
   const generationConfig: Record<string, unknown> = {
-    temperature: 0.6,
+    temperature: tempOf(args),
     maxOutputTokens: 2500,
   };
   if (args.jsonMode !== false) generationConfig.responseMimeType = "application/json";
@@ -221,6 +334,7 @@ async function gemini(args: GenArgs): Promise<LlmResult> {
       })),
       generationConfig,
     }),
+    signal: AbortSignal.timeout(LLM_TIMEOUT_MS),
   });
   if (!res.ok) {
     throw new Error(`gemini HTTP ${res.status}: ${await res.text()}`);
@@ -266,9 +380,12 @@ export async function llmStream(
   const model = args.model ?? PROVIDERS[provider].model;
   let full = "";
 
-  if (provider === "openai" || provider === "deepseek" || provider === "groq") {
+  if (provider === "openai" || provider === "deepseek" || provider === "groq" || provider === "openrouter" || provider === "custom") {
+    if (provider === "custom" && !args.baseUrl) throw new Error("custom provider: base URL not configured");
     const base = provider === "openai" ? "https://api.openai.com/v1"
       : provider === "deepseek" ? "https://api.deepseek.com/v1"
+      : provider === "openrouter" ? "https://openrouter.ai/api/v1"
+      : provider === "custom" ? args.baseUrl!
       : "https://api.groq.com/openai/v1";
     const body: Record<string, unknown> = {
       model,
@@ -283,7 +400,7 @@ export async function llmStream(
     }
     const res = await fetch(`${base}/chat/completions`, {
       method: "POST",
-      headers: { "Content-Type": "application/json", Authorization: `Bearer ${args.apiKey}` },
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${args.apiKey}`, ...openRouterHeaders(provider) },
       body: JSON.stringify(body),
     });
     if (!res.ok) throw new Error(`${provider} HTTP ${res.status}: ${await res.text()}`);
@@ -347,20 +464,36 @@ export async function llmGenerate(
   provider: LlmProvider,
   args: GenArgs,
 ): Promise<LlmResult> {
-  switch (provider) {
-    case "openai":
-      return openAiCompatible("openai", "https://api.openai.com/v1", args);
-    case "deepseek":
-      return openAiCompatible("deepseek", "https://api.deepseek.com/v1", args);
-    case "groq":
-      return openAiCompatible("groq", "https://api.groq.com/openai/v1", args);
-    case "anthropic":
-      return anthropic(args);
-    case "gemini":
-      return gemini(args);
-    default:
-      throw new Error(`unknown provider: ${provider}`);
-  }
+  const dispatch = (): Promise<LlmResult> => {
+    switch (provider) {
+      case "openai":
+        return openAiCompatible("openai", "https://api.openai.com/v1", args);
+      case "deepseek":
+        return openAiCompatible("deepseek", "https://api.deepseek.com/v1", args);
+      case "groq":
+        return openAiCompatible("groq", "https://api.groq.com/openai/v1", args);
+      case "openrouter":
+        return openAiCompatible("openrouter", "https://openrouter.ai/api/v1", args);
+      case "anthropic":
+        return anthropic(args);
+      case "gemini":
+        return gemini(args);
+      case "custom":
+        if (!args.baseUrl) throw new Error("custom provider: base URL not configured");
+        if (!args.model) throw new Error("custom provider: model id not configured");
+        return openAiCompatible("custom", args.baseUrl, args);
+      default:
+        throw new Error(`unknown provider: ${provider}`);
+    }
+  };
+  // One structured line per call: provider, model, latency, token usage (or the
+  // error body on failure) — this is the LLM path's only observability surface.
+  return log.time("generate", dispatch(), (r) => ({
+    provider,
+    model: r.model || args.model,
+    promptTokens: r.promptTokens,
+    completionTokens: r.completionTokens,
+  }));
 }
 
 export interface FallbackKeyResolver {
@@ -377,6 +510,12 @@ export interface ModelResolver {
   (provider: LlmProvider): string | undefined;
 }
 
+// Per-provider base URL — only meaningful for the "custom" provider, which has
+// no fixed endpoint. undefined → not configured.
+export interface BaseUrlResolver {
+  (provider: LlmProvider): Promise<string | null>;
+}
+
 // Walk [active, ...fallback] in order, skipping providers with no key, until
 // one succeeds. Throws with the full attempt log if all fail.
 export async function llmGenerateWithFallback(
@@ -384,6 +523,7 @@ export async function llmGenerateWithFallback(
   args: Omit<GenArgs, "apiKey">,
   resolveKey: FallbackKeyResolver,
   resolveModel?: ModelResolver,
+  resolveBaseUrl?: BaseUrlResolver,
 ): Promise<FallbackOutcome> {
   const attempts: { provider: LlmProvider; error?: string }[] = [];
   const seen = new Set<LlmProvider>();
@@ -399,7 +539,9 @@ export async function llmGenerateWithFallback(
     }
     try {
       const model = args.model ?? resolveModel?.(provider);
-      const result = await llmGenerate(provider, { ...args, apiKey, model });
+      const baseUrl = args.baseUrl ??
+        (provider === "custom" ? (await resolveBaseUrl?.(provider)) ?? undefined : undefined);
+      const result = await llmGenerate(provider, { ...args, apiKey, model, baseUrl });
       return { ...result, attempts };
     } catch (e) {
       attempts.push({ provider, error: String(e instanceof Error ? e.message : e) });

@@ -6,6 +6,7 @@
 import type { SupabaseClient } from "jsr:@supabase/supabase-js@2";
 
 import { computeRecovery } from "./recovery.ts";
+import { freshnessWord, recoveryWord } from "./prompt.ts";
 
 const DAY = 86400000;
 const iso = (d: number) => new Date(d).toISOString().slice(0, 10);
@@ -92,6 +93,23 @@ export const TOOL_CATALOG: ToolDef[] = [
     description: "Move a planned workout to another date (the watch event moves with it). Identify it by workout_id from get_planned_week, or just by its current date.",
   },
   {
+    name: "set_rest_day", kind: "act", args: "{ date: 'YYYY-MM-DD' }",
+    schema: {
+      type: "object",
+      properties: { date: { type: "string", description: "Day to clear to rest, YYYY-MM-DD" } },
+      required: ["date"],
+    },
+    description: "Turn a day into a rest day, removes any planned session on that date (the watch event is removed too). Use when the athlete needs a day off.",
+  },
+  {
+    name: "make_easier", kind: "act", args: "{ date?: 'YYYY-MM-DD' }",
+    schema: {
+      type: "object",
+      properties: { date: { type: "string", description: "Day to ease off; defaults to today" } },
+    },
+    description: "Regenerate a day's workout noticeably easier, lower intensity and volume, aerobic/recovery focus. Use when the athlete feels rough or wants to back off without skipping entirely.",
+  },
+  {
     name: "set_goal_race", kind: "act", args: "{ name: string, date: 'YYYY-MM-DD', target_pace?: string }",
     schema: {
       type: "object",
@@ -117,16 +135,19 @@ export function nativeToolDefs(): { name: string; description: string; input_sch
 }
 
 export function toolCatalogPrompt(): string {
-  const lines = TOOL_CATALOG.map((t) => `- ${t.name}(${t.args}) — ${t.description}`);
+  const lines = TOOL_CATALOG.map((t) => `- ${t.name}(${t.args}), ${t.description}`);
   return lines.join("\n");
 }
 
 async function callFunction(auth: string, name: string, body: unknown): Promise<unknown> {
   const url = `${Deno.env.get("SUPABASE_URL")}/functions/v1/${name}`;
+  // Generous deadline: these proxy to generate-workout / plan-week, which run
+  // their own LLM calls — but a hung one shouldn't stall the coach turn forever.
   const res = await fetch(url, {
     method: "POST",
     headers: { "Authorization": auth, "Content-Type": "application/json" },
     body: JSON.stringify(body ?? {}),
+    signal: AbortSignal.timeout(120_000),
   });
   const text = await res.text();
   try { return JSON.parse(text); } catch { return { raw: text, status: res.status }; }
@@ -154,7 +175,12 @@ export async function executeTool(
         const load7 = a.filter((r) => (r.date ?? "") >= since7).reduce((s, r) => s + (r.tss ?? 0), 0);
         const load28 = a.reduce((s, r) => s + (r.tss ?? 0), 0);
         const acwr = load28 > 0 ? (load7 / (load28 / 4)).toFixed(2) : "n/a";
-        return JSON.stringify({ ctl: +ctl.toFixed(0), atl: +atl.toFixed(0), tsb: +(ctl - atl).toFixed(0), weekly_tss: Math.round(load7), acwr });
+        return JSON.stringify({
+          freshness: freshnessWord(ctl - atl),
+          ctl: +ctl.toFixed(0), atl: +atl.toFixed(0), tsb: +(ctl - atl).toFixed(0),
+          weekly_tss: Math.round(load7), acwr,
+          note: "Interpret this in plain words, don't read the raw numbers back to the athlete.",
+        });
       }
       case "get_recent_activities": {
         const days = Math.min(60, Math.max(1, Number(args.days) || 14));
@@ -230,9 +256,11 @@ export async function executeTool(
           chrono.map((w) => (w as { resting_hr?: number }).resting_hr).filter(isNum),
         );
         return JSON.stringify({
+          readiness: recoveryWord(rec.band),
           score: rec.score, band: rec.band, summary: rec.summary,
           hrv: rec.hrv ?? null, resting_hr: rec.rhr ?? null, sleep: rec.sleep ?? null,
           wellness_1to5: rec.wellness,
+          note: "Interpret this in plain words, don't read the raw numbers back to the athlete.",
         });
       }
       case "get_execution_analysis": {
@@ -254,7 +282,7 @@ export async function executeTool(
           ...(endu ?? []).map((r) => brief(String(r.type ?? "endurance"), r.date, r.analysis_json as Stored)),
           ...(str ?? []).map((r) => brief("strength", r.date, r.analysis_json as Stored)),
         ].sort((x, y) => y.date.localeCompare(x.date));
-        if (!rows.length) return JSON.stringify({ note: "no analyzed sessions yet — the athlete can analyze a workout from its detail page, or it happens automatically after a sync" });
+        if (!rows.length) return JSON.stringify({ note: "no analyzed sessions yet, the athlete can analyze a workout from its detail page, or it happens automatically after a sync" });
         return JSON.stringify(rows);
       }
       case "move_workout": {
@@ -268,9 +296,32 @@ export async function executeTool(
             .order("created_at", { ascending: false });
           workoutId = (rows ?? []).find((r) => !r.completed)?.id ?? (rows ?? [])[0]?.id ?? null;
         }
-        if (!workoutId) return "error: no workout found — pass workout_id (see get_planned_week) or date";
+        if (!workoutId) return "error: no workout found, pass workout_id (see get_planned_week) or date";
         const r = await callFunction(auth, "move-workout", { workout_id: workoutId, new_date: newDate }) as Record<string, unknown>;
         return JSON.stringify({ ok: !r.error, old_date: r.old_date ?? null, new_date: r.new_date ?? newDate, event_moved: r.event_moved ?? null, error: r.error ?? null });
+      }
+      case "set_rest_day": {
+        const d = String(args.date ?? "");
+        if (!/^\d{4}-\d{2}-\d{2}$/.test(d)) return "error: date (YYYY-MM-DD) is required";
+        // Clear every non-rest planned session that day; delete-workout removes the
+        // watch event too (same path the app's delete uses).
+        const { data: rows } = await admin.from("planned_workouts")
+          .select("id, type").eq("user_id", userId).eq("date", d).neq("type", "rest");
+        let cleared = 0;
+        for (const row of rows ?? []) {
+          await callFunction(auth, "delete-workout", { workout_id: row.id });
+          cleared++;
+        }
+        return JSON.stringify({ ok: true, date: d, cleared });
+      }
+      case "make_easier": {
+        const r = await callFunction(auth, "generate-workout", {
+          date: args.date, type: "auto",
+          request: "Make this day noticeably easier, lower the intensity and volume, keep it aerobic/recovery.",
+          push: true,
+        }) as Record<string, unknown>;
+        const w = r.workout as { title?: string } | undefined;
+        return JSON.stringify({ ok: !!r.workout_id, title: w?.title ?? null, date: args.date ?? "today", error: r.error ?? null });
       }
       case "plan_week": {
         const r = await callFunction(auth, "plan-week", { start_date: args.start_date }) as Record<string, unknown>;

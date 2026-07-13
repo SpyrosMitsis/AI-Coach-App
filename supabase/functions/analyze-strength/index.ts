@@ -10,7 +10,7 @@
 
 import { handleOptions, json } from "../_shared/cors.ts";
 import { adminClient, getUserId } from "../_shared/supabase.ts";
-import { runStrengthAnalysis } from "../_shared/analyze_core.ts";
+import { fetchStrengthHrSeries, runStrengthAnalysis } from "../_shared/analyze_core.ts";
 
 Deno.serve(async (req) => {
   const pre = handleOptions(req);
@@ -34,7 +34,20 @@ Deno.serve(async (req) => {
         .eq("user_id", userId)
         .eq("date", date)
         .maybeSingle();
-      if (cached?.analysis_json) return json(cached.analysis_json);
+      if (cached?.analysis_json) {
+        let a = cached.analysis_json as Record<string, unknown>;
+        // Backfill the HR trace into analyses cached before the chart existed —
+        // cheap (no LLM), so it works even on the auto-display peek path.
+        if (!a.series) {
+          const series = await fetchStrengthHrSeries(admin, userId, date);
+          if (series) {
+            a = { ...a, series };
+            await admin.from("strength_analyses")
+              .update({ analysis_json: a }).eq("user_id", userId).eq("date", date);
+          }
+        }
+        return json(a);
+      }
       if (body.peek === true) return json({ ok: false, not_analyzed: true });
     }
 

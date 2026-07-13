@@ -12,20 +12,20 @@ function friendlyAuthError(message: string): string {
   const m = message.toLowerCase();
   if (m.includes("invalid login credentials")) return "Wrong email or password.";
   if (m.includes("email not confirmed")) {
-    return "Your email isn't confirmed yet — check your inbox for the confirmation link.";
+    return "Your email isn't confirmed yet, check your inbox for the confirmation link.";
   }
   if (m.includes("already registered")) {
-    return "An account with this email already exists — sign in instead.";
+    return "An account with this email already exists, sign in instead.";
   }
-  if (m.includes("password should be")) return "Password is too short — use at least 6 characters.";
+  if (m.includes("password should be")) return "Password is too short, use at least 6 characters.";
   if (m.includes("rate limit") || m.includes("too many")) {
-    return "Too many attempts — wait a minute and try again.";
+    return "Too many attempts, wait a minute and try again.";
   }
   if (m.includes("is invalid") || m.includes("validate email")) {
     return "That doesn't look like a valid email address.";
   }
   if (m.includes("fetch") || m.includes("network")) {
-    return "Can't reach the server — check your connection and try again.";
+    return "Can't reach the server, check your connection and try again.";
   }
   return message;
 }
@@ -59,7 +59,7 @@ export default function LoginPage() {
     // With email confirmation enabled there is no session yet — tell the user
     // what to do instead of silently bouncing them to onboarding.
     if (!data.session) {
-      return setMsg("Almost there — check your inbox and confirm your email, then sign in.");
+      return setMsg("Almost there, check your inbox and confirm your email, then sign in.");
     }
     router.push("/onboarding");
     router.refresh();
@@ -88,7 +88,7 @@ export default function LoginPage() {
     setMsg(
       error
         ? friendlyAuthError(error.message)
-        : "Check your email — we sent you a link to set a new password.",
+        : "Check your email, we sent you a link to set a new password.",
     );
   }
 

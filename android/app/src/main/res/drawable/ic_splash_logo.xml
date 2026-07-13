@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Static splash version of LogoMark (two open arcs + pulse dot). Hardcoded
+     Sage: splash drawables can't read the Compose palette, and sage reads well
+     on the dark splash window for every palette. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+
+    <!-- Outer arc: 300 of 360 degrees, round caps -->
+    <path
+        android:pathData="M 54,24 A 30,30 0 1 1 53.99,24"
+        android:strokeColor="#B6CCB6"
+        android:strokeWidth="5"
+        android:strokeLineCap="round"
+        android:trimPathStart="0.04"
+        android:trimPathEnd="0.87"
+        android:fillColor="#00000000" />
+
+    <!-- Inner arc: shorter sweep, dimmer -->
+    <path
+        android:pathData="M 54,37 A 17,17 0 1 1 53.99,37"
+        android:strokeColor="#8DA38E"
+        android:strokeWidth="4"
+        android:strokeLineCap="round"
+        android:trimPathStart="0.42"
+        android:trimPathEnd="1"
+        android:fillColor="#00000000" />
+
+    <!-- Pulse dot -->
+    <path
+        android:pathData="M 54,54 m -5,0 a 5,5 0 1 1 10,0 a 5,5 0 1 1 -10,0"
+        android:fillColor="#B6CCB6" />
+</vector>

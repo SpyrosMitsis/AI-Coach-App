@@ -13,6 +13,13 @@ export interface IntervalsAthlete {
   id: string;
   name: string;
   email?: string;
+  // Demographics maintained in the athlete's Intervals.icu profile — reused by
+  // the AI coach so the user never re-enters them here.
+  sex?: string | null; // "M" | "F"
+  icu_date_of_birth?: string | null; // "YYYY-MM-DD"
+  weight?: number | null; // kg
+  icu_weight?: number | null; // kg
+  height?: number | null; // metres (height_units only affects display)
 }
 
 export interface WellnessRow {
@@ -109,7 +116,7 @@ export function runHrZones(athlete: IntervalsAthleteFull): HrZone[] {
 
 // Speed (m/s) → "m:ss/km" pace string.
 export function paceFromMs(ms: number): string {
-  if (!ms || ms <= 0) return "—";
+  if (!ms || ms <= 0) return "-";
   const secPerKm = 1000 / ms;
   const m = Math.floor(secPerKm / 60);
   const s = Math.round(secPerKm % 60);
@@ -122,7 +129,7 @@ export interface PaceZone { name: string; pace: string }
 export function runPaceZones(athlete: IntervalsAthleteFull): { thresholdPace: string; zones: PaceZone[] } {
   const run = runSportSettings(athlete);
   const tp = run?.threshold_pace;
-  if (!tp) return { thresholdPace: "—", zones: [] };
+  if (!tp) return { thresholdPace: "-", zones: [] };
   const pcts = run?.pace_zones ?? [];
   const names = run?.pace_zone_names ?? [];
   const zones: PaceZone[] = pcts.map((pct, i) => ({
@@ -150,6 +157,60 @@ export function latestWellnessSubjective(wellness: WellnessRow[]): {
     restingHR: pick("restingHR"), hrv: pick("hrv"), vo2max: pick("vo2max"),
     weight: pick("weight"),
   };
+}
+
+/** Demographics from the Intervals.icu profile, sanity-bounded. Weight prefers
+ *  the latest wellness entry (scale sync) over the static profile value. */
+export function athleteDemographics(
+  athlete: IntervalsAthlete,
+  latestWeightKg?: number,
+): Demographics {
+  const out: Demographics = {};
+  if (athlete.sex === "M") out.sex = "male";
+  else if (athlete.sex === "F") out.sex = "female";
+  const dob = athlete.icu_date_of_birth;
+  if (dob && /^\d{4}-\d{2}-\d{2}/.test(dob)) {
+    const age = Math.floor((Date.now() - new Date(dob).getTime()) / (365.25 * 86_400_000));
+    if (age >= 10 && age <= 100) out.age = age;
+  }
+  const w = latestWeightKg ?? athlete.icu_weight ?? athlete.weight;
+  if (typeof w === "number" && w > 25 && w < 300) out.weightKg = Math.round(w * 10) / 10;
+  // Height is metres in the API regardless of the display unit; old accounts
+  // may carry cm, so treat anything ≥3 as already-cm.
+  const h = athlete.height;
+  if (typeof h === "number" && h > 0) out.heightCm = Math.round(h < 3 ? h * 100 : h);
+  return out;
+}
+
+export interface Demographics { sex?: string; age?: number; weightKg?: number; heightCm?: number }
+
+/** Manual overrides from the app's Settings → About you (onboarding JSON).
+ *  Any value set there wins over the Intervals.icu profile. */
+export interface ManualDemographics {
+  sex?: string | null;
+  birth_year?: number | null;
+  weight_kg?: number | null;
+  height_cm?: number | null;
+}
+
+export function mergeDemographics(
+  fromIntervals: Demographics,
+  manual: ManualDemographics | null | undefined,
+): Demographics {
+  const out = { ...fromIntervals };
+  if (!manual) return out;
+  if (manual.sex === "male" || manual.sex === "female") out.sex = manual.sex;
+  if (typeof manual.birth_year === "number") {
+    const age = new Date().getFullYear() - manual.birth_year;
+    if (age >= 10 && age <= 100) out.age = age;
+  }
+  if (typeof manual.weight_kg === "number" && manual.weight_kg > 25 && manual.weight_kg < 300) {
+    out.weightKg = manual.weight_kg;
+  }
+  if (typeof manual.height_cm === "number" && manual.height_cm > 100 && manual.height_cm < 250) {
+    out.heightCm = manual.height_cm;
+  }
+  return out;
 }
 
 export function isoDaysAgo(days: number): string {

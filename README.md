@@ -8,6 +8,9 @@ and a **Kotlin / Jetpack Compose Android app**.
 Everything runs on **free tiers, forever** — you bring your own LLM and
 Intervals.icu keys; there are no platform-level API costs.
 
+Workout Maker is **free software** ([AGPL-3.0](LICENSE)). Run it yourself end to end —
+the full walkthrough lives in [`docs/SELF_HOSTING.md`](docs/SELF_HOSTING.md).
+
 ```
 ┌────────────┐     ┌───────────────────────────┐     ┌──────────────┐
 │  Web (PWA) │     │        Supabase           │     │ Android (APK)│
@@ -74,6 +77,10 @@ Studio: http://localhost:54323 · API: http://localhost:54321
 Seeded login: **athlete@example.com / password123**
 
 ### Deploy to the free cloud tier
+
+(Condensed — the step-by-step version with cron setup, auth hardening, and key
+rotation is in [`docs/SELF_HOSTING.md`](docs/SELF_HOSTING.md).)
+
 ```bash
 supabase login
 supabase link --project-ref YOUR-PROJECT-REF
@@ -120,6 +127,11 @@ cd supabase/functions && deno test _shared/
 ---
 
 ## 2. Web app → Vercel (one command)
+
+> **Status:** functional companion, a step behind the Android app in visual polish.
+> It's the desktop/PWA window into the same backend (dashboard, calendar, coach,
+> strength-log viewer) and is where synced strength data is read. Bringing its design
+> in line with the Android app is on the roadmap; issues and PRs for it are welcome.
 
 ```bash
 cd web
@@ -190,3 +202,15 @@ order your fallback chain however you like.
 - **RLS** on every table — users only ever see their own rows.
 - Secrets encrypted with pgcrypto; `ENCRYPTION_KEY` is an Edge Function secret.
 - Intervals.icu + LLM keys are used **server-side only** inside Edge Functions.
+
+## License & contributing
+
+Workout Maker is licensed under the **GNU Affero General Public License v3.0**
+([LICENSE](LICENSE)). In short: use, study, modify, and share it freely — but if you
+distribute it or run a modified version as a network service, you must make your
+source available under the same license.
+
+Issues and pull requests are welcome. By contributing you agree to license your work
+under AGPL-3.0. Keep personal values (project refs, device serials, API keys) out of
+tracked files — machine-local config belongs in `scripts/dev.local.sh`,
+`android/local.properties`, and `supabase/functions/.env`, all gitignored.

@@ -71,7 +71,7 @@ import com.workoutmaker.app.ui.components.ScreenScaffold
 import com.workoutmaker.app.ui.components.SectionCard
 import com.workoutmaker.app.ui.components.SectionLabel
 import com.workoutmaker.app.ui.theme.BandRed
-import com.workoutmaker.app.ui.theme.Moss
+import com.workoutmaker.app.ui.theme.mossAccent
 import com.workoutmaker.app.ui.theme.Sage
 import com.workoutmaker.app.ui.theme.Sand
 import dagger.hilt.android.lifecycle.HiltViewModel
@@ -123,7 +123,7 @@ internal fun WeekSummaryCard(
         }
 
         if (sessions > 0) {
-            val adhColor = if (adherencePct >= 80) Sage else if (adherencePct >= 50) Sand else BandRed
+            val adhColor = if (adherencePct >= 80) MaterialTheme.colorScheme.primary else if (adherencePct >= 50) MaterialTheme.colorScheme.secondary else MaterialTheme.colorScheme.error
             Row(Modifier.fillMaxWidth().padding(top = 4.dp), verticalAlignment = Alignment.CenterVertically) {
                 Box(Modifier.weight(1f).height(8.dp).clip(RoundedCornerShape(4.dp))
                     .background(MaterialTheme.colorScheme.surfaceContainerHigh)) {
@@ -139,14 +139,14 @@ internal fun WeekSummaryCard(
             Row(
                 Modifier.fillMaxWidth().height(10.dp).clip(RoundedCornerShape(5.dp)),
             ) {
-                if (easy > 0) Box(Modifier.weight(easy.toFloat()).fillMaxHeight().background(Sage))
-                if (moderate > 0) Box(Modifier.weight(moderate.toFloat()).fillMaxHeight().background(Sand))
-                if (hard > 0) Box(Modifier.weight(hard.toFloat()).fillMaxHeight().background(Moss))
+                if (easy > 0) Box(Modifier.weight(easy.toFloat()).fillMaxHeight().background(MaterialTheme.colorScheme.primary))
+                if (moderate > 0) Box(Modifier.weight(moderate.toFloat()).fillMaxHeight().background(MaterialTheme.colorScheme.secondary))
+                if (hard > 0) Box(Modifier.weight(hard.toFloat()).fillMaxHeight().background(mossAccent()))
             }
             Text(
                 "$easyPct% easy/aerobic · target ~80%",
                 style = MaterialTheme.typography.labelSmall,
-                color = if (easyPct >= 75) Sage else MaterialTheme.colorScheme.onSurfaceVariant,
+                color = if (easyPct >= 75) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
             )
         }
 
@@ -187,7 +187,7 @@ internal fun WeekSummaryCard(
 @Composable
 internal fun WeekStat(label: String, value: String) {
     Column(horizontalAlignment = Alignment.CenterHorizontally) {
-        Text(value, style = MaterialTheme.typography.titleLarge, color = Sage)
+        Text(value, style = MaterialTheme.typography.titleLarge, color = MaterialTheme.colorScheme.primary)
         Text(label, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
     }
 }
@@ -278,18 +278,18 @@ internal fun DayCell(
                 sessions.take(3).forEach { s ->
                     Box(Modifier.size(5.dp).background(typeColor(s.type), CircleShape))
                 }
-                if (hasStrength) Box(Modifier.size(5.dp).background(Sand, CircleShape))
+                if (hasStrength) Box(Modifier.size(5.dp).background(MaterialTheme.colorScheme.secondary, CircleShape))
                 // A completed Intervals activity — hollow ring to read as "actually done".
                 if (hasActivity) Box(
                     Modifier.size(5.dp).clip(CircleShape)
-                        .border(1.2.dp, if (isSelected) fg else Sage, CircleShape),
+                        .border(1.2.dp, if (isSelected) fg else MaterialTheme.colorScheme.primary, CircleShape),
                 )
             }
         }
     }
 }
 
-internal fun fmtPaceSec(sec: Int): String = "%d:%02d".format(sec / 60, sec % 60)
+internal fun fmtPaceSec(sec: Int): String = com.workoutmaker.app.ui.components.fmtPace(sec)
 
 internal fun activityMeta(act: CompletedActivity): List<String> = buildList {
     act.distanceKm?.let { if (it > 0) add("%.1f km".format(it)) }
@@ -304,7 +304,7 @@ internal fun activityMeta(act: CompletedActivity): List<String> = buildList {
 internal fun ActivityCard(act: CompletedActivity, planned: PlannedWorkout?, onClick: () -> Unit) {
     SectionCard(Modifier.clickable { onClick() }) {
         Row(verticalAlignment = Alignment.CenterVertically) {
-            SectionLabel("Done · ${act.type ?: "activity"}", color = Sage)
+            SectionLabel("Done · ${act.type ?: "activity"}", color = MaterialTheme.colorScheme.primary)
             Spacer(Modifier.weight(1f))
             Icon(Icons.Filled.ChevronRight, "Open details", tint = MaterialTheme.colorScheme.onSurfaceVariant)
         }
@@ -314,7 +314,7 @@ internal fun ActivityCard(act: CompletedActivity, planned: PlannedWorkout?, onCl
         // Hint when this isn't what was on the plan that day.
         planned?.let { p ->
             if (p.type != "rest" && !p.completed && !looksLike(p.type, act.type)) {
-                Text("Off-plan — ${p.type} was scheduled", style = MaterialTheme.typography.labelSmall, color = Sand)
+                Text("Off-plan, ${p.type} was scheduled", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.secondary)
             }
         }
     }
@@ -325,7 +325,8 @@ internal fun looksLike(plannedType: String, actualType: String?): Boolean {
     return when (plannedType.lowercase()) {
         "run" -> a.contains("run") || a.contains("walk")
         "ride" -> a.contains("ride") || a.contains("bike") || a.contains("cycl")
+        "swim" -> a.contains("swim")
         "strength" -> a.contains("weight") || a.contains("strength") || a.contains("workout") || a.contains("gym")
-        else -> a.isNotEmpty()
+        else -> false
     }
 }

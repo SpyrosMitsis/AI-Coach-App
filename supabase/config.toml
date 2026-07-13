@@ -22,14 +22,20 @@ port = 54323
 
 [auth]
 enabled = true
-site_url = "http://localhost:3000"
-additional_redirect_urls = ["http://localhost:3000/auth/callback"]
+site_url = "https://ai-coach-app-mu.vercel.app"
+additional_redirect_urls = [
+	"https://ai-coach-app-mu.vercel.app/auth/callback",
+	"https://ai-coach-app-mu.vercel.app/reset-password"
+	]
 jwt_expiry = 3600
 enable_signup = true
 
 [auth.email]
 enable_signup = true
-enable_confirmations = false   # local dev: skip email confirmation
+# Mirrors production (the real switch lives in the Supabase dashboard — this
+# file only affects local dev). Local confirmation mails land in Inbucket:
+# http://localhost:54324
+enable_confirmations = true
 
 [realtime]
 enabled = true
@@ -64,3 +70,10 @@ verify_jwt = true
 verify_jwt = true
 [functions.delete-workout]
 verify_jwt = true
+[functions.delete-account]
+verify_jwt = true
+[functions.verify-purchase]
+verify_jwt = true
+# Pub/Sub push can't send a Supabase JWT; auth is the ?secret= in the endpoint URL.
+[functions.play-rtdn]
+verify_jwt = false

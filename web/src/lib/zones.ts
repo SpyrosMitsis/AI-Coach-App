@@ -58,7 +58,7 @@ export function paceZonesFromThreshold(thresholdSecPerKm: number): PaceZone[] {
   return PACE_BANDS.map(([name, fastM, slowM]) => {
     const fastSec = Math.round(thresholdSecPerKm * fastM);
     const slowSec = Math.round(thresholdSecPerKm * slowM);
-    return { name, fastSec, slowSec, range: `${formatPace(fastSec)}–${formatPace(slowSec)} /km` };
+    return { name, fastSec, slowSec, range: `${formatPace(fastSec)}-${formatPace(slowSec)} /km` };
   });
 }
 
@@ -78,6 +78,6 @@ export function powerZonesFromFtp(ftp: number): PowerZone[] {
     const max = i < POWER_BANDS.length - 1
       ? Math.round(POWER_BANDS[i + 1][1] * ftp) - 1
       : Math.round(1.5 * ftp);
-    return { name, min, max, range: `${min}–${max} W` };
+    return { name, min, max, range: `${min}-${max} W` };
   });
 }

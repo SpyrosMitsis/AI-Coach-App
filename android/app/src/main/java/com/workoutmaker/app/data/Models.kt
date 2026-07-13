@@ -10,7 +10,14 @@ enum class LlmProvider(val label: String, val model: String, val freeKeyUrl: Str
     @SerialName("deepseek")  DEEPSEEK("DeepSeek", "deepseek-chat", "https://platform.deepseek.com/api_keys", false),
     @SerialName("openai")    OPENAI("OpenAI", "gpt-5-mini", "https://platform.openai.com/api-keys", false),
     @SerialName("gemini")    GEMINI("Google Gemini", "gemini-2.5-flash", "https://aistudio.google.com/app/apikey", true),
-    @SerialName("groq")      GROQ("Groq", "llama-3.3-70b-versatile", "https://console.groq.com/keys", true);
+    @SerialName("groq")      GROQ("Groq", "llama-3.3-70b-versatile", "https://console.groq.com/keys", true),
+    // OpenRouter — one key, hundreds of models behind a fixed OpenAI-compatible
+    // endpoint. Default model auto-routes; pick any model id in Settings.
+    @SerialName("openrouter") OPENROUTER("OpenRouter", "openrouter/auto", "https://openrouter.ai/keys", false),
+    // Bring-your-own OpenAI-compatible endpoint (Ollama / LM Studio / vLLM …).
+    // No fixed model or free-key link — the user supplies a base URL, model id,
+    // and key in Settings.
+    @SerialName("custom")    CUSTOM("Custom (OpenAI-compatible)", "", "", false);
 
     val key: String get() = name.lowercase()
 }
@@ -72,11 +79,24 @@ data class ReadinessComponents(val wellness: Double, val hrvDelta: Double, val r
 data class Readiness(val score: Int, val band: String, val components: ReadinessComponents)
 
 // Deeper recovery breakdown (HRV/RHR/sleep trends behind the readiness score).
+// `latest`/`hours` are null when today's reading hasn't synced from Intervals —
+// the UI shows that explicitly instead of falling back to yesterday's value.
 @Serializable
-data class RecoveryTrend(val latest: Double, val baseline: Double, val deltaPct: Double)
+data class RecoveryTrend(
+    val latest: Double? = null,
+    val baseline: Double,
+    val deltaPct: Double,
+    // Recent values (oldest→newest) for the inline sparkline next to the trend badge.
+    val series: List<Double> = emptyList(),
+)
 
 @Serializable
-data class RecoverySleep(val hours: Double, val avgHours: Double? = null, val score: Double? = null)
+data class RecoverySleep(val hours: Double? = null, val avgHours: Double? = null, val score: Double? = null)
+
+// One reason behind the readiness score, rendered as a chip. dir = up|down|flat,
+// tone = good|bad|neutral (drives the chip colour).
+@Serializable
+data class RecoveryDriver(val label: String, val dir: String, val tone: String)
 
 @Serializable
 data class Recovery(
@@ -86,6 +106,7 @@ data class Recovery(
     val hrv: RecoveryTrend? = null,
     val rhr: RecoveryTrend? = null,
     val sleep: RecoverySleep? = null,
+    val drivers: List<RecoveryDriver> = emptyList(),
     val summary: String = "",
 )
 
@@ -94,6 +115,45 @@ data class TsbPoint(val date: String, val tsb: Double, val ctl: Double, val atl:
 
 @Serializable
 data class WeeklyLoad(val tss: Int, val target: Int)
+
+@Serializable
+data class SportTss(val sport: String, val tss: Int)
+
+@Serializable
+data class WeekAdherence(val done: Int, val planned: Int, val pct: Int? = null)
+
+@Serializable
+data class WeekLoad(val tss: Int, val target: Int, val prev_tss: Int, val delta_pct: Int? = null)
+
+@Serializable
+data class WeekStandout(val date: String, val sport: String, val tss: Int)
+
+// Deterministic last-7-day recap shown on Home (computed server-side in
+// daily-summary; the coach-voice line comes separately from coach-brief).
+@Serializable
+data class WeekReview(
+    val adherence: WeekAdherence,
+    val load: WeekLoad,
+    val by_sport: List<SportTss> = emptyList(),
+    val sessions: Int = 0,
+    val standout: WeekStandout? = null,
+)
+
+// The coach's proactive daily note (coach-brief edge function).
+@Serializable
+data class CoachBriefResponse(
+    val brief: String? = null,
+    val date: String? = null,
+    val provider: String? = null,
+    val disabled: Boolean = false,
+)
+
+@Serializable
+data class CoachWeekReviewResponse(
+    val review: String? = null,
+    val week_start: String? = null,
+    val provider: String? = null,
+)
 
 @Serializable
 data class GoalProgress(
@@ -108,18 +168,38 @@ data class GoalProgress(
 @Serializable
 data class Vo2Max(val value: Double, val change: Double? = null)
 
+// What this deployment can do. A self-hosted backend without the hosted LLM
+// secrets reports hosted_ai=false and the app never shows Pro UI.
+@Serializable
+data class ServerCapabilities(val hosted_ai: Boolean = false)
+
 @Serializable
 data class DailySummary(
     val date: String,
     val readiness: Readiness,
     val recovery: Recovery? = null,
+    // Most recent date (≤ this summary's date) with any objective recovery signal
+    // synced; null = none in the window. Drives the "last synced" freshness line.
+    val recovery_synced_date: String? = null,
     val vo2max: Vo2Max? = null,
     val today_workout: PlannedWorkout? = null,
     val tsb_sparkline: List<TsbPoint> = emptyList(),
     val weekly_load: WeeklyLoad,
+    val week_review: WeekReview? = null,
     val active_llm_provider: String,
     val goal: GoalProgress? = null,
+    val server: ServerCapabilities? = null,
 )
+
+// Billing state from user_profiles — plan columns are server-written only
+// (verify-purchase / play-rtdn); use_hosted_ai is the user's own toggle.
+data class PlanStatus(
+    val plan: String = "free",
+    val expiresAt: String? = null,
+    val useHostedAi: Boolean = true,
+) {
+    val isPro: Boolean get() = plan == "pro"
+}
 
 @Serializable
 data class GenerateRequest(
@@ -265,11 +345,32 @@ data class CompletedActivity(
     fun num(key: String): Double? =
         (data_json?.get(key) as? kotlinx.serialization.json.JsonPrimitive)?.contentOrNull?.toDoubleOrNull()
 
+    fun numArray(key: String): List<Double>? {
+        val arr = data_json?.get(key) as? kotlinx.serialization.json.JsonArray ?: return null
+        return arr.map { (it as? kotlinx.serialization.json.JsonPrimitive)?.contentOrNull?.toDoubleOrNull() ?: 0.0 }
+    }
+
     val avgPower: Int? get() = num("icu_average_watts")?.toInt() ?: num("average_watts")?.toInt()
     val maxHr: Int? get() = num("max_heartrate")?.toInt()
     val elevationGain: Int? get() = num("total_elevation_gain")?.toInt() ?: num("icu_elevation_gain")?.toInt()
     val calories: Int? get() = num("calories")?.toInt()
     val avgCadence: Int? get() = num("average_cadence")?.toInt()
+    val maxCadence: Int? get() = num("max_cadence")?.toInt()
+
+    // Elapsed (clock) time including pauses — only interesting when it meaningfully
+    // exceeds moving time.
+    val elapsedSeconds: Int? get() = num("elapsed_time")?.toInt()
+    // Max pace from peak speed (m/s → sec/km); ignores GPS spikes under ~0.5 m/s.
+    val maxPaceSecPerKm: Int? get() = num("max_speed")?.let { if (it > 0.5) (1000.0 / it).toInt() else null }
+    // Normalized/weighted power for runs/rides with a power source.
+    val normalizedPower: Int? get() = num("icu_weighted_avg_watts")?.toInt()
+    // Aerobic decoupling (Pa:HR / Pw:HR drift), as a percentage.
+    val decouplingPct: Double? get() = num("icu_decoupling")
+    // Average ambient temperature (°C), when the device recorded it.
+    val avgTempC: Int? get() = num("average_temp")?.toInt()
+    // Seconds spent in each HR zone (Z1..Zn), when HR zones are configured.
+    val hrZoneTimes: List<Int>? get() =
+        numArray("icu_hr_zone_times")?.map { it.toInt() }?.takeIf { secs -> secs.sum() > 0 }
 }
 
 private val kotlinx.serialization.json.JsonPrimitive.contentOrNull: String?
@@ -292,6 +393,8 @@ data class LlmKeyRow(
     val is_valid: Boolean? = null,
     val last_tested_at: String? = null,
     val key_hint: String? = null,
+    // Only set for the custom provider (its OpenAI-compatible endpoint).
+    val base_url: String? = null,
 )
 
 @Serializable
@@ -343,8 +446,11 @@ data class PushResult(val ok: Boolean = false, val intervals_event_id: String? =
 @Serializable
 data class GenerationLogRow(
     val created_at: String? = null,
+    val feature: String? = null,
     val provider: String? = null,
     val model: String? = null,
+    val prompt_tokens: Int = 0,
+    val completion_tokens: Int = 0,
     val parsed_ok: Boolean = false,
     val error: String? = null,
     val estimated_cost_usd: Double = 0.0,
@@ -359,6 +465,8 @@ data class AnalysisSeries(
     val t: List<Double> = emptyList(),
     val pace: List<Double?> = emptyList(),  // sec/km, null while stopped
     val hr: List<Double?> = emptyList(),
+    val cadence: List<Double?> = emptyList(),  // spm/rpm, null when not recorded
+    val power: List<Double?> = emptyList(),    // watts, null when not recorded
 )
 
 @Serializable
@@ -371,7 +479,7 @@ data class AnalysisTarget(
 )
 
 @Serializable
-data class AnalysisSplit(val km: Double, val sec: Int = 0, val avg_hr: Int? = null)
+data class AnalysisSplit(val km: Double, val sec: Int = 0, val avg_hr: Int? = null, val in_band: Boolean? = null)
 
 @Serializable
 data class ActivityAnalysis(
@@ -418,6 +526,8 @@ data class StrengthAnalysis(
     val total_volume_kg: Double? = null,
     val total_sets: Int? = null,
     val watch: StrengthAnalysisWatch? = null,
+    // HR trace from the paired watch recording, when available (for the chart).
+    val series: AnalysisSeries? = null,
     val planned_title: String? = null,
     val error: String? = null,
 )
@@ -433,7 +543,14 @@ data class ModelListResponse(
 )
 
 @Serializable
-data class TestKeyRequest(val provider: String, val apiKey: String, val sampleGeneration: Boolean = false)
+data class TestKeyRequest(
+    val provider: String,
+    val apiKey: String,
+    val sampleGeneration: Boolean = false,
+    // Custom provider only: OpenAI-compatible base URL + model id.
+    val baseUrl: String? = null,
+    val model: String? = null,
+)
 
 @Serializable
 data class TestKeyResponse(
@@ -453,6 +570,16 @@ data class WellnessCheckin(
     // No sleep field: sleep is sourced objectively from the Intervals.icu sleep
     // score (wellness_checkins.sleep_score, mirrored by sync-intervals). The old
     // manual sleep_quality rating has been fully removed.
+)
+
+// A day's recovery signals for the trends screen (subset of wellness_checkins).
+@Serializable
+data class RecoveryHistoryPoint(
+    val date: String,
+    val hrv_rmssd: Double? = null,
+    val resting_hr: Int? = null,
+    val sleep_score: Int? = null,
+    val zepp_sleep_minutes: Int? = null,
 )
 
 // Health Connect metrics upserted onto the day's wellness row.
@@ -522,6 +649,21 @@ data class TrainingProfile(
     val lthr: Int? = null,
     val ftp: Int? = null,
     val threshold_pace_per_km: String? = null,
+    // Preferred strength split (null/"Auto" → let the coach decide per day).
+    val split_style: String? = null,
+    // Sports the athlete actually does — gates which modalities get scheduled.
+    val sports: List<String> = emptyList(),
+    // Opt-in: progressive build weeks + an automatic deload every ~4 weeks.
+    val periodized: Boolean = false,
+    // The coach's proactive daily note on Home. On by default; turn off to avoid
+    // the one-LLM-call-per-day it costs.
+    val briefing: Boolean = true,
+    // Manual demographics — normally read from Intervals.icu; anything set here
+    // OVERRIDES the Intervals value (for when that profile is missing or stale).
+    val sex: String? = null, // "male" | "female"
+    val birth_year: Int? = null,
+    val weight_kg: Int? = null,
+    val height_cm: Int? = null,
 )
 
 @Serializable

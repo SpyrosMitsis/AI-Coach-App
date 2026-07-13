@@ -1,6 +1,5 @@
 package com.workoutmaker.app.data
 
-import com.workoutmaker.app.BuildConfig
 import io.github.jan.supabase.SupabaseClient
 import io.github.jan.supabase.gotrue.auth
 import io.github.jan.supabase.gotrue.providers.builtin.Email
@@ -36,6 +35,7 @@ class WorkoutRepository @Inject constructor(
     private val supabase: SupabaseClient,
     private val cache: CacheDao,
     private val prefs: AppPreferences,
+    private val backend: BackendConfig,
 ) {
     private val json = Json { ignoreUnknownKeys = true; encodeDefaults = true }
 
@@ -46,7 +46,7 @@ class WorkoutRepository @Inject constructor(
 
     // Swallowed errors are still logged so failures aren't invisible in logcat.
     private fun <T> Result<T>.logFailure(op: String): Result<T> =
-        onFailure { android.util.Log.w(TAG, "$op failed", it) }
+        onFailure { com.workoutmaker.app.util.AppLog.w("repo", "$op failed", it) }
 
     suspend fun signIn(email: String, password: String) {
         supabase.auth.signInWith(Email) { this.email = email; this.password = password }
@@ -54,12 +54,22 @@ class WorkoutRepository @Inject constructor(
     }
 
     suspend fun signUp(email: String, password: String) =
-        supabase.auth.signUpWith(Email) { this.email = email; this.password = password }
+        // The confirmation email deep-links back into the app (and signs the
+        // user straight in, so onboarding starts immediately).
+        supabase.auth.signUpWith(Email, redirectUrl = "workoutmaker://auth/confirmed") {
+            this.email = email
+            this.password = password
+        }
 
-    // Sends the Supabase recovery email; the link opens the web app's
-    // /reset-password page where a new password can be set.
+    // Sends the Supabase recovery email; the link deep-links back into the
+    // app, which then shows the set-new-password dialog.
     suspend fun resetPassword(email: String) {
-        supabase.auth.resetPasswordForEmail(email)
+        supabase.auth.resetPasswordForEmail(email, redirectUrl = "workoutmaker://auth/reset")
+    }
+
+    // After a recovery deep link imported a session, this sets the new password.
+    suspend fun updatePassword(newPassword: String) {
+        supabase.auth.updateUser { password = newPassword }
     }
 
     suspend fun signOut() {
@@ -67,7 +77,15 @@ class WorkoutRepository @Inject constructor(
         invalidateProfileCache()
         runCatching { prefs.setOnboardingComplete(false) }
         // Don't leak one account's cached data into the next sign-in.
-        runCatching { cache.clearWorkouts(); cache.clearSummaries() }
+        runCatching { cache.clearWorkouts(); cache.clearSummaries(); cache.clearBriefs() }
+    }
+
+    // Permanent server-side account deletion (Play requirement). The edge
+    // function cascades through every owned row; afterwards the local session
+    // is dead anyway, so clear it like a sign-out.
+    suspend fun deleteAccount() {
+        supabase.functions.invoke("delete-account")
+        runCatching { signOut() }
     }
 
     // --- Profile row cache ----------------------------------------------------
@@ -76,12 +94,23 @@ class WorkoutRepository @Inject constructor(
     // invalidated whenever this client writes the profile.
     @Volatile
     private var profileRowCache: Map<String, JsonElement>? = null
+    @Volatile
+    private var profileRowFetchedAt: Long = 0L
+
+    // TTL because the row also changes server-side (coach memory/soul evolution,
+    // web-app profile edits) — without it those stay invisible until app restart.
+    private val profileTtlMs = 5 * 60_000L
 
     private suspend fun profileRow(): Map<String, JsonElement>? {
-        profileRowCache?.let { return it }
+        profileRowCache
+            ?.takeIf { System.currentTimeMillis() - profileRowFetchedAt < profileTtlMs }
+            ?.let { return it }
         val rows: List<Map<String, JsonElement>> =
             supabase.postgrest.from("user_profiles").select { filter { eq("id", uid()) } }.decodeList()
-        return rows.firstOrNull()?.also { profileRowCache = it }
+        return rows.firstOrNull()?.also {
+            profileRowCache = it
+            profileRowFetchedAt = System.currentTimeMillis()
+        }
     }
 
     private fun invalidateProfileCache() {
@@ -93,9 +122,9 @@ class WorkoutRepository @Inject constructor(
     // start can still show the last dashboard instead of a bare error.
     // Sends the device's LOCAL date — the server's UTC clock is yesterday for
     // tz-ahead users until mid-morning, which made Home show the wrong day.
-    suspend fun dailySummary(): DailySummary {
+    suspend fun dailySummary(date: java.time.LocalDate = java.time.LocalDate.now()): DailySummary {
         val body = kotlinx.serialization.json.buildJsonObject {
-            put("date", JsonPrimitive(java.time.LocalDate.now().toString()))
+            put("date", JsonPrimitive(date.toString()))
         }.toString()
         val s: DailySummary = json.decodeFromString(
             supabase.functions.invoke("daily-summary") { setBody(body) }.body(),
@@ -112,6 +141,42 @@ class WorkoutRepository @Inject constructor(
         return s
     }
 
+    // The coach's proactive daily note. Generated server-side at most once per
+    // calendar day; cached in Room keyed by date so re-opening Home is free and
+    // offline. Returns null when disabled, not yet generated offline, or empty.
+    suspend fun coachBrief(date: String = java.time.LocalDate.now().toString()): String? {
+        runCatching { cache.brief(date) }.getOrNull()?.let { return it.text }
+        val body = kotlinx.serialization.json.buildJsonObject {
+            put("date", JsonPrimitive(date))
+        }.toString()
+        val resp: CoachBriefResponse = runCatching {
+            json.decodeFromString<CoachBriefResponse>(
+                supabase.functions.invoke("coach-brief") { setBody(body) }.body(),
+            )
+        }.logFailure("coachBrief").getOrNull() ?: return null
+        val text = resp.brief?.takeIf { it.isNotBlank() }
+        if (text != null) runCatching { cache.upsertBrief(CachedBrief(date, text)) }.logFailure("coachBrief/cache")
+        return text
+    }
+
+    // The coach's weekly recap, generated once per week (one LLM call) and cached
+    // in Room keyed by the week-start so re-opening Home is free. `weekStart` must
+    // be the Monday of the target week. Null when not generated / empty / offline.
+    suspend fun weekReview(weekStart: String): String? {
+        runCatching { cache.weekReview(weekStart) }.getOrNull()?.let { return it.text }
+        val body = kotlinx.serialization.json.buildJsonObject {
+            put("week_start", JsonPrimitive(weekStart))
+        }.toString()
+        val resp: CoachWeekReviewResponse = runCatching {
+            json.decodeFromString<CoachWeekReviewResponse>(
+                supabase.functions.invoke("coach-week-review") { setBody(body) }.body(),
+            )
+        }.logFailure("weekReview").getOrNull() ?: return null
+        val text = resp.review?.takeIf { it.isNotBlank() }
+        if (text != null) runCatching { cache.upsertWeekReview(CachedWeekReview(weekStart, text)) }.logFailure("weekReview/cache")
+        return text
+    }
+
     // Last successfully-fetched summary + when it was fetched (offline fallback).
     suspend fun cachedDailySummary(): Pair<DailySummary, Long>? = runCatching {
         cache.latestSummary()?.let { row ->
@@ -120,7 +185,9 @@ class WorkoutRepository @Inject constructor(
     }.logFailure("cachedDailySummary").getOrNull()
 
     suspend fun generateWorkout(req: GenerateRequest): String =
-        supabase.functions.invoke("generate-workout") { setBody(json.encodeToString(GenerateRequest.serializer(), req)) }.body()
+        com.workoutmaker.app.util.AppLog.time("gen", "generate-workout date=${req.date} type=${req.type}") {
+            supabase.functions.invoke("generate-workout") { setBody(json.encodeToString(GenerateRequest.serializer(), req)) }.body()
+        }
 
     suspend fun syncIntervals(): String =
         supabase.functions.invoke("sync-intervals").body()
@@ -200,12 +267,18 @@ class WorkoutRepository @Inject constructor(
     // --- Direct table access (RLS-scoped to the signed-in user) --------------
     // Write-through cached so the Calendar still renders the plan offline.
     suspend fun plannedWorkouts(fromDate: String): List<PlannedWorkout> {
+        // Row-tolerant decode: one schema-drifted workout_json must drop that row,
+        // not fail the whole Calendar/Coach plan fetch (the cached path below
+        // already does the same per-row).
         val rows: List<PlannedWorkout> = supabase.postgrest.from("planned_workouts").select {
             filter { gte("date", fromDate) }
             order("date", Order.DESCENDING)
-        }.decodeList()
+        }.decodeList<kotlinx.serialization.json.JsonObject>().mapNotNull { el ->
+            runCatching { json.decodeFromJsonElement(PlannedWorkout.serializer(), el) }
+                .logFailure("plannedWorkouts/row").getOrNull()
+        }
         runCatching {
-            cache.clearWorkouts()
+            cache.clearWorkoutsFrom(fromDate)
             cache.upsertWorkouts(
                 rows.map {
                     CachedWorkout(
@@ -232,6 +305,27 @@ class WorkoutRepository @Inject constructor(
     suspend fun upsertWellness(checkin: WellnessCheckin) {
         supabase.postgrest.from("wellness_checkins").upsert(checkin, onConflict = "user_id,date")
     }
+
+    // Manually-entered HRV / resting HR / sleep for a day the watch didn't sync —
+    // writes only the provided columns onto that day's wellness row (source=manual),
+    // exactly like the Health Connect path so energy/soreness aren't clobbered.
+    suspend fun upsertManualRecovery(date: String, hrvMs: Double?, restingHr: Int?, sleepMinutes: Int?) {
+        val row = WellnessHealthUpdate(
+            date = date,
+            hrv_rmssd = hrvMs,
+            resting_hr = restingHr,
+            zepp_sleep_minutes = sleepMinutes,
+            source = "manual",
+        )
+        supabase.postgrest.from("wellness_checkins").upsert(row, onConflict = "user_id,date")
+    }
+
+    // HRV / resting-HR / sleep history for the recovery-trends screen, oldest→newest.
+    suspend fun recoveryHistory(fromDate: String): List<RecoveryHistoryPoint> =
+        supabase.postgrest.from("wellness_checkins").select {
+            filter { gte("date", fromDate) }
+            order("date", Order.ASCENDING)
+        }.decodeList()
 
     // Today's subjective check-in (energy/soreness/sleep quality), if answered.
     // The row may exist with only Health Connect metrics — energy == null means
@@ -277,15 +371,76 @@ class WorkoutRepository @Inject constructor(
         }.decodeList()
 
     // Fire-and-forget refresh of the rolling athlete "training memory".
+    // Invalidates the profile cache so a following loadMemory() reads the new notes.
     suspend fun refreshMemory() {
         runCatching { supabase.functions.invoke("refresh-memory") }.logFailure("refreshMemory")
+        invalidateProfileCache()
     }
 
-    suspend fun generationLogs(limit: Long = 20): List<GenerationLogRow> =
+    // Wide window so the diagnostics screen can total real 30-day spend; the UI
+    // aggregates client-side. 500 recent rows is ample for one user.
+    suspend fun generationLogs(limit: Long = 500): List<GenerationLogRow> =
         supabase.postgrest.from("generation_logs").select {
             order("created_at", Order.DESCENDING)
             limit(limit)
         }.decodeList()
+
+    // --- Pro plan / hosted AI ------------------------------------------------
+
+    // Whether THIS deployment offers hosted AI, from the last cached summary —
+    // offline-friendly and never blocks Settings on a network call.
+    suspend fun serverHostedAi(): Boolean = runCatching {
+        cache.latestSummary()?.let {
+            json.decodeFromString(DailySummary.serializer(), it.json).server?.hosted_ai
+        } ?: false
+    }.logFailure("serverHostedAi").getOrDefault(false)
+
+    suspend fun planStatus(): PlanStatus = runCatching {
+        val row = profileRow()
+        PlanStatus(
+            plan = (row?.get("plan") as? JsonPrimitive)?.contentOrNull ?: "free",
+            expiresAt = (row?.get("plan_expires_at") as? JsonPrimitive)?.contentOrNull,
+            useHostedAi = (row?.get("use_hosted_ai") as? JsonPrimitive)?.contentOrNull?.toBoolean() ?: true,
+        )
+    }.logFailure("planStatus").getOrDefault(PlanStatus())
+
+    suspend fun setUseHostedAi(on: Boolean) {
+        supabase.postgrest.from("user_profiles").update({ set("use_hosted_ai", on) }) {
+            filter { eq("id", uid()) }
+        }
+        invalidateProfileCache()
+    }
+
+    // Server-side verification of a Play purchase; the fn is the only writer
+    // of the plan columns. Returns the resulting plan ("pro" on success).
+    suspend fun verifyPurchase(purchaseToken: String): String {
+        val body = kotlinx.serialization.json.buildJsonObject {
+            put("purchase_token", JsonPrimitive(purchaseToken))
+        }.toString()
+        val res: Map<String, JsonElement> = json.decodeFromString(
+            supabase.functions.invoke("verify-purchase") { setBody(body) }.body(),
+        )
+        invalidateProfileCache()
+        (res["error"] as? JsonPrimitive)?.contentOrNull?.let { throw IllegalStateException(it) }
+        return (res["plan"] as? JsonPrimitive)?.contentOrNull ?: "free"
+    }
+
+    // Per-1M-token prices for the custom (BYO) provider, so its spend isn't $0.
+    suspend fun customLlmPricing(): Pair<Double?, Double?> = runCatching {
+        val row = profileRow()
+        val inp = (row?.get("llm_custom_input_per_1m") as? JsonPrimitive)?.contentOrNull?.toDoubleOrNull()
+        val out = (row?.get("llm_custom_output_per_1m") as? JsonPrimitive)?.contentOrNull?.toDoubleOrNull()
+        inp to out
+    }.logFailure("customLlmPricing").getOrDefault(null to null)
+
+    suspend fun setCustomLlmPricing(inputPer1M: Double?, outputPer1M: Double?) {
+        val obj = kotlinx.serialization.json.buildJsonObject {
+            put("llm_custom_input_per_1m", inputPer1M?.let { JsonPrimitive(it) } ?: kotlinx.serialization.json.JsonNull)
+            put("llm_custom_output_per_1m", outputPer1M?.let { JsonPrimitive(it) } ?: kotlinx.serialization.json.JsonNull)
+        }
+        supabase.postgrest.from("user_profiles").update(obj) { filter { eq("id", uid()) } }
+        invalidateProfileCache()
+    }
 
     suspend fun setActiveProvider(provider: LlmProvider) {
         supabase.postgrest.from("user_profiles").update(mapOf("active_llm_provider" to provider.key)) {
@@ -327,11 +482,16 @@ class WorkoutRepository @Inject constructor(
 
     // --- Coach chat ----------------------------------------------------------
     suspend fun coachChat(req: CoachChatRequest): CoachReply =
-        json.decodeFromString(
-            supabase.functions.invoke("coach-chat") {
-                setBody(json.encodeToString(CoachChatRequest.serializer(), req))
-            }.body(),
-        )
+        com.workoutmaker.app.util.AppLog.time("coach", "coach-chat mode=${req.mode} turns=${req.messages.size}") {
+            json.decodeFromString<CoachReply>(
+                supabase.functions.invoke("coach-chat") {
+                    setBody(json.encodeToString(CoachChatRequest.serializer(), req))
+                }.body(),
+            ).also {
+                // The coach may have evolved memory/soul server-side this turn.
+                invalidateProfileCache()
+            }
+        }
 
     // Past coach conversations for the history list. Ordered by recency here;
     // the UI sorts pinned-first client-side so this query keeps working even
@@ -397,6 +557,34 @@ class WorkoutRepository @Inject constructor(
         invalidateProfileCache()
     }
 
+    // --- Coach memory (rolling notes the coach carries between sessions) ------
+    suspend fun loadMemory(): String =
+        runCatching {
+            (profileRow()?.get("training_memory") as? JsonPrimitive)?.content ?: ""
+        }.logFailure("loadMemory").getOrDefault("")
+
+    suspend fun saveMemory(text: String) {
+        supabase.postgrest.from("user_profiles").update(
+            mapOf("training_memory" to kotlinx.serialization.json.JsonPrimitive(text)),
+        ) { filter { eq("id", uid()) } }
+        invalidateProfileCache()
+    }
+
+    // --- Coach soul (the coach's identity + its evolving relationship with you) -
+    // Falls back to "" when the coach_soul column is absent (pre-migration 30) or
+    // unseeded; the backend serves a default persona until the first auto-evolve.
+    suspend fun loadSoul(): String =
+        runCatching {
+            (profileRow()?.get("coach_soul") as? JsonPrimitive)?.content ?: ""
+        }.logFailure("loadSoul").getOrDefault("")
+
+    suspend fun saveSoul(text: String) {
+        supabase.postgrest.from("user_profiles").update(
+            mapOf("coach_soul" to kotlinx.serialization.json.JsonPrimitive(text)),
+        ) { filter { eq("id", uid()) } }
+        invalidateProfileCache()
+    }
+
     suspend fun connectIntervalsVerified(athleteId: String, apiKey: String): ConnectIntervalsResult {
         val r: ConnectIntervalsResult = json.decodeFromString(connectIntervals(athleteId, apiKey))
         invalidateProfileCache() // athlete id + key hint changed on the profile
@@ -416,12 +604,19 @@ class WorkoutRepository @Inject constructor(
     // key_hint may not exist before migration 27 — fall back to a hint-less select.
     suspend fun llmKeyRows(): List<LlmKeyRow> = runCatching {
         supabase.postgrest.from("llm_api_keys").select(
-            columns = io.github.jan.supabase.postgrest.query.Columns.list("provider", "is_valid", "last_tested_at", "key_hint"),
+            columns = io.github.jan.supabase.postgrest.query.Columns.list("provider", "is_valid", "last_tested_at", "key_hint", "base_url"),
         ).decodeList<LlmKeyRow>()
     }.getOrElse {
-        supabase.postgrest.from("llm_api_keys").select(
-            columns = io.github.jan.supabase.postgrest.query.Columns.list("provider", "is_valid", "last_tested_at"),
-        ).decodeList()
+        // Pre-migration fallback (no key_hint / base_url columns yet).
+        runCatching {
+            supabase.postgrest.from("llm_api_keys").select(
+                columns = io.github.jan.supabase.postgrest.query.Columns.list("provider", "is_valid", "last_tested_at", "key_hint"),
+            ).decodeList<LlmKeyRow>()
+        }.getOrElse {
+            supabase.postgrest.from("llm_api_keys").select(
+                columns = io.github.jan.supabase.postgrest.query.Columns.list("provider", "is_valid", "last_tested_at"),
+            ).decodeList()
+        }
     }
 
     suspend fun templates(): List<WorkoutTemplate> =
@@ -595,10 +790,19 @@ class WorkoutRepository @Inject constructor(
                 .update(mapOf("completed" to JsonPrimitive(completed), "skipped" to JsonPrimitive(!completed))) {
                     filter { eq("id", plannedId) }
                 }
-        }.getOrElse { // pre-migration-26 fallback: no `skipped` column yet
+        }.getOrElse { e ->
+            // Pre-migration-26 fallback: no `skipped` column yet. Only for that
+            // specific error — a blanket fallback would mask network failures and
+            // still write feedback below for an update that never happened.
+            if (e.message?.contains("skipped", ignoreCase = true) != true) throw e
             supabase.postgrest.from("planned_workouts")
                 .update(mapOf("completed" to JsonPrimitive(completed))) { filter { eq("id", plannedId) } }
         }
+        // Last-write-wins per planned session: a double-tap or a re-rate must not
+        // stack duplicate rows (they skew the generator's autoregulation).
+        runCatching {
+            supabase.postgrest.from("workout_feedback").delete { filter { eq("planned_workout_id", plannedId) } }
+        }.logFailure("markPlannedComplete/dedupe")
         supabase.postgrest.from("workout_feedback").insert(
             WorkoutFeedback(planned_workout_id = plannedId, date = date, completed = completed, actual_rpe = rpe, difficulty = difficulty),
         )
@@ -630,8 +834,9 @@ class WorkoutRepository @Inject constructor(
             "run" -> a.contains("run") || a.contains("walk")
             "strength" -> a.contains("weight") || a.contains("strength") || a.contains("workout") || a.contains("gym")
             "ride", "bike" -> a.contains("ride") || a.contains("bike") || a.contains("cycl")
-            "rest" -> false
-            else -> a.isNotEmpty()
+            "swim" -> a.contains("swim")
+            // rest + unknown planned types: never auto-complete from an activity.
+            else -> false
         }
     }
 
@@ -722,7 +927,7 @@ class WorkoutRepository @Inject constructor(
         onToken: (String) -> Unit,
     ): CoachStreamResult {
         val token = supabase.auth.currentSessionOrNull()?.accessToken
-        val url = BuildConfig.SUPABASE_URL.trimEnd('/') + "/functions/v1/coach-chat"
+        val url = backend.url.trimEnd('/') + "/functions/v1/coach-chat"
         val payload = json.encodeToString(
             CoachChatRequest.serializer(),
             CoachChatRequest(messages = messages, mode = "chat", conversationId = conversationId, purpose = "setup", stream = true),
@@ -732,9 +937,11 @@ class WorkoutRepository @Inject constructor(
         var tools: List<String> = emptyList()
         var error: String? = null
         var gotReply = false
+        val streamStarted = System.currentTimeMillis()
+        com.workoutmaker.app.util.AppLog.i("coach", "coach-stream start turns=${messages.size}")
         streamingHttp.preparePost(url) {
             header("Authorization", "Bearer $token")
-            header("apikey", BuildConfig.SUPABASE_ANON_KEY)
+            header("apikey", backend.anonKey)
             contentType(ContentType.Application.Json)
             setBody(payload)
         }.execute { resp ->
@@ -755,6 +962,13 @@ class WorkoutRepository @Inject constructor(
                 }
             }
         }
+        com.workoutmaker.app.util.AppLog.i(
+            "coach",
+            "coach-stream done ${System.currentTimeMillis() - streamStarted}ms reply=$gotReply tools=$tools" +
+                (error?.let { " error=$it" } ?: ""),
+        )
+        // The coach may have evolved memory/soul server-side this turn.
+        invalidateProfileCache()
         return CoachStreamResult(convId, tools, error, gotReply)
     }
 

@@ -139,6 +139,28 @@ export const CATEGORIES = [
 const normName = (s: string) => s.toLowerCase().replace(/[^a-z0-9]/g, "");
 const catalogByNorm = new Map(EXERCISE_CATALOG.map((e) => [normName(e.name), e]));
 
+// Map the athlete's equipment preference (onboarding.equipment) to the catalog
+// CATEGORIES they can actually train with. Returns null for an unknown/blank
+// value → callers then DON'T filter (fail open). Equipment tiers are inclusive.
+const EQUIPMENT_CATEGORIES: Record<string, string[]> = {
+  "bodyweight": ["Bodyweight"],
+  "dumbbells": ["Bodyweight", "Dumbbell", "Kettlebell"],
+  "barbell + rack": ["Bodyweight", "Dumbbell", "Kettlebell", "Barbell"],
+  "full gym": ["Barbell", "Dumbbell", "Machine", "Cable", "Bodyweight", "Kettlebell", "Cardio"],
+};
+
+export function allowedCategories(equipment: string | null | undefined): Set<string> | null {
+  if (!equipment || !equipment.trim()) return null;
+  const cats = EQUIPMENT_CATEGORIES[equipment.trim().toLowerCase()];
+  return cats ? new Set(cats) : null;
+}
+
+// The catalog category for a (possibly reworded) exercise name, or null if the
+// name isn't a known catalog lift — unknown names are not equipment-filtered.
+export function categoryOfExercise(name: string): string | null {
+  return catalogByNorm.get(normName(name))?.category ?? null;
+}
+
 // Fuzzy form: drop equipment/grip qualifier words so an invented name like
 // "Machine Lat Pulldown" / "Cable Lat Pulldown" collapses onto the catalog's
 // "Lat Pulldown". Equipment words DO distinguish real catalog entries (Barbell
@@ -153,6 +175,31 @@ const catalogByFuzz = new Map<string, CatalogExercise>();
 for (const e of EXERCISE_CATALOG) {
   const f = fuzzName(e.name);
   if (f && fuzzCount.get(f) === 1) catalogByFuzz.set(f, e);
+}
+
+const catalogMuscleByNorm = new Map(EXERCISE_CATALOG.map((e) => [normName(e.name), e.muscle]));
+
+/**
+ * Resolve the primary muscle for an exercise name: the athlete's customs first,
+ * then the catalog by exact normalised name, then the fuzzy (equipment-stripped)
+ * key. Returns null when nothing maps — callers treat that as "unknown muscle".
+ */
+export function muscleForName(name: string, custom: CatalogExercise[] = []): string | null {
+  const n = normName(name);
+  if (!n) return null;
+  for (const c of custom) if (normName(c.name) === n) return c.muscle || null;
+  const direct = catalogMuscleByNorm.get(n);
+  if (direct) return direct;
+  return catalogByFuzz.get(fuzzName(name))?.muscle ?? null;
+}
+
+/** Compound flag for an exercise (customs → catalog → fuzzy), false if unknown
+ *  — mirrors the Android fallback so progression rep windows match the app. */
+export function compoundForName(name: string, custom: CatalogExercise[] = []): boolean {
+  const n = normName(name);
+  if (!n) return false;
+  for (const c of custom) if (normName(c.name) === n) return c.compound === true;
+  return catalogByNorm.get(n)?.compound ?? catalogByFuzz.get(fuzzName(name))?.compound ?? false;
 }
 
 /**
@@ -201,6 +248,26 @@ export async function customExercises(
   }
 }
 
+/** Distinct exercises the athlete has actually logged recently (~4 months) —
+ *  a proxy for the machines/implements their gym really has. Best-effort. */
+async function loggedRepertoire(
+  admin: SupabaseClient,
+  userId: string,
+): Promise<string[]> {
+  try {
+    const since = new Date(Date.now() - 120 * 86_400_000).toISOString().slice(0, 10);
+    const { data } = await admin
+      .from("strength_logs")
+      .select("exercise_name")
+      .eq("user_id", userId)
+      .gte("date", since)
+      .limit(1000);
+    return [...new Set((data ?? []).map((r) => (r.exercise_name ?? "").trim()).filter(Boolean))];
+  } catch (_e) {
+    return [];
+  }
+}
+
 // Prompt block: pins strength exercise names to the loggable catalog and sets
 // the rules for cardio entries and for the rare genuinely-new exercise.
 export async function exerciseCatalogBlock(
@@ -208,6 +275,7 @@ export async function exerciseCatalogBlock(
   userId: string,
 ): Promise<string> {
   const custom = await customExercises(admin, userId);
+  const repertoire = await loggedRepertoire(admin, userId);
   const byMuscle = new Map<string, string[]>();
   for (const e of EXERCISE_CATALOG) {
     byMuscle.set(e.muscle, [...(byMuscle.get(e.muscle) ?? []), e.name]);
@@ -216,13 +284,23 @@ export async function exerciseCatalogBlock(
   const customLine = custom.length
     ? `\n- Athlete's custom exercises (also valid): ${custom.map((c) => c.name).join(", ")}`
     : "";
-  return `\n\nSTRENGTH EXERCISE LIBRARY (the athlete logs sessions against this list — names must match EXACTLY):\n` +
-    lines.join("\n") + customLine + `\n` +
+  const repertoireBlock = repertoire.length
+    ? `\n\nTHE ATHLETE'S OWN REPERTOIRE, exercises they actually log (this is what their gym's ` +
+      `machines and their preferences support): ${repertoire.join(", ")}.\n` +
+      `STRONGLY prefer these over other library entries: an unfamiliar variation (e.g. a different ` +
+      `leg-curl machine) usually just means equipment they don't have. Go outside the repertoire only ` +
+      `when it has nothing for a muscle/pattern the session needs.`
+    : "";
+  return `\n\nSTRENGTH EXERCISE LIBRARY (the athlete logs sessions against this list, names must match EXACTLY):\n` +
+    lines.join("\n") + customLine + repertoireBlock + `\n` +
     `Rules for strength exercises:\n` +
     `- Every strength exercise "name" MUST be copied character-for-character from the library above.\n` +
     `- Only if something essential is truly missing may you introduce a new exercise; in that case you MUST also set ` +
     `"muscle" (one of: ${MUSCLES.join(", ")}) and "category" (one of: ${CATEGORIES.join(", ")}) and "compound" (true/false) on that exercise object.\n` +
-    `- Cardio-category entries (e.g. Rowing Machine) are logged in MINUTES: set "reps" to the duration like "10 min", sets to the number of intervals, and "weight_kg" to null.`;
+    `- For any cardio / conditioning / warm-up cardio block you MUST pick one of the Cardio library entries by exact name (${
+      EXERCISE_CATALOG.filter((e) => e.muscle === "Cardio").map((e) => e.name).join(", ")
+    }). NEVER invent a generic name like "Light Cardio", "Cardio", "Conditioning" or "HIIT".\n` +
+    `- Cardio entries are logged in MINUTES: set "reps" to the duration like "10 min", sets to the number of intervals, and "weight_kg" to null.`;
 }
 
 /**

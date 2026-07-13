@@ -53,6 +53,7 @@ import com.workoutmaker.app.ui.components.InsetStat
 import com.workoutmaker.app.ui.components.ScreenScaffold
 import com.workoutmaker.app.ui.components.SectionCard
 import com.workoutmaker.app.ui.components.SectionLabel
+import com.workoutmaker.app.ui.components.StatTileGrid
 import com.workoutmaker.app.ui.theme.Sage
 import com.workoutmaker.app.ui.theme.Sand
 import dagger.hilt.android.lifecycle.HiltViewModel
@@ -171,6 +172,7 @@ fun WorkoutHistoryScreen(
     ScreenScaffold(
         title = "Strength history",
         subtitle = "${rows.size} sessions",
+        eyebrow = "ALL SESSIONS",
         navigationIcon = {
             IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "Back") }
         },
@@ -186,6 +188,11 @@ fun WorkoutHistoryScreen(
             placeholder = { Text("Search sessions") },
             keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
         )
+
+        if (loading && rows.isEmpty()) {
+            repeat(4) { com.workoutmaker.app.ui.components.SkeletonCard() }
+            return@ScreenScaffold
+        }
 
         if (!loading && rows.isEmpty()) {
             EmptyState(
@@ -216,7 +223,7 @@ fun WorkoutHistoryScreen(
 private fun HistoryCard(row: StrengthHistoryRow, onClick: () -> Unit) {
     SectionCard(Modifier.clickable { onClick() }) {
         Row(verticalAlignment = Alignment.CenterVertically) {
-            SourceIcon(Icons.Filled.FitnessCenter, Sand)
+            SourceIcon(Icons.Filled.FitnessCenter, MaterialTheme.colorScheme.secondary)
             Column(Modifier.padding(start = 12.dp).weight(1f)) {
                 Text(row.workout.name, style = MaterialTheme.typography.titleMedium)
                 val chips = buildList {
@@ -232,7 +239,7 @@ private fun HistoryCard(row: StrengthHistoryRow, onClick: () -> Unit) {
                 Modifier.fillMaxWidth().padding(top = 6.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                Icon(Icons.Filled.Watch, null, Modifier.size(16.dp), tint = Sage)
+                Icon(Icons.Filled.Watch, null, Modifier.size(16.dp), tint = MaterialTheme.colorScheme.primary)
                 val parts = buildList {
                     w.avg_hr?.let { add("♥ $it bpm") }
                     w.calories?.let { add("$it kcal") }
@@ -240,7 +247,7 @@ private fun HistoryCard(row: StrengthHistoryRow, onClick: () -> Unit) {
                 }
                 Text(
                     "  Merged with watch" + if (parts.isNotEmpty()) " · ${parts.joinToString(" · ")}" else "",
-                    style = MaterialTheme.typography.labelSmall, color = Sage,
+                    style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.primary,
                 )
             }
         }
@@ -293,7 +300,7 @@ internal fun StrengthAnalysisSection(
 
     SectionCard {
         Row(verticalAlignment = Alignment.CenterVertically) {
-            SectionLabel("Workout analysis", color = Sage)
+            SectionLabel("Workout analysis", color = MaterialTheme.colorScheme.primary)
             Spacer(Modifier.weight(1f))
             if (a != null) {
                 androidx.compose.material3.TextButton(
@@ -338,7 +345,7 @@ internal fun StrengthAnalysisSection(
                 }
             }
         } else {
-            Text(a.label ?: "No plan to compare against.", style = MaterialTheme.typography.bodyMedium)
+            Text(a.label ?: "No planned session to compare against.", style = MaterialTheme.typography.bodyMedium)
         }
         a.components.forEach { c ->
             Column(Modifier.fillMaxWidth().padding(vertical = 2.dp)) {
@@ -355,7 +362,7 @@ internal fun StrengthAnalysisSection(
 
         // Planned vs lifted, per exercise.
         if (a.exercises.isNotEmpty()) {
-            SectionLabel("Planned vs lifted", color = Sand)
+            SectionLabel("Planned vs lifted", color = MaterialTheme.colorScheme.secondary)
             a.exercises.forEach { ex ->
                 Column(Modifier.fillMaxWidth().padding(vertical = 2.dp)) {
                     Text(ex.name, style = MaterialTheme.typography.titleSmall)
@@ -373,16 +380,34 @@ internal fun StrengthAnalysisSection(
             }
         }
 
-        if (!a.feedback.isNullOrBlank()) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Icon(
-                    Icons.Filled.AutoAwesome, null,
-                    Modifier.size(16.dp), tint = Sage,
-                )
-                Spacer(Modifier.width(6.dp))
-                SectionLabel("Coach feedback" + (a.feedback_provider?.let { " · $it" } ?: ""), color = Sage)
+    }
+
+    // Coach's narrative takeaway — its own card so the strength detail reads like
+    // the run/ride one: the score on top, the planned-vs-lifted data, then the AI
+    // feedback in a separate block below.
+    a?.let { an ->
+        if (!an.feedback.isNullOrBlank()) {
+            SectionCard {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(
+                        Icons.Filled.AutoAwesome, null,
+                        Modifier.size(16.dp), tint = MaterialTheme.colorScheme.primary,
+                    )
+                    Spacer(Modifier.width(6.dp))
+                    SectionLabel("Coach feedback" + (an.feedback_provider?.let { " · $it" } ?: ""), color = MaterialTheme.colorScheme.primary)
+                }
+                Text(an.feedback!!, style = MaterialTheme.typography.bodyMedium)
             }
-            Text(a.feedback!!, style = MaterialTheme.typography.bodyMedium)
+        }
+    }
+
+    // Heart-rate trace from the paired watch recording, when one was synced.
+    a?.series?.let { s ->
+        if (s.hr.any { it != null }) {
+            SectionCard {
+                SectionLabel("Heart rate", color = com.workoutmaker.app.ui.components.ChartHr)
+                HrChart(s, null)
+            }
         }
     }
 }
@@ -422,6 +447,7 @@ fun StrengthSessionDetailScreen(
     ScreenScaffold(
         title = w.name,
         subtitle = dateOf(w.startedAt).toString(),
+        eyebrow = "SESSION DETAIL",
         navigationIcon = { IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "Back") } },
         actions = {
             if (onEdit != null) {
@@ -437,29 +463,35 @@ fun StrengthSessionDetailScreen(
         },
     ) { mod ->
         SectionCard(mod) {
-            SectionLabel("Logged in app", color = Sand)
+            SectionLabel("Logged in app", color = MaterialTheme.colorScheme.secondary)
             // Full name here — the app bar ellipsizes long ones to a single line.
             Text(w.name, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
-            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                InsetStat("Volume", "${w.totalVolumeKg.toInt()} kg")
-                if (w.durationSec > 0) InsetStat("Time", "${w.durationSec / 60} min")
-                InsetStat("Sets", "${sets.size}")
-            }
-            if (w.note.isNotBlank()) Text("“${w.note}”", style = MaterialTheme.typography.bodyMedium, color = Sage)
+            StatTileGrid(
+                buildList {
+                    add("Volume" to "${w.totalVolumeKg.toInt()} kg")
+                    if (w.durationSec > 0) add("Time" to "${w.durationSec / 60} min")
+                    add("Sets" to "${sets.size}")
+                },
+            )
+            if (w.note.isNotBlank()) Text("“${w.note}”", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.primary)
         }
 
         // Unified: watch contributions for the same session.
         watch?.let { a ->
             SectionCard(mod) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
-                    Icon(Icons.Filled.Watch, null, Modifier.size(18.dp), tint = Sage)
+                    Icon(Icons.Filled.Watch, null, Modifier.size(18.dp), tint = MaterialTheme.colorScheme.primary)
                     Spacer(Modifier.width(6.dp))
-                    SectionLabel("From your watch", color = Sage)
+                    SectionLabel("From your watch", color = MaterialTheme.colorScheme.primary)
                 }
-                a.avg_hr?.let { InsetStat("Avg HR", "$it bpm") }
-                a.maxHr?.let { InsetStat("Max HR", "$it bpm") }
-                a.calories?.let { InsetStat("Calories", "$it kcal") }
-                a.tss?.let { if (it > 0) InsetStat("Training load (TSS)", "${it.toInt()}") }
+                StatTileGrid(
+                    buildList {
+                        a.avg_hr?.let { add("Avg HR" to "$it bpm") }
+                        a.maxHr?.let { add("Max HR" to "$it bpm") }
+                        a.calories?.let { add("Calories" to "$it kcal") }
+                        a.tss?.let { if (it > 0) add("Training load" to "${it.toInt()} TSS") }
+                    },
+                )
             }
         }
 

@@ -23,6 +23,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.EventAvailable
 import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.ChevronLeft
 import androidx.compose.material.icons.filled.ChevronRight
@@ -71,7 +72,7 @@ import com.workoutmaker.app.ui.components.ScreenScaffold
 import com.workoutmaker.app.ui.components.SectionCard
 import com.workoutmaker.app.ui.components.SectionLabel
 import com.workoutmaker.app.ui.theme.BandRed
-import com.workoutmaker.app.ui.theme.Moss
+import com.workoutmaker.app.ui.theme.mossAccent
 import com.workoutmaker.app.ui.theme.Sage
 import com.workoutmaker.app.ui.theme.Sand
 import dagger.hilt.android.lifecycle.HiltViewModel
@@ -93,10 +94,12 @@ internal fun primaryFirst(sessions: List<PlannedWorkout>): List<PlannedWorkout> 
             .thenByDescending { it.created_at ?: "" },
     )
 
+@Composable
 internal fun typeColor(type: String) = when {
-    type.contains("run", true) || type.contains("ride", true) || type.contains("bike", true) -> Sage
-    type.contains("strength", true) || type.contains("gym", true) || type.contains("weight", true) -> Sand
-    else -> Moss
+    type.contains("run", true) || type.contains("ride", true) || type.contains("bike", true) ||
+        type.contains("swim", true) -> MaterialTheme.colorScheme.primary
+    type.contains("strength", true) || type.contains("gym", true) || type.contains("weight", true) -> MaterialTheme.colorScheme.secondary
+    else -> mossAccent()
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -111,6 +114,18 @@ fun CalendarScreen(vm: CalendarViewModel = hiltViewModel(), onOpenStrength: () -
     val strengthByDate by vm.strengthByDate.collectAsStateSafe()
     val activitiesByDate by vm.activitiesByDate.collectAsStateSafe()
     val adapting by vm.adapting.collectAsStateSafe()
+    val pendingSync by vm.pendingSync.collectAsStateSafe()
+
+    // Transient sync/mark/skip confirmations go to the app-wide snackbar; the
+    // persistent "Offline — …" note stays inline as standing context.
+    val snackbar = com.workoutmaker.app.ui.components.LocalAppSnackbar.current
+    androidx.compose.runtime.LaunchedEffect(banner) {
+        val b = banner ?: return@LaunchedEffect
+        if (b.startsWith("Offline")) return@LaunchedEffect
+        val ok = b.startsWith("✓") || b.startsWith("Marked") || b.contains("Sync", ignoreCase = true)
+        snackbar?.show(if (ok) b else com.workoutmaker.app.ui.components.friendlyError(b))
+        vm.banner.value = null
+    }
 
     var visibleMonth by remember { mutableStateOf(YearMonth.now()) }
     var selectedDate by remember { mutableStateOf(LocalDate.now()) }
@@ -136,11 +151,13 @@ fun CalendarScreen(vm: CalendarViewModel = hiltViewModel(), onOpenStrength: () -
     // Activity detail is a full sub-screen.
     activityDetail?.let { act ->
         BackHandler { activityDetail = null }
-        ActivityDetailScreen(
-            activity = act,
-            planned = byDate[act.date]?.firstOrNull(),
-            onBack = { activityDetail = null },
-        )
+        com.workoutmaker.app.ui.components.DetailOverlay {
+            ActivityDetailScreen(
+                activity = act,
+                planned = byDate[act.date]?.firstOrNull(),
+                onBack = { activityDetail = null },
+            )
+        }
         return
     }
 
@@ -153,13 +170,15 @@ fun CalendarScreen(vm: CalendarViewModel = hiltViewModel(), onOpenStrength: () -
         val watch = vm.activitiesByDate.value[day]?.firstOrNull { a ->
             looksLike("strength", a.type)
         }
-        StrengthSessionDetailScreen(
-            w = sw,
-            sets = strengthSets[sw.id].orEmpty(),
-            watch = watch,
-            onBack = { strengthDetail = null },
-            onEdit = { vm.editLoggedStrength(sw.id); strengthDetail = null; onOpenStrength() },
-        )
+        com.workoutmaker.app.ui.components.DetailOverlay {
+            StrengthSessionDetailScreen(
+                w = sw,
+                sets = strengthSets[sw.id].orEmpty(),
+                watch = watch,
+                onBack = { strengthDetail = null },
+                onEdit = { vm.editLoggedStrength(sw.id); strengthDetail = null; onOpenStrength() },
+            )
+        }
         return
     }
 
@@ -174,6 +193,7 @@ fun CalendarScreen(vm: CalendarViewModel = hiltViewModel(), onOpenStrength: () -
     ScreenScaffold(
         title = "Calendar",
         subtitle = "${workouts.size} planned",
+        eyebrow = "TRAINING PLAN",
         isRefreshing = loading,
         onRefresh = { vm.load() },
         actions = {
@@ -190,11 +210,18 @@ fun CalendarScreen(vm: CalendarViewModel = hiltViewModel(), onOpenStrength: () -
     ) { mod ->
         Column(mod, verticalArrangement = Arrangement.spacedBy(12.dp)) {
             banner?.let { Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.primary) }
+            if (pendingSync > 0) {
+                Text(
+                    "⟳ $pendingSync change${if (pendingSync > 1) "s" else ""} saved offline, will sync when you're back online.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
 
             // Adaptive re-plan prompt — surfaces when the week diverged from plan.
             if (divergence) {
                 SectionCard {
-                    SectionLabel("Plan vs reality", color = Sand)
+                    SectionLabel("Plan vs reality", color = MaterialTheme.colorScheme.secondary)
                     Text(
                         "You've got planned sessions this week you haven't done yet. I can check what you actually did on Intervals.icu and rebuild the rest of your week around it.",
                         style = MaterialTheme.typography.bodyMedium,
@@ -274,7 +301,7 @@ fun CalendarScreen(vm: CalendarViewModel = hiltViewModel(), onOpenStrength: () -
                 val watch = pairedWatch[sw.id]
                 SectionCard(Modifier.clickable { strengthDetail = sw }) {
                     Row(verticalAlignment = Alignment.CenterVertically) {
-                        SectionLabel("Strength", color = Sand)
+                        SectionLabel("Strength", color = MaterialTheme.colorScheme.secondary)
                         Spacer(Modifier.weight(1f))
                         Icon(Icons.Filled.ChevronRight, "Open details", tint = MaterialTheme.colorScheme.onSurfaceVariant)
                     }
@@ -286,16 +313,16 @@ fun CalendarScreen(vm: CalendarViewModel = hiltViewModel(), onOpenStrength: () -
                         watch?.tss?.let { if (it > 0) add("TSS ${it.toInt()}") }
                     })
                     if (watch != null) {
-                        Text("⌚ Merged with your watch recording", style = MaterialTheme.typography.labelSmall, color = Sage)
+                        Text("⌚ Merged with your watch recording", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.primary)
                     }
                 }
             }
 
             if (daySessions.isEmpty() && dayStrength.isEmpty() && dayActivities.isEmpty()) {
-                Text(
-                    "Nothing planned. Tap ＋ to schedule a template on this day.",
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                com.workoutmaker.app.ui.components.EmptyState(
+                    title = "Nothing planned",
+                    subtitle = "Tap ＋ to schedule a template on this day.",
+                    icon = Icons.Filled.EventAvailable,
                 )
             } else if (daySessions.isNotEmpty()) {
                 daySessions.forEach { w ->
@@ -304,13 +331,13 @@ fun CalendarScreen(vm: CalendarViewModel = hiltViewModel(), onOpenStrength: () -
                             SectionLabel(
                                 w.type + (if (w.locked) " · locked" else "") +
                                     (if (w.skipped && !w.completed) " · skipped" else ""),
-                                color = if (w.locked) Sage else typeColor(w.type),
+                                color = if (w.locked) MaterialTheme.colorScheme.primary else typeColor(w.type),
                             )
                             Spacer(Modifier.weight(1f))
                             IconButton(onClick = { vm.toggleLock(w) }, modifier = Modifier.size(28.dp)) {
                                 Icon(if (w.locked) Icons.Filled.Lock else Icons.Filled.LockOpen,
                                     if (w.locked) "Unlock" else "Lock so re-planning won't change it",
-                                    tint = if (w.locked) Sage else MaterialTheme.colorScheme.onSurfaceVariant)
+                                    tint = if (w.locked) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant)
                             }
                             IconButton(onClick = { moveTarget = w }, modifier = Modifier.size(28.dp)) {
                                 Icon(Icons.Filled.EditCalendar, "Move to another day", tint = MaterialTheme.colorScheme.onSurfaceVariant)
@@ -323,18 +350,18 @@ fun CalendarScreen(vm: CalendarViewModel = hiltViewModel(), onOpenStrength: () -
                         if (w.type == "rest") {
                             // A rest day needs no action — show it as already
                             // handled so the day reads as "done" at a glance.
-                            Text("✓ Rest day — recovery is the plan", style = MaterialTheme.typography.labelMedium, color = Sage)
+                            Text("✓ Rest day, recovery is the plan", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.primary)
                         } else {
                             if (w.completed) {
                                 Row(verticalAlignment = Alignment.CenterVertically) {
-                                    Text("✓ Completed", style = MaterialTheme.typography.labelMedium, color = Sage)
+                                    Text("✓ Completed", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.primary)
                                     Spacer(Modifier.weight(1f))
                                     TextButton(onClick = { vm.markUndone(w.id) }) { Text("Mark as not done") }
                                 }
                             } else if (w.skipped) {
                                 Row(verticalAlignment = Alignment.CenterVertically) {
                                     Text(
-                                        "Skipped — the plan will adapt.",
+                                        "Skipped, the plan will adapt.",
                                         style = MaterialTheme.typography.labelMedium,
                                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                                     )
@@ -402,7 +429,7 @@ fun CalendarScreen(vm: CalendarViewModel = hiltViewModel(), onOpenStrength: () -
     confirmDelete?.let { w ->
         AlertDialog(
             onDismissRequest = { confirmDelete = null },
-            confirmButton = { TextButton(onClick = { vm.deletePlanned(w.id); confirmDelete = null }) { Text("Delete", color = BandRed) } },
+            confirmButton = { TextButton(onClick = { vm.deletePlanned(w.id); confirmDelete = null }) { Text("Delete", color = MaterialTheme.colorScheme.error) } },
             dismissButton = { TextButton(onClick = { confirmDelete = null }) { Text("Cancel") } },
             title = { Text("Delete this workout?") },
             text = {
@@ -442,7 +469,11 @@ fun CalendarScreen(vm: CalendarViewModel = hiltViewModel(), onOpenStrength: () -
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     if (templates.isEmpty()) {
-                        Text("No templates yet. Create one from the Coach tab.", style = MaterialTheme.typography.bodyMedium)
+                        com.workoutmaker.app.ui.components.EmptyState(
+                            title = "No templates yet",
+                            subtitle = "Design one with your coach in the Coach tab, then schedule it here.",
+                            icon = Icons.Filled.AutoAwesome,
+                        )
                     }
                     templates.forEach { t ->
                         SectionCard(title = t.name) {

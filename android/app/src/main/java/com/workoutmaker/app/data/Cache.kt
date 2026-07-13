@@ -47,6 +47,22 @@ data class CachedSummary(
     val fetchedAt: Long = 0,
 )
 
+// The coach's proactive daily briefing, cached per local date so it's generated
+// (one LLM call) at most once per calendar day and shows instantly thereafter.
+@Entity(tableName = "cached_brief")
+data class CachedBrief(
+    @PrimaryKey val date: String,
+    val text: String,
+)
+
+// The coach's weekly recap, cached per week-start (Monday) so it's generated at
+// most once per week and shows instantly thereafter.
+@Entity(tableName = "cached_week_review")
+data class CachedWeekReview(
+    @PrimaryKey val weekStart: String,
+    val text: String,
+)
+
 @Dao
 interface CacheDao {
     @Insert(onConflict = OnConflictStrategy.REPLACE)
@@ -60,6 +76,11 @@ interface CacheDao {
     @Query("DELETE FROM cached_workout")
     suspend fun clearWorkouts()
 
+    // Scoped replace: drop only the fetched window so a narrow (e.g. today-only)
+    // background refresh can't wipe cached history older than fromDate.
+    @Query("DELETE FROM cached_workout WHERE date >= :fromDate")
+    suspend fun clearWorkoutsFrom(fromDate: String)
+
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun upsertSummary(summary: CachedSummary)
 
@@ -68,15 +89,33 @@ interface CacheDao {
 
     @Query("DELETE FROM cached_summary")
     suspend fun clearSummaries()
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun upsertBrief(brief: CachedBrief)
+
+    @Query("SELECT * FROM cached_brief WHERE date = :date LIMIT 1")
+    suspend fun brief(date: String): CachedBrief?
+
+    @Query("DELETE FROM cached_brief")
+    suspend fun clearBriefs()
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun upsertWeekReview(review: CachedWeekReview)
+
+    @Query("SELECT * FROM cached_week_review WHERE weekStart = :weekStart LIMIT 1")
+    suspend fun weekReview(weekStart: String): CachedWeekReview?
+
+    @Query("DELETE FROM cached_week_review")
+    suspend fun clearWeekReviews()
 }
 
 @Database(
     entities = [
-        CachedWorkout::class, CachedSummary::class,
+        CachedWorkout::class, CachedSummary::class, CachedBrief::class, CachedWeekReview::class,
         WorkoutEntity::class, SetEntity::class, RoutineEntity::class, RoutineItemEntity::class,
         CustomExerciseEntity::class, FavoriteEntity::class, TombstoneEntity::class,
     ],
-    version = 6,
+    version = 8,
     exportSchema = false,
 )
 abstract class AppDatabase : RoomDatabase() {
@@ -111,13 +150,27 @@ private val MIGRATION_5_6 = object : Migration(5, 6) {
     }
 }
 
+// v6 → v7: cache the coach's proactive daily briefing per date.
+private val MIGRATION_6_7 = object : Migration(6, 7) {
+    override fun migrate(db: SupportSQLiteDatabase) {
+        db.execSQL("CREATE TABLE IF NOT EXISTS cached_brief (date TEXT NOT NULL PRIMARY KEY, text TEXT NOT NULL)")
+    }
+}
+
+// v7 → v8: cache the coach's weekly recap per week-start.
+private val MIGRATION_7_8 = object : Migration(7, 8) {
+    override fun migrate(db: SupportSQLiteDatabase) {
+        db.execSQL("CREATE TABLE IF NOT EXISTS cached_week_review (weekStart TEXT NOT NULL PRIMARY KEY, text TEXT NOT NULL)")
+    }
+}
+
 @Module
 @InstallIn(SingletonComponent::class)
 object CacheModule {
     @Provides @Singleton
     fun provideDb(@ApplicationContext ctx: Context): AppDatabase =
         Room.databaseBuilder(ctx, AppDatabase::class.java, "workoutmaker.db")
-            .addMigrations(MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6)
+            .addMigrations(MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8)
             .fallbackToDestructiveMigration()
             .build()
 

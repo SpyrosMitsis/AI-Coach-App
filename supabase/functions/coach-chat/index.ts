@@ -12,18 +12,27 @@
 // chat     → returns { reply } (free-form prose) and saves the thread.
 // finalize → returns { template } (structured JSON) and optionally saves it.
 
-import { handleOptions, json } from "../_shared/cors.ts";
+import { errorStatus, handleOptions, json } from "../_shared/cors.ts";
+import { logger } from "../_shared/log.ts";
 import { adminClient, getUserId } from "../_shared/supabase.ts";
 import { llmAccess } from "../_shared/llm_keys.ts";
 import {
   type ChatMessage,
+  customPriceFromProfile,
   estimateCostUsd,
   extractJson,
   llmGenerateWithFallback,
 } from "../_shared/llm.ts";
 import { computeRecovery } from "../_shared/recovery.ts";
+import {
+  compressThread,
+  memoryDocsBlock,
+  memoryFromProfile,
+  summarizeDropped,
+  updateUserDoc,
+} from "../_shared/agent_memory.ts";
 import { corsHeaders } from "../_shared/cors.ts";
-import { COACH_SYSTEM_PROMPT, finalizeInstruction, trainingPhase } from "../_shared/prompt.ts";
+import { COACH_SYSTEM_PROMPT, finalizeInstruction, freshnessWord, recoveryWord, trainingPhase } from "../_shared/prompt.ts";
 import type { LlmProvider } from "../_shared/types.ts";
 import { executeTool, nativeToolDefs, toolCatalogPrompt } from "../_shared/coach_tools.ts";
 import { runNativeToolLoop, supportsNativeTools } from "../_shared/llm_native_tools.ts";
@@ -36,25 +45,29 @@ const TOOL_RULES = `
 RULES:
 - Before giving training advice or a plan, READ the relevant data first (get_fitness, get_planned_week, get_recent_activities, get_strength_summary, get_readiness, get_execution_analysis, get_profile). Ground every claim in what you read.
 - NEVER ask the athlete to describe past workouts, sessions, or numbers you can look up yourself. Questions like "how did my last workouts go?" mean: call get_recent_activities and get_execution_analysis (plus get_strength_summary for lifting), then answer from the data.
-- Take ACTIONS (plan_week, generate_workout, move_workout, set_goal_race) ONLY after the athlete clearly agrees, then confirm what you did and why in your final message.
+- DRIVE the task to completion in this turn. When the athlete's message already asks for or agrees to an action (e.g. "plan my week and put it on my calendar", "make me today's workout", "apply that"), TAKE the action (plan_week, generate_workout, move_workout, set_goal_race) now, don't stop to ask "shall I?" again. Then confirm what you did and why.
+- NEVER promise an action instead of performing it. There is only THIS turn, the athlete cannot grant you a "next turn", so phrases like "I'll adjust your plan", "let me review your week", "I will proceed with these adjustments", "I'm going to update…", or "give me a moment" are FORBIDDEN unless you call the matching tool in this same turn. If you intend to change the plan, call plan_week / generate_workout / move_workout / set_goal_race NOW, read back the result, and report what you DID in the past tense, never what you will do.
+- A request that signals intent IS consent to act. "I have an exam until June 30, adjust my plan", "lighten this week", "move my long run" all mean: do it now. Don't re-ask. For a destructive overwrite (regenerating an existing/partly-locked week, changing a goal-race date) just give a one-line heads-up of what you replaced as part of the report, don't stop to ask first.
+- Only pause to ask first when the action is genuinely ambiguous AND unsignalled. When you do ask, ask once and propose a specific default.
+- Don't end a turn by handing trivial work back ("want me to schedule it?") when the request already implied yes, just do it and report.
 - Call remember when the athlete shares a durable preference, constraint, or injury.
-- Be efficient: a few targeted reads, then answer. You have at most 6 tool calls per turn.
-- Final messages are warm but concise — reference the actual numbers, and give one clear next step.`;
+- Be efficient: a few targeted reads, then act/answer. You have at most 6 tool calls per turn.
+- Final messages are warm but concise, and sound like a human coach. NOT a stats readout. Translate the data into plain language ("you're a bit run-down", "you're fresh"); don't recite raw metrics like "CTL 7, ATL 14, TSB -7, readiness 57/100". Quote a number only when it's directly actionable (a target pace, a working weight). End with what you did or one clear next step.`;
 
 // System prompt suffix when the provider has native tool calling.
 const NATIVE_TOOL_PREAMBLE = `
 
-YOU ARE AN AGENTIC COACH WITH TOOLS. You can read the athlete's real training data and act on their plan. Don't invent numbers — read them.
+YOU ARE AN AGENTIC COACH WITH TOOLS. You can read the athlete's real training data and act on their plan. Don't invent numbers, read them.
 ${TOOL_RULES}`;
 
 const TOOL_PROTOCOL = `
 
-YOU ARE AN AGENTIC COACH WITH TOOLS. You can read the athlete's real training data and act on their plan. Don't invent numbers — read them.
+YOU ARE AN AGENTIC COACH WITH TOOLS. You can read the athlete's real training data and act on their plan. Don't invent numbers, read them.
 
 TOOLS:
 ${toolCatalogPrompt()}
 
-RESPONSE FORMAT — output ONLY one JSON object, nothing else:
+RESPONSE FORMAT, output ONLY one JSON object, nothing else:
 • Use a tool:  {"action":"tool","tool":"<name>","args":{ ... }}
 • Reply to athlete:  {"action":"final","message":"<concise, specific reply>"}
 ${TOOL_RULES}`;
@@ -73,10 +86,34 @@ function cleanReply(text: string): string {
       const o = JSON.parse(t) as Record<string, unknown>;
       const m = o.message ?? o.reply ?? o.final;
       if (typeof m === "string" && m.trim()) return m.trim();
-    } catch { /* not JSON — keep as-is */ }
+    } catch { /* not JSON, keep as-is */ }
   }
   return t;
 }
+
+// Tools that mutate the athlete's plan/calendar. The anti-stall guard uses this
+// to tell "the coach actually acted" from "the coach only talked about acting".
+const WRITE_TOOLS = new Set(["plan_week", "generate_workout", "move_workout", "set_goal_race"]);
+
+// A reply "stalls" when it promises a plan change in the future tense or asks the
+// athlete to wait, instead of calling the tool. Two cheap gates keep false
+// positives bounded (worst case: one wasted corrective turn): an explicit stall
+// phrase, OR a future-intent marker sitting next to a plan-action verb.
+const STALL_PHRASES =
+  /\b(let me (?:review|check|look|take a look|pull up|analyz|see)|give me a (?:moment|sec|minute)|one (?:moment|sec)|hold on|bear with me|i'?ll get (?:back|right back)|i'?ll proceed|i will proceed|i'?ll go ahead)\b/i;
+const FUTURE_INTENT = /\b(i'?ll|i will|i'?m going to|i am going to|let me|going to)\b/i;
+const PLAN_VERB =
+  /\b(adjust|updat|chang|modif|revis|re-?plan|plan|schedul|reschedul|mov|shift|push|reduc|lower|cut|increas|build|creat|generat|put together|draft|design|tweak|swap|regenerat|tailor|rework)\w*/i;
+function looksLikeStall(text: string): boolean {
+  if (!text) return false;
+  if (STALL_PHRASES.test(text)) return true;
+  return FUTURE_INTENT.test(text) && PLAN_VERB.test(text);
+}
+
+const STALL_NUDGE =
+  "You described an action but did not perform it, no tool was called this turn. " +
+  "If you intend to change the plan, call the tool NOW (plan_week / generate_workout / move_workout / set_goal_race), read the result, and report what you DID in the past tense. " +
+  "If no change is actually needed, answer plainly without promising any future work.";
 
 // Supabase Edge runtime keeps the worker alive for promises passed to
 // EdgeRuntime.waitUntil even if the client disconnects mid-stream — without it
@@ -88,56 +125,31 @@ function waitUntil(p: Promise<unknown>) {
   } catch { /* local dev runtime without EdgeRuntime */ }
 }
 
-// Cap what we send to the model on long threads: keep the opening message
-// (it anchors the thread's purpose) plus the most recent turns, within a rough
-// character budget. The FULL thread is still persisted — only the model input
-// is trimmed, so token cost stops growing linearly with conversation length.
-function trimThread(msgs: ChatMessage[], maxTurns = 24, maxChars = 24_000): ChatMessage[] {
-  const kept = msgs.length <= maxTurns
-    ? [...msgs]
-    : [msgs[0], ...msgs.slice(-(maxTurns - 1))];
-  let total = kept.reduce((s, m) => s + m.content.length, 0);
-  while (kept.length > 2 && total > maxChars) {
-    total -= kept.splice(1, 1)[0].content.length; // drop oldest after the anchor
-  }
-  return kept;
-}
+// Active window sent to the model on long threads: the opening message (anchors
+// the thread's purpose) plus the most recent turns within a budget. The FULL
+// thread is still persisted, and the dropped turns are folded into a running
+// summary (see persistThread), so old context is COMPRESSED, not lost.
+const trimThread = (msgs: ChatMessage[]): ChatMessage[] => compressThread(msgs).kept;
 
 // Durable facts worth remembering tend to mention these. We only spend a token
 // budget on knowledge-extraction when the latest user turn plausibly carries one.
 const KNOWLEDGE_HINTS =
   /\b(injur|hurt|pain|sore|tendin|strain|sprain|knee|shoulder|back|hip|ankle|wrist|elbow|equipment|dumbbell|barbell|kettlebell|machine|rack|gym|home|treadmill|don'?t have|no access|only have|prefer|hate|dislike|avoid|can'?t|cannot|unable|allerg|vegan|schedule|mornings?|evenings?|nights?|work|travel|busy|recover)/i;
 
-// Maintain user_profiles.coach_knowledge from the conversation. Best-effort:
-// returns the new knowledge text (or null if unchanged / on failure).
-async function updateKnowledge(
-  admin: ReturnType<typeof adminClient>,
-  userId: string,
-  existing: string,
-  recent: ChatMessage[],
-  chain: LlmProvider[],
-  resolveKey: (p: LlmProvider) => Promise<string | null>,
-): Promise<void> {
-  const transcript = recent
-    .slice(-6)
-    .map((m) => `${m.role === "user" ? "Athlete" : "Coach"}: ${m.content}`)
-    .join("\n");
-  const prompt =
-    `You maintain an athlete's durable COACHING KNOWLEDGE — a short bullet list of facts a coach must always honor: injuries/limitations, equipment they have or lack, scheduling constraints, exercise preferences and dislikes, dietary/other constraints.\n\n` +
-    `EXISTING KNOWLEDGE:\n${existing.trim() || "(empty)"}\n\n` +
-    `RECENT CONVERSATION:\n${transcript}\n\n` +
-    `Return the UPDATED knowledge as a concise markdown bullet list (max ~12 bullets). Merge new durable facts, drop anything the athlete has retracted, keep it terse. If nothing durable changed, return the existing list unchanged. Output ONLY the bullet list, no preamble.`;
-  try {
-    const out = await llmGenerateWithFallback(chain, { prompt, systemPrompt: "You extract and maintain durable athlete facts. Output only a bullet list." }, resolveKey);
-    const next = out.text.trim();
-    // Sanity: keep only plausible bullet output, cap length.
-    if (next && next.length <= 2000 && /[-*•]/.test(next) && next !== existing.trim()) {
-      await admin.from("user_profiles").update({ coach_knowledge: next }).eq("id", userId);
-    }
-  } catch (_e) {
-    // best-effort — never block the chat on this
-  }
+// First-person declaratives often carry durable preferences/constraints without
+// a hint keyword ("I only train twice a week", "my coach said no deadlifts").
+const SELF_STATEMENT =
+  /\b(i|my)\b.{0,40}\b(only|usually|always|never|tend to|can'?t|cannot|won'?t|prefer|like|love|hate|need|have to|train|do|avoid|stick to|coach|physio|doctor)\b/i;
+
+// Decide whether to run the (background, LLM-backed) knowledge maintainer: on a
+// keyword hint, on a first-person declarative, or periodically as a safety net
+// so an oddly-phrased durable fact still lands within a few turns.
+function shouldUpdateKnowledge(lastUser: string, userTurns: number): boolean {
+  return KNOWLEDGE_HINTS.test(lastUser) || SELF_STATEMENT.test(lastUser) ||
+    (userTurns > 0 && userTurns % 4 === 0);
 }
+
+const log = logger("coach-chat");
 
 Deno.serve(async (req) => {
   const pre = handleOptions(req);
@@ -152,15 +164,38 @@ Deno.serve(async (req) => {
     const messages: ChatMessage[] = Array.isArray(body.messages) ? body.messages : [];
     const mode: string = body.mode ?? "chat";
     if (!messages.length) return json({ error: "messages required" }, 400);
+    // Cost guard for every user (thread totals are trimmed later, but a single
+    // giant message would ride through as the anchor turn).
+    if (messages.some((m) => typeof m?.content === "string" && m.content.length > 8000)) {
+      return json({ error: "Message too long." }, 400);
+    }
+    log.info("request", { mode, turns: messages.length, purpose: body.purpose, finalizeKind: body.finalizeKind });
 
     // --- athlete context so the coach grounds advice in real data ----------
     const { data: profile } = await admin
       .from("user_profiles")
-      .select("display_name, onboarding, active_llm_provider, llm_fallback_chain, coach_knowledge")
+      .select("display_name, onboarding, active_llm_provider, llm_fallback_chain, coach_knowledge, training_memory, coach_soul, coach_soul_updated_at, llm_custom_input_per_1m, llm_custom_output_per_1m, plan, plan_expires_at, use_hosted_ai")
       .eq("id", userId)
       .single();
     const onboarding = (profile?.onboarding ?? {}) as Record<string, unknown>;
     const existingKnowledge = (profile?.coach_knowledge ?? "") as string;
+    const agentMemory = memoryFromProfile(profile);
+
+    // Running summary of earlier turns archived out of the active window — lets
+    // long threads stay coherent without resending every token.
+    let convSummary = "";
+    if (body.conversationId) {
+      const { data: conv } = await admin
+        .from("coach_conversations")
+        .select("summary")
+        .eq("id", body.conversationId)
+        .eq("user_id", userId)
+        .single();
+      convSummary = ((conv?.summary ?? "") as string).trim();
+    }
+    const summaryBlock = convSummary
+      ? `\n\nCONVERSATION SO FAR (summary of earlier turns archived from context, rely on it; don't re-ask what it already covers):\n${convSummary}`
+      : "";
 
     const since28 = new Date(Date.now() - 28 * DAY).toISOString().slice(0, 10);
     const since7 = new Date(Date.now() - 7 * DAY).toISOString().slice(0, 10);
@@ -219,24 +254,23 @@ Deno.serve(async (req) => {
     });
 
     const context =
-      `ATHLETE CONTEXT (use it, don't restate it verbatim):
+      `ATHLETE CONTEXT (background for YOUR reasoning, interpret it in plain language; never read these numbers back to the athlete as a list):
 - Name: ${profile?.display_name ?? "athlete"}; today is ${today}
 - Goal: ${onboarding.goal ?? "not set"}; experience: ${onboarding.experience ?? "unknown"}
 - Available days: ${(onboarding.days as string[] | undefined)?.join(", ") ?? "unknown"}; session length: ${onboarding.session_duration ?? "?"} min
 - Equipment: ${onboarding.equipment ?? "unknown"}; injuries: ${onboarding.injury_history ?? "none noted"}
-- Fitness CTL ${ctl.toFixed(0)}, fatigue ATL ${atl.toFixed(0)}, form TSB ${(ctl - atl).toFixed(0)}
-- Readiness today: ${recovery.score}/100 (${recovery.band}); weekly load so far: ${weeklyTss} TSS
+- Form/freshness: ${freshnessWord(ctl - atl)} (TSB ${(ctl - atl).toFixed(0)})
+- Recovery today: ${recoveryWord(recovery.band)} (${recovery.score}/100); weekly load so far ~${weeklyTss} TSS, background only, don't quote it unless they ask
 - Today's plan: ${todayLine}
 - Last completed sessions (newest first): ${recentLines.join(" | ") || "none recorded in the last 28 days"}
 - ~${weeklyKm.toFixed(0)} km/week recently; training phase: ${trainingPhase(weeksToGoal)}` +
-      (existingKnowledge.trim()
-        ? `\n\nKNOWN CONSTRAINTS & PREFERENCES (already on file — honor these, ask before changing them):\n${existingKnowledge.trim()}`
-        : "");
+      memoryDocsBlock(agentMemory) +
+      summaryBlock;
 
     const systemPrompt = `${COACH_SYSTEM_PROMPT}\n\n${context}`;
 
     // --- resolve provider keys (fallback chain) ----------------------------
-    const { chain, resolveKey, resolveModel } = llmAccess(admin, userId, profile);
+    const { chain, resolveKey, resolveModel, resolveBaseUrl, hosted } = await llmAccess(admin, userId, profile);
 
     // --- build the turn list -----------------------------------------------
     const turns: ChatMessage[] = trimThread(messages);
@@ -255,68 +289,149 @@ Deno.serve(async (req) => {
       const runAgentic = async (onTool?: (name: string) => void) => {
         const toolsUsed: string[] = [];
         let provider: LlmProvider | string = chain[0] ?? "";
-        let replyText = "";
+        // Token usage summed across every LLM call this turn made (native loop +
+        // JSON-protocol steps + the anti-stall retry) → logged for cost tracking.
+        let promptTokens = 0;
+        let completionTokens = 0;
+        let model = "";
+        // State-changing tools are made idempotent within a turn: the native
+        // loop can fire a write tool and then exhaust maxSteps (returning empty
+        // text), which makes generateOnce replay the JSON protocol from the
+        // original thread and call the same tool again. Returning the first
+        // observation instead of re-executing prevents the double-write.
+        const writeCache = new Map<string, Promise<string>>();
         const exec = (name: string, targs: Record<string, unknown>) => {
+          const writeKey = WRITE_TOOLS.has(name) ? `${name}:${JSON.stringify(targs)}` : null;
+          if (writeKey) {
+            const prior = writeCache.get(writeKey);
+            if (prior) { log.warn("dedup_write", { tool: name }); return prior; }
+          }
           toolsUsed.push(name);
           try { onTool?.(name); } catch { /* never block on UI events */ }
-          return executeTool(admin, userId, auth, name, targs);
+          const obs = executeTool(admin, userId, auth, name, targs);
+          if (writeKey) writeCache.set(writeKey, obs);
+          return obs;
         };
 
-        // Prefer the provider's NATIVE tool-calling API when available — far
-        // more reliable than the JSON action protocol. Gemini (no adapter yet)
-        // and any native-loop error fall through to the JSON protocol below.
+        // Resolve the native-tool provider once — independent of the thread, so
+        // the stall retry reuses it without re-resolving keys.
         let keyedProvider: LlmProvider | null = null;
         let keyedKey: string | null = null;
         for (const pr of chain) {
           const k = await resolveKey(pr);
           if (k) { keyedProvider = pr; keyedKey = k; break; }
         }
-        if (keyedProvider && keyedKey && supportsNativeTools(keyedProvider)) {
-          try {
-            const out = await runNativeToolLoop({
-              provider: keyedProvider,
-              apiKey: keyedKey,
-              model: resolveModel(keyedProvider),
-              systemPrompt: `${COACH_SYSTEM_PROMPT}\n\n${context}${NATIVE_TOOL_PREAMBLE}`,
-              messages: trimThread(messages),
-              tools: nativeToolDefs(),
-              exec,
-              maxSteps: 6,
-            });
-            provider = keyedProvider;
-            replyText = out.text;
-          } catch { /* fall back to the JSON protocol */ }
-        }
 
-        const chatSystem = `${COACH_SYSTEM_PROMPT}\n\n${context}${TOOL_PROTOCOL}`;
-        const work: ChatMessage[] = trimThread(messages);
+        // One full agentic pass over a thread → the model's reply text. Prefers
+        // the provider's NATIVE tool-calling API (far more reliable than the JSON
+        // action protocol); Gemini/custom and any native-loop error fall through
+        // to the JSON protocol. Tool side effects accumulate into toolsUsed.
+        const generateOnce = async (thread: ChatMessage[]): Promise<string> => {
+          let replyText = "";
+          if (keyedProvider && keyedKey && supportsNativeTools(keyedProvider)) {
+            try {
+              const out = await runNativeToolLoop({
+                provider: keyedProvider,
+                apiKey: keyedKey,
+                model: resolveModel(keyedProvider),
+                systemPrompt: `${COACH_SYSTEM_PROMPT}\n\n${context}${NATIVE_TOOL_PREAMBLE}`,
+                messages: trimThread(thread),
+                tools: nativeToolDefs(),
+                exec,
+                maxSteps: 6,
+              });
+              provider = keyedProvider;
+              replyText = out.text;
+              promptTokens += out.promptTokens;
+              completionTokens += out.completionTokens;
+              model = out.model;
+            } catch (e) {
+              // Native tool-calling silently degrading to the JSON protocol is a
+              // real quality cliff — surface why instead of swallowing it.
+              log.warn("native_tools_failed", {
+                provider: keyedProvider,
+                err: e instanceof Error ? e.message : String(e),
+              });
+            }
+          }
 
-        for (let step = 0; !replyText.trim() && step < 6; step++) {
-          const step_out = await llmGenerateWithFallback(
-            chain, { messages: work, systemPrompt: chatSystem, jsonMode: true }, resolveKey, resolveModel,
-          );
-          provider = step_out.provider;
-          let parsed: Record<string, unknown> | null = null;
-          try { parsed = extractJson<Record<string, unknown>>(step_out.text); } catch { parsed = null; }
+          const chatSystem = `${COACH_SYSTEM_PROMPT}\n\n${context}${TOOL_PROTOCOL}`;
+          const work: ChatMessage[] = trimThread(thread);
+          for (let step = 0; !replyText.trim() && step < 6; step++) {
+            const step_out = await llmGenerateWithFallback(
+              chain, { messages: work, systemPrompt: chatSystem, jsonMode: true }, resolveKey, resolveModel, resolveBaseUrl,
+            );
+            provider = step_out.provider;
+            promptTokens += step_out.promptTokens;
+            completionTokens += step_out.completionTokens;
+            model = step_out.model;
+            let parsed: Record<string, unknown> | null = null;
+            try { parsed = extractJson<Record<string, unknown>>(step_out.text); } catch { parsed = null; }
 
-          // Model replied (or returned non-JSON prose) → that's the answer.
-          if (!parsed || parsed.action === "final" || typeof parsed.message === "string") {
-            replyText = (parsed?.message as string) ?? (parsed?.reply as string) ?? step_out.text;
+            // Model replied (or returned non-JSON prose) → that's the answer.
+            if (!parsed || parsed.action === "final" || typeof parsed.message === "string") {
+              replyText = (parsed?.message as string) ?? (parsed?.reply as string) ?? step_out.text;
+              break;
+            }
+            // Tool call → run it and feed back the observation.
+            if (parsed.action === "tool" && typeof parsed.tool === "string") {
+              const obs = await exec(parsed.tool, (parsed.args ?? {}) as Record<string, unknown>);
+              work.push({ role: "assistant", content: JSON.stringify(parsed) });
+              work.push({ role: "user", content: `OBSERVATION from ${parsed.tool}: ${obs}` });
+              continue;
+            }
+            // Unknown shape — surface whatever text came back.
+            replyText = step_out.text;
             break;
           }
-          // Tool call → run it and feed back the observation.
-          if (parsed.action === "tool" && typeof parsed.tool === "string") {
-            const obs = await exec(parsed.tool, (parsed.args ?? {}) as Record<string, unknown>);
-            work.push({ role: "assistant", content: JSON.stringify(parsed) });
-            work.push({ role: "user", content: `OBSERVATION from ${parsed.tool}: ${obs}` });
-            continue;
-          }
-          // Unknown shape — surface whatever text came back.
-          replyText = step_out.text;
-          break;
+          return replyText;
+        };
+
+        let replyText = await generateOnce(messages);
+
+        // Anti-stall guard: the model sometimes PROMISES a change ("I'll adjust
+        // your plan", "let me review…") and ends the turn without calling any
+        // write tool — exactly the "it talks but never does it" failure. Give it
+        // ONE corrective turn to act now or finalize cleanly. Capped at a single
+        // retry and gated on no write-tool having run, so it can't loop or pile
+        // onto rate limits.
+        if (!toolsUsed.some((t) => WRITE_TOOLS.has(t)) && looksLikeStall(replyText)) {
+          const corrected: ChatMessage[] = [
+            ...messages,
+            { role: "assistant", content: replyText },
+            { role: "user", content: STALL_NUDGE },
+          ];
+          const retry = await generateOnce(corrected);
+          if (retry.trim()) replyText = retry;
         }
+
         replyText = cleanReply(replyText);
-        if (!replyText.trim()) replyText = "I gathered your data but need a bit more to act — what would you like me to do?";
+        if (!replyText.trim()) replyText = "I gathered your data but need a bit more to act, what would you like me to do?";
+
+        // Log this turn's LLM spend (feature=chat) — the agentic loop's calls were
+        // previously invisible in the diagnostics. Background; never blocks the reply.
+        if (promptTokens + completionTokens > 0) {
+          const cost = estimateCostUsd(
+            provider as LlmProvider, promptTokens, completionTokens,
+            customPriceFromProfile(provider, profile), model,
+          );
+          waitUntil((async () => {
+            try {
+              await admin.from("generation_logs").insert({
+                user_id: userId,
+                feature: "chat",
+                hosted,
+                provider,
+                model,
+                prompt_tokens: promptTokens,
+                completion_tokens: completionTokens,
+                estimated_cost_usd: cost,
+                tools_used: toolsUsed.length ? toolsUsed : null,
+                parsed_ok: true,
+              });
+            } catch { /* best effort */ }
+          })());
+        }
         return { replyText, toolsUsed, provider };
       };
 
@@ -334,10 +449,21 @@ Deno.serve(async (req) => {
             convId = conv?.id ?? null;
           }
         } catch { /* best effort */ }
+        const bundle = { chain, resolveKey, resolveModel, resolveBaseUrl };
         const lastUser = [...messages].reverse().find((m) => m.role === "user")?.content ?? "";
-        if (KNOWLEDGE_HINTS.test(lastUser)) {
+        const userTurns = (fullThread as ChatMessage[]).filter((m) => m.role === "user").length;
+        if (shouldUpdateKnowledge(lastUser, userTurns)) {
           // Slow secondary LLM call — never block the response on it.
-          waitUntil(updateKnowledge(admin, userId, existingKnowledge, fullThread as ChatMessage[], chain, resolveKey));
+          waitUntil(updateUserDoc(admin, userId, existingKnowledge, fullThread as ChatMessage[], bundle));
+        }
+        // Fold any turns now archived out of the active window into the running
+        // summary — background, so the next turn stays coherent for free.
+        const { dropped } = compressThread(fullThread as ChatMessage[]);
+        if (dropped.length && convId) {
+          waitUntil((async () => {
+            const s = await summarizeDropped(dropped, bundle);
+            if (s) await admin.from("coach_conversations").update({ summary: s }).eq("id", convId).eq("user_id", userId);
+          })());
         }
         return convId;
       };
@@ -380,8 +506,24 @@ Deno.serve(async (req) => {
       { messages: turns, systemPrompt, jsonMode: mode === "finalize" },
       resolveKey,
       resolveModel,
+      resolveBaseUrl,
     );
-    const cost = estimateCostUsd(outcome.provider, outcome.promptTokens, outcome.completionTokens);
+    const cost = estimateCostUsd(outcome.provider, outcome.promptTokens, outcome.completionTokens, customPriceFromProfile(outcome.provider, profile), outcome.model);
+    waitUntil((async () => {
+      try {
+        await admin.from("generation_logs").insert({
+          user_id: userId,
+          feature: mode === "finalize" ? "finalize" : "chat",
+          hosted,
+          provider: outcome.provider,
+          model: outcome.model,
+          prompt_tokens: outcome.promptTokens,
+          completion_tokens: outcome.completionTokens,
+          estimated_cost_usd: cost,
+          parsed_ok: true,
+        });
+      } catch { /* best effort */ }
+    })());
 
     // --- persist the conversation thread -----------------------------------
     const fullThread = [...messages, { role: "assistant", content: outcome.text }];
@@ -405,9 +547,10 @@ Deno.serve(async (req) => {
     if (mode !== "finalize") {
       // Maintain durable knowledge when the latest turn plausibly carries a fact.
       const lastUser = [...messages].reverse().find((m) => m.role === "user")?.content ?? "";
-      if (KNOWLEDGE_HINTS.test(lastUser)) {
+      const userTurns = (fullThread as ChatMessage[]).filter((m) => m.role === "user").length;
+      if (shouldUpdateKnowledge(lastUser, userTurns)) {
         // Slow secondary LLM call — don't block the reply on it.
-        waitUntil(updateKnowledge(admin, userId, existingKnowledge, fullThread as ChatMessage[], chain, resolveKey));
+        waitUntil(updateUserDoc(admin, userId, existingKnowledge, fullThread as ChatMessage[], { chain, resolveKey, resolveModel, resolveBaseUrl }));
       }
       return json({ reply: outcome.text, conversation_id: conversationId, provider: outcome.provider, estimated_cost_usd: cost });
     }
@@ -441,6 +584,7 @@ Deno.serve(async (req) => {
       estimated_cost_usd: cost,
     });
   } catch (e) {
-    return json({ error: e instanceof Error ? e.message : String(e) }, 500);
+    log.error("failed", { err: e instanceof Error ? e.message : String(e) });
+    return json({ error: e instanceof Error ? e.message : String(e) }, errorStatus(e));
   }
 });

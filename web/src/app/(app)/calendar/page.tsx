@@ -141,7 +141,7 @@ export default function CalendarPage() {
       const { error } = await supabase.from("planned_workouts").update({ locked: !w.locked }).eq("id", w.id);
       if (error) throw error;
     },
-    onSuccess: (_d, w) => setBannerAndReload(w.locked ? "Unlocked" : "🔒 Locked — re-planning won't touch it"),
+    onSuccess: (_d, w) => setBannerAndReload(w.locked ? "Unlocked" : "🔒 Locked, re-planning won't touch it"),
     onError: fail,
   });
 
@@ -151,7 +151,7 @@ export default function CalendarPage() {
   const move = useMutation({
     mutationFn: (vars: { id: string; date: string }) => api.moveWorkout(vars.id, vars.date),
     onSuccess: (r, vars) => {
-      setBanner(r.event_moved ? "✓ Moved — watch schedule updated." : "✓ Moved.");
+      setBanner(r.event_moved ? "✓ Moved, watch schedule updated." : "✓ Moved.");
       setMoveFor(null);
       setMoveDate("");
       setSelected(vars.date);
@@ -171,10 +171,11 @@ export default function CalendarPage() {
           .update({ completed: vars.completed }).eq("id", vars.w.id);
         if (e2) throw e2;
       }
-      await supabase.from("workout_feedback").insert({
+      const { error: fbErr } = await supabase.from("workout_feedback").insert({
         planned_workout_id: vars.w.id, date: vars.w.date,
         completed: vars.completed, difficulty: vars.completed ? "just_right" : null,
       });
+      if (fbErr) throw fbErr;
     },
     onSuccess: (_d, vars) => setBannerAndReload(vars.completed ? "✓ Marked done" : "Marked skipped"),
     onError: fail,
@@ -238,7 +239,7 @@ export default function CalendarPage() {
 
   const sync = useMutation({
     mutationFn: () => api.syncIntervals(),
-    onSuccess: (r) => { setBanner(`✓ Synced — ${r.activities_synced} activities up to date.`); invalidate(); },
+    onSuccess: (r) => { setBanner(`✓ Synced, ${r.activities_synced} activities up to date.`); invalidate(); },
     onError: fail,
   });
 
@@ -445,7 +446,7 @@ export default function CalendarPage() {
               </Card>
             )}
 
-            {/* Every planned session on this day — primary first */}
+            {/* Every planned session on this day, primary first */}
             {daySessions.map((w) => (
               <Card key={w.id}>
                 <CardHeader className="pb-2">
@@ -509,7 +510,7 @@ export default function CalendarPage() {
                       </div>
                     ) : w.skipped ? (
                       <div className="flex items-center justify-between">
-                        <p className="text-sm text-muted-foreground">Skipped — the plan will adapt.</p>
+                        <p className="text-sm text-muted-foreground">Skipped, the plan will adapt.</p>
                         <button className="text-xs text-muted-foreground hover:text-foreground" onClick={() => markUndone.mutate(w)}>
                           Undo skip
                         </button>
@@ -555,7 +556,7 @@ export default function CalendarPage() {
               />
               <label className="flex items-center gap-2 text-xs text-muted-foreground">
                 <input type="checkbox" checked={lockRequest} onChange={(e) => setLockRequest(e.target.checked)} className="accent-primary" />
-                Lock it — re-planning won&apos;t change this session
+                Lock it, re-planning won&apos;t change this session
               </label>
               <Button
                 size="sm"

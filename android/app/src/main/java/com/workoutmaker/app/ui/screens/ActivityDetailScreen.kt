@@ -28,6 +28,7 @@ import androidx.compose.material.icons.filled.ChevronLeft
 import androidx.compose.material.icons.filled.ChevronRight
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.EditCalendar
+import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material.icons.filled.FitnessCenter
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.LockOpen
@@ -67,14 +68,19 @@ import com.workoutmaker.app.ui.collectAsStateSafe
 import com.workoutmaker.app.data.CompletedActivity
 import com.workoutmaker.app.ui.components.ChipRow
 import com.workoutmaker.app.ui.components.chartLabel
+import com.workoutmaker.app.ui.components.fmtClock
 import com.workoutmaker.app.ui.components.hGridLine
 import com.workoutmaker.app.ui.components.GhostButton
-import com.workoutmaker.app.ui.components.InsetStat
+import com.workoutmaker.app.ui.components.StatTileGrid
 import com.workoutmaker.app.ui.components.ScreenScaffold
 import com.workoutmaker.app.ui.components.SectionCard
 import com.workoutmaker.app.ui.components.SectionLabel
+import com.workoutmaker.app.ui.components.ChartCadence
+import com.workoutmaker.app.ui.components.ChartHr
+import com.workoutmaker.app.ui.components.ChartPace
+import com.workoutmaker.app.ui.components.ChartPower
 import com.workoutmaker.app.ui.theme.BandRed
-import com.workoutmaker.app.ui.theme.Moss
+import com.workoutmaker.app.ui.theme.mossAccent
 import com.workoutmaker.app.ui.theme.Sage
 import com.workoutmaker.app.ui.theme.Sand
 import dagger.hilt.android.lifecycle.HiltViewModel
@@ -107,49 +113,84 @@ fun ActivityDetailScreen(activity: CompletedActivity, planned: PlannedWorkout?, 
             }
         }
 
+        // Order: headline first (how it went), then the key numbers and the
+        // coach's take, then the graphs, then the deeper analytical breakdowns.
+
+        // 1. Execution verdict vs the plan — the headline.
+        if (!activity.isManual) AnalysisScoreCard(activity)
+
+        // 2. Key metrics at a glance.
         SectionCard {
-            SectionLabel("Summary", color = Sage)
-            activity.distanceKm?.let { if (it > 0) InsetStat("Distance", "%.2f km".format(it)) }
-            activity.durationMin?.let { if (it > 0) InsetStat("Duration", "$it min") }
-            activity.paceSecPerKm?.let { InsetStat("Avg pace", "${fmtPaceSec(it)} /km") }
-            activity.avg_hr?.let { InsetStat("Avg HR", "$it bpm") }
-            activity.maxHr?.let { InsetStat("Max HR", "$it bpm") }
-            activity.avgPower?.let { InsetStat("Avg power", "$it W") }
-            activity.avgCadence?.let { InsetStat("Avg cadence", "$it") }
-            activity.elevationGain?.let { InsetStat("Elevation", "$it m") }
-            activity.calories?.let { InsetStat("Calories", "$it kcal") }
-            activity.tss?.let { if (it > 0) InsetStat("Training load (TSS)", "${it.toInt()}") }
+            SectionLabel("Summary", color = MaterialTheme.colorScheme.primary)
+            StatTileGrid(
+                buildList {
+                    activity.distanceKm?.let { if (it > 0) add("Distance" to "%.2f km".format(it)) }
+                    activity.durationMin?.let { if (it > 0) add("Duration" to "$it min") }
+                    // Elapsed only when it differs meaningfully from moving time (≥1 min of pauses).
+                    activity.elapsedSeconds?.let { el ->
+                        val mv = activity.duration_seconds ?: 0
+                        if (el - mv >= 60) add("Elapsed" to "${el / 60} min")
+                    }
+                    activity.paceSecPerKm?.let { add("Avg pace" to "${fmtPaceSec(it)} /km") }
+                    activity.maxPaceSecPerKm?.let { add("Best pace" to "${fmtPaceSec(it)} /km") }
+                    activity.avg_hr?.let { add("Avg HR" to "$it bpm") }
+                    activity.maxHr?.let { add("Max HR" to "$it bpm") }
+                    activity.avgPower?.let { add("Avg power" to "$it W") }
+                    activity.normalizedPower?.let { add("Norm. power" to "$it W") }
+                    activity.avgCadence?.let { add("Avg cadence" to "$it spm") }
+                    activity.maxCadence?.let { add("Max cadence" to "$it spm") }
+                    activity.decouplingPct?.let { add("HR drift" to "%.1f%%".format(it)) }
+                    activity.elevationGain?.let { add("Elevation" to "$it m") }
+                    activity.avgTempC?.let { add("Avg temp" to "$it°C") }
+                    activity.calories?.let { add("Calories" to "$it kcal") }
+                    activity.tss?.let { if (it > 0) add("Training load" to "${it.toInt()} TSS") }
+                },
+            )
         }
 
-        // E3-style load context: what this did to your fitness.
-        if (activity.ctl != null || activity.atl != null) {
-            SectionCard {
-                SectionLabel("Fitness after this", color = Sand)
-                activity.ctl?.let { InsetStat("Fitness (CTL)", "%.0f".format(it)) }
-                activity.atl?.let { InsetStat("Fatigue (ATL)", "%.0f".format(it)) }
-                if (activity.ctl != null && activity.atl != null) {
-                    InsetStat("Form (TSB)", "%.0f".format(activity.ctl!! - activity.atl!!))
-                }
-            }
-        }
+        // 3. The coach's narrative takeaway.
+        if (!activity.isManual) CoachFeedbackCard(activity)
 
-        // Planned vs actual on this date.
+        // 4. Graphs over time: pace, heart rate, cadence, power.
+        if (!activity.isManual) ActivityChartsSection(activity)
+
+        // --- deeper analytical detail below -----------------------------------
+
+        // 5. How the session's intensity was distributed.
+        activity.hrZoneTimes?.let { HrZoneCard(it) }
+
+        // 6. Per-kilometre splits.
+        if (!activity.isManual) SplitsCard(activity)
+
+        // 7. Planned vs actual on this date.
         planned?.let { p ->
             SectionCard {
-                SectionLabel("On the plan that day", color = Moss)
+                SectionLabel("On the plan that day", color = mossAccent())
                 Text(p.workout_json.title, style = MaterialTheme.typography.titleSmall)
                 Text(
                     if (looksLike(p.type, activity.type)) "✓ You did your planned ${p.type}."
                     else "You had a ${p.type} planned but did this instead.",
                     style = MaterialTheme.typography.bodyMedium,
-                    color = if (looksLike(p.type, activity.type)) Sage else Sand,
+                    color = if (looksLike(p.type, activity.type)) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.secondary,
                 )
             }
         }
 
-        // Garmin-style execution analysis: score, target-vs-actual charts,
-        // splits, and AI coach feedback.
-        if (!activity.isManual) AnalysisSection(activity)
+        // 8. E3-style load context: what this did to your fitness.
+        if (activity.ctl != null || activity.atl != null) {
+            SectionCard {
+                SectionLabel("Fitness after this", color = MaterialTheme.colorScheme.secondary)
+                StatTileGrid(
+                    buildList {
+                        activity.ctl?.let { add("Fitness (CTL)" to "%.0f".format(it)) }
+                        activity.atl?.let { add("Fatigue (ATL)" to "%.0f".format(it)) }
+                        if (activity.ctl != null && activity.atl != null) {
+                            add("Form (TSB)" to "%.0f".format(activity.ctl!! - activity.atl!!))
+                        }
+                    },
+                )
+            }
+        }
     }
 }
 
@@ -184,8 +225,11 @@ class ActivityAnalysisViewModel @Inject constructor(
     }
 }
 
+// The execution-verdict card: score vs the plan, or the prompt to analyze when
+// it hasn't run yet. Owns the peek so the sibling analysis cards below can just
+// read the cached result (they share this same ViewModel instance).
 @Composable
-internal fun AnalysisSection(
+internal fun AnalysisScoreCard(
     activity: CompletedActivity,
     vm: ActivityAnalysisViewModel = hiltViewModel(),
 ) {
@@ -199,7 +243,7 @@ internal fun AnalysisSection(
 
     SectionCard {
         Row(verticalAlignment = Alignment.CenterVertically) {
-            SectionLabel("Workout analysis", color = Sage)
+            SectionLabel("Workout analysis", color = MaterialTheme.colorScheme.primary)
             Spacer(Modifier.weight(1f))
             if (a != null) {
                 TextButton(onClick = { vm.analyze(activity.id, force = true) }, enabled = busy == null) {
@@ -223,12 +267,11 @@ internal fun AnalysisSection(
                 Text(if (busy == activity.id) "  Analyzing…" else "  Analyze this workout")
             }
             error?.let {
-                Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
+                Text(com.workoutmaker.app.ui.components.friendlyError(it), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
             }
             return@SectionCard
         }
 
-        // --- Execution score ------------------------------------------------
         if (a.score != null) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 ExecutionRing(a.score!!)
@@ -241,7 +284,7 @@ internal fun AnalysisSection(
                 }
             }
         } else {
-            Text(a.label ?: "No plan to compare against.", style = MaterialTheme.typography.bodyMedium)
+            Text(a.label ?: "No planned session to compare against.", style = MaterialTheme.typography.bodyMedium)
         }
         a.components.forEach { c ->
             Column(Modifier.fillMaxWidth().padding(vertical = 2.dp)) {
@@ -256,77 +299,145 @@ internal fun AnalysisSection(
             }
         }
     }
+}
 
-    // --- Pace chart with target band ----------------------------------------
-    val series = a?.series
-    if (a != null && series != null && series.pace.any { it != null }) {
+// The coach's narrative takeaway for this session.
+@Composable
+private fun CoachFeedbackCard(
+    activity: CompletedActivity,
+    vm: ActivityAnalysisViewModel = hiltViewModel(),
+) {
+    val results by vm.results.collectAsStateSafe()
+    val a = results[activity.id] ?: return
+    if (a.feedback.isNullOrBlank()) return
+    SectionCard {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Icon(Icons.Filled.AutoAwesome, null, Modifier.size(16.dp), tint = MaterialTheme.colorScheme.primary)
+            Spacer(Modifier.width(6.dp))
+            SectionLabel("Coach feedback" + (a.feedback_provider?.let { " · $it" } ?: ""), color = MaterialTheme.colorScheme.primary)
+        }
+        Text(a.feedback!!, style = MaterialTheme.typography.bodyMedium)
+    }
+}
+
+// Time-series graphs from the recording: pace + HR (with their planned target
+// bands), then cadence and power when the device recorded them.
+@Composable
+private fun ActivityChartsSection(
+    activity: CompletedActivity,
+    vm: ActivityAnalysisViewModel = hiltViewModel(),
+) {
+    val results by vm.results.collectAsStateSafe()
+    val a = results[activity.id] ?: return
+    val series = a.series ?: return
+
+    if (series.pace.any { it != null }) {
         SectionCard {
             SectionLabel(
-                "Pace" + (a.target?.takeIf { it.pace_lo != null }?.let { t ->
-                    " · target ${t.zones} ${fmtPaceSec(t.pace_lo!!.toInt())}–${fmtPaceSec(t.pace_hi!!.toInt())} /km"
+                "Pace · /km" + (a.target?.takeIf { it.pace_lo != null && it.pace_hi != null }?.let { t ->
+                    " · target ${t.zones} ${fmtPaceSec(t.pace_lo!!.toInt())}-${fmtPaceSec(t.pace_hi!!.toInt())}"
                 } ?: ""),
-                color = Sage,
+                color = ChartPace,
             )
             PaceChart(series, a.target)
             Row(horizontalArrangement = Arrangement.spacedBy(14.dp)) {
-                LegendDotSmall("Actual pace", Sage)
-                if (a.target?.pace_lo != null) LegendDotSmall("Target band", Sand)
+                LegendDotSmall("Actual pace", ChartPace)
+                if (a.target?.pace_lo != null) LegendDotSmall("Target band", MaterialTheme.colorScheme.secondary)
             }
         }
     }
-    if (a != null && series != null && series.hr.any { it != null }) {
+    if (series.hr.any { it != null }) {
         SectionCard {
             SectionLabel(
-                "Heart rate" + (a.target?.takeIf { it.hr_lo != null }?.let { " · target ${it.hr_lo}–${it.hr_hi} bpm" } ?: ""),
-                color = Sand,
+                "Heart rate · bpm" + (a.target?.takeIf { it.hr_lo != null && it.hr_hi != null }?.let { " · target ${it.hr_lo}-${it.hr_hi}" } ?: ""),
+                color = ChartHr,
             )
             HrChart(series, a.target)
         }
     }
-
-    // --- Splits ---------------------------------------------------------------
-    if (a != null && a.splits.isNotEmpty()) {
+    if (series.cadence.any { it != null }) {
         SectionCard {
-            SectionLabel("Splits", color = Moss)
-            a.splits.forEach { s ->
-                Row(Modifier.fillMaxWidth().padding(vertical = 2.dp), verticalAlignment = Alignment.CenterVertically) {
-                    Text("km ${if (s.km % 1.0 == 0.0) s.km.toInt().toString() else s.km.toString()}",
-                        Modifier.width(64.dp), style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant)
-                    Text("${fmtPaceSec(s.sec)} /km", style = MaterialTheme.typography.bodyMedium)
-                    Spacer(Modifier.weight(1f))
-                    s.avg_hr?.let { Text("♥ $it", style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant) }
-                }
-            }
+            SectionLabel("Cadence · spm", color = ChartCadence)
+            com.workoutmaker.app.ui.components.LineChart(
+                t = series.t, values = series.cadence, color = ChartCadence,
+                formatY = { "${it.toInt()}" }, xLabels = timeAxis(series.t),
+                formatX = { fmtClock(it.toInt()) }, height = 120.dp,
+            )
         }
     }
-
-    // --- AI feedback ------------------------------------------------------------
-    if (a != null && !a.feedback.isNullOrBlank()) {
+    if (series.power.any { it != null }) {
         SectionCard {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Icon(Icons.Filled.AutoAwesome, null, Modifier.size(16.dp), tint = Sage)
-                Spacer(Modifier.width(6.dp))
-                SectionLabel("Coach feedback" + (a.feedback_provider?.let { " · $it" } ?: ""), color = Sage)
-            }
-            Text(a.feedback!!, style = MaterialTheme.typography.bodyMedium)
+            SectionLabel("Power · W", color = ChartPower)
+            com.workoutmaker.app.ui.components.LineChart(
+                t = series.t, values = series.power, color = ChartPower,
+                formatY = { "${it.toInt()}" }, xLabels = timeAxis(series.t),
+                formatX = { fmtClock(it.toInt()) }, height = 120.dp,
+            )
         }
     }
 }
 
+// "(0, "N min")" time-axis labels from a seconds series.
+private fun timeAxis(t: List<Double>): Pair<String, String> =
+    "0" to "${((t.lastOrNull() ?: 0.0) / 60).toInt()} min"
+
+// Per-kilometre splits with pace and average HR.
+@Composable
+private fun SplitsCard(
+    activity: CompletedActivity,
+    vm: ActivityAnalysisViewModel = hiltViewModel(),
+) {
+    val results by vm.results.collectAsStateSafe()
+    val a = results[activity.id] ?: return
+    if (a.splits.isEmpty()) return
+    val banded = a.splits.count { it.in_band != null }
+    val onTarget = a.splits.count { it.in_band == true }
+    SectionCard {
+        SectionLabel(
+            "Splits" + if (banded > 0) " · $onTarget/$banded on target" else "",
+            color = mossAccent(),
+        )
+        a.splits.forEach { s ->
+            // Tint the pace by whether the km landed in the planned target band.
+            val paceColor = when (s.in_band) {
+                true -> com.workoutmaker.app.ui.theme.BandGreen
+                false -> com.workoutmaker.app.ui.theme.BandAmber
+                null -> MaterialTheme.colorScheme.onSurface
+            }
+            Row(Modifier.fillMaxWidth().padding(vertical = 2.dp), verticalAlignment = Alignment.CenterVertically) {
+                Text("km ${if (s.km % 1.0 == 0.0) s.km.toInt().toString() else s.km.toString()}",
+                    Modifier.width(64.dp), style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Text("${fmtPaceSec(s.sec)} /km", style = MaterialTheme.typography.bodyMedium, color = paceColor)
+                s.in_band?.let { Text(if (it) "  ✓" else "  ✗", style = MaterialTheme.typography.bodySmall, color = paceColor) }
+                Spacer(Modifier.weight(1f))
+                s.avg_hr?.let {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Icon(Icons.Filled.Favorite, contentDescription = "Heart rate",
+                            modifier = Modifier.size(13.dp), tint = ChartHr)
+                        Text(" $it", style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
 internal fun scoreColor(score: Int) = when {
-    score >= 75 -> com.workoutmaker.app.ui.theme.BandGreen
-    score >= 55 -> com.workoutmaker.app.ui.theme.BandAmber
-    else -> BandRed
+    score >= 75 -> MaterialTheme.colorScheme.primary
+    score >= 55 -> com.workoutmaker.app.ui.theme.amberAccent()
+    else -> MaterialTheme.colorScheme.error
 }
 
 @Composable
 internal fun ExecutionRing(score: Int) {
     val color = scoreColor(score)
+    val track = MaterialTheme.colorScheme.surfaceVariant
     Box(Modifier.size(72.dp), contentAlignment = Alignment.Center) {
         androidx.compose.foundation.Canvas(Modifier.size(72.dp)) {
-            drawArc(androidx.compose.ui.graphics.Color(0xFF333535), -90f, 360f, false,
+            drawArc(track, -90f, 360f, false,
                 style = androidx.compose.ui.graphics.drawscope.Stroke(width = 14f))
             drawArc(color, -90f, 360f * (score / 100f), false,
                 style = androidx.compose.ui.graphics.drawscope.Stroke(
@@ -358,6 +469,47 @@ private fun LegendDotSmall(label: String, color: androidx.compose.ui.graphics.Co
     }
 }
 
+// Time-in-zone breakdown: one labelled bar per HR zone (Z1 easy → Zn max), with
+// the time spent and its share of the session. Trailing empty zones are dropped.
+@Composable
+private fun HrZoneCard(zoneTimes: List<Int>) {
+    val zones = zoneTimes.dropLastWhile { it == 0 }
+    if (zones.isEmpty()) return
+    val total = zones.sum().coerceAtLeast(1)
+    val zoneColors = listOf(mossAccent(), MaterialTheme.colorScheme.primary, MaterialTheme.colorScheme.secondary, com.workoutmaker.app.ui.theme.amberAccent(), MaterialTheme.colorScheme.error)
+    SectionCard {
+        SectionLabel("Time in HR zones", color = MaterialTheme.colorScheme.secondary)
+        zones.forEachIndexed { i, secs ->
+            val frac = secs / total.toFloat()
+            val color = zoneColors.getOrElse(i) { zoneColors.last() }
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    "Z${i + 1}",
+                    Modifier.width(28.dp),
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Box(
+                    Modifier.weight(1f).height(10.dp).clip(RoundedCornerShape(5.dp))
+                        .background(MaterialTheme.colorScheme.surfaceContainerHigh),
+                ) {
+                    Box(
+                        Modifier.fillMaxWidth(frac.coerceIn(0f, 1f)).height(10.dp)
+                            .background(color, RoundedCornerShape(5.dp)),
+                    )
+                }
+                Text(
+                    "${fmtClock(secs)} · ${(frac * 100 + 0.5f).toInt()}%",
+                    Modifier.padding(start = 10.dp).width(88.dp),
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    textAlign = TextAlign.End,
+                )
+            }
+        }
+    }
+}
+
 // Actual pace line over time with the planned pace band shaded behind it.
 // Y axis is inverted (faster = higher), as runners expect.
 @Composable
@@ -365,88 +517,44 @@ private fun PaceChart(
     series: com.workoutmaker.app.data.AnalysisSeries,
     target: com.workoutmaker.app.data.AnalysisTarget?,
 ) {
-    val line = Sage
-    val band = Sand
     val paces = series.pace.filterNotNull()
     if (paces.isEmpty()) return
     // Clamp the scale to a sensible window so one GPS blip doesn't flatten it.
-    val pLo = (paces.min()).coerceAtLeast(120.0)
-    val pHi = (paces.max()).coerceAtMost(720.0)
-    val lo = minOf(pLo, target?.pace_lo ?: pLo) - 10
-    val hi = maxOf(pHi, target?.pace_hi ?: pHi) + 10
-    androidx.compose.foundation.Canvas(Modifier.fillMaxWidth().height(150.dp)) {
-        val w = size.width
-        val h = size.height
-        fun y(p: Double) = (((p - lo) / (hi - lo)) * h).toFloat() // slower → lower
-        // Target band
-        if (target?.pace_lo != null && target.pace_hi != null) {
-            val top = y(target.pace_lo!!)
-            val bottom = y(target.pace_hi!!)
-            drawRect(
-                band.copy(alpha = 0.18f),
-                topLeft = androidx.compose.ui.geometry.Offset(0f, top),
-                size = androidx.compose.ui.geometry.Size(w, (bottom - top).coerceAtLeast(2f)),
-            )
-        }
-        // Pace scale (min/km): fastest at the top, slowest at the bottom.
-        chartLabel(
-            "${com.workoutmaker.app.data.Zones.formatPace(lo.toInt().coerceAtLeast(0))} /km", 4f, 13.sp.toPx())
-        chartLabel(
-            "${com.workoutmaker.app.data.Zones.formatPace(hi.toInt())} /km", 4f, h - 4f)
-        val n = series.t.size
-        if (n < 2) return@Canvas
-        val tMax = series.t.last().coerceAtLeast(1.0)
-        chartLabel("${(tMax / 60).toInt()} min", w - 4f, h - 4f, alignRight = true)
-        var pen: androidx.compose.ui.geometry.Offset? = null
-        for (i in 0 until n) {
-            val p = series.pace.getOrNull(i)
-            if (p == null) { pen = null; continue }
-            val pt = androidx.compose.ui.geometry.Offset(
-                (series.t[i] / tMax * w).toFloat(), y(p.coerceIn(lo, hi)),
-            )
-            pen?.let { drawLine(line, it, pt, strokeWidth = 4f) }
-            pen = pt
-        }
-    }
+    val lo = paces.min().coerceAtLeast(120.0).let { minOf(it, target?.pace_lo ?: it) } - 10
+    val hi = paces.max().coerceAtMost(720.0).let { maxOf(it, target?.pace_hi ?: it) } + 10
+    com.workoutmaker.app.ui.components.LineChart(
+        t = series.t,
+        values = series.pace,
+        color = ChartPace,
+        formatY = { com.workoutmaker.app.data.Zones.formatPace(it.toInt().coerceAtLeast(0)) },
+        xLabels = timeAxis(series.t),
+        formatX = { fmtClock(it.toInt()) },
+        inverted = true,
+        band = target?.takeIf { it.pace_lo != null && it.pace_hi != null }?.let { it.pace_lo!! to it.pace_hi!! },
+        bandColor = MaterialTheme.colorScheme.secondary,
+        minOverride = lo,
+        maxOverride = hi,
+        height = 150.dp,
+    )
 }
 
 @Composable
-private fun HrChart(
+internal fun HrChart(
     series: com.workoutmaker.app.data.AnalysisSeries,
     target: com.workoutmaker.app.data.AnalysisTarget?,
 ) {
-    val line = Sand
     val hrs = series.hr.filterNotNull()
     if (hrs.isEmpty()) return
-    val lo = minOf(hrs.min(), (target?.hr_lo ?: Int.MAX_VALUE).toDouble()) - 5
-    val hi = maxOf(hrs.max(), (target?.hr_hi ?: 0).toDouble()) + 5
-    androidx.compose.foundation.Canvas(Modifier.fillMaxWidth().height(120.dp)) {
-        val w = size.width
-        val h = size.height
-        fun y(v: Double) = (h - ((v - lo) / (hi - lo)) * h).toFloat()
-        if (target?.hr_lo != null && target.hr_hi != null) {
-            val top = y(target.hr_hi!!.toDouble())
-            val bottom = y(target.hr_lo!!.toDouble())
-            drawRect(
-                Sage.copy(alpha = 0.15f),
-                topLeft = androidx.compose.ui.geometry.Offset(0f, top),
-                size = androidx.compose.ui.geometry.Size(w, (bottom - top).coerceAtLeast(2f)),
-            )
-        }
-        // HR scale (bpm), highest at the top.
-        chartLabel("${hi.toInt()} bpm", 4f, 13.sp.toPx())
-        chartLabel("${lo.toInt()}", 4f, h - 4f)
-        val n = series.t.size
-        if (n < 2) return@Canvas
-        val tMax = series.t.last().coerceAtLeast(1.0)
-        chartLabel("${(tMax / 60).toInt()} min", w - 4f, h - 4f, alignRight = true)
-        var pen: androidx.compose.ui.geometry.Offset? = null
-        for (i in 0 until n) {
-            val v = series.hr.getOrNull(i)
-            if (v == null) { pen = null; continue }
-            val pt = androidx.compose.ui.geometry.Offset((series.t[i] / tMax * w).toFloat(), y(v))
-            pen?.let { drawLine(line, it, pt, strokeWidth = 4f) }
-            pen = pt
-        }
-    }
+    com.workoutmaker.app.ui.components.LineChart(
+        t = series.t,
+        values = series.hr,
+        // Hard requirement: the HR line is ALWAYS red, regardless of theme.
+        color = ChartHr,
+        formatY = { "${it.toInt()}" },
+        xLabels = timeAxis(series.t),
+        formatX = { fmtClock(it.toInt()) },
+        band = target?.takeIf { it.hr_lo != null && it.hr_hi != null }?.let { it.hr_lo!!.toDouble() to it.hr_hi!!.toDouble() },
+        bandColor = MaterialTheme.colorScheme.primary,
+        height = 130.dp,
+    )
 }

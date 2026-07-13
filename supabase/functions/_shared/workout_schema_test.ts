@@ -37,9 +37,16 @@ Deno.test("strength strips pace/HR zones", () => {
 });
 
 Deno.test("invalid type fails", () => {
-  const v = validateWorkout(runWorkout({ type: "swim" }));
+  const v = validateWorkout(runWorkout({ type: "yoga" }));
   assert(!v.ok);
   assert(v.error!.includes("type"));
+});
+
+Deno.test("swim is a valid endurance type", () => {
+  const v = validateWorkout(runWorkout({ type: "swim" }));
+  assert(v.ok);
+  // Endurance modality → pace/HR zones kept, weight stripped.
+  assertEquals(v.workout!.type, "swim");
 });
 
 Deno.test("missing title fails", () => {

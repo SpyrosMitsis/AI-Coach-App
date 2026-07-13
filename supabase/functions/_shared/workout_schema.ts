@@ -56,7 +56,7 @@ const SectionSchema = z.object({
 
 const WorkoutSchema = z
   .object({
-    type: z.enum(["run", "ride", "strength", "rest"]),
+    type: z.enum(["run", "ride", "swim", "strength", "rest"]),
     title: z.string(),
     duration_minutes: num(0).transform((v) => Math.max(0, v)),
     tss_estimate: clampNum(0, 400),
@@ -71,7 +71,7 @@ const WorkoutSchema = z
     }
   })
   .transform((w): Workout => {
-    const isRun = w.type === "run" || w.type === "ride"; // endurance modalities
+    const isRun = w.type === "run" || w.type === "ride" || w.type === "swim"; // endurance modalities
     return {
       ...w,
       title: w.title.trim() || (w.type === "rest" ? "Rest day" : "Workout"),

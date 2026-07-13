@@ -12,6 +12,13 @@ export function json(body: unknown, status = 200): Response {
   });
 }
 
+// HTTP status for a caught error: typed errors (e.g. QuotaError's 429) carry
+// a numeric `status`; anything else is a plain 500.
+export function errorStatus(e: unknown): number {
+  const s = (e as { status?: unknown })?.status;
+  return typeof s === "number" && s >= 400 && s <= 599 ? s : 500;
+}
+
 export function handleOptions(req: Request): Response | null {
   if (req.method === "OPTIONS") {
     return new Response("ok", { headers: corsHeaders });

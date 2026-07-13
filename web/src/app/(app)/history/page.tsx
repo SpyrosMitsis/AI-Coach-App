@@ -30,7 +30,7 @@ export default function HistoryPage() {
     <div className="space-y-4">
       <h1 className="text-2xl font-bold">Generation History</h1>
       <p className="text-sm text-muted-foreground">
-        Every AI generation, with the provider, tokens, cost, prompt and raw response — useful for comparing providers.
+        Every AI generation, with the provider, tokens, cost, prompt and raw response, useful for comparing providers.
       </p>
 
       {(logs.data ?? []).map((log) => (
@@ -46,8 +46,8 @@ export default function HistoryPage() {
           </CardHeader>
           <CardContent className="space-y-2">
             <div className="flex flex-wrap gap-x-4 gap-y-1 text-xs text-muted-foreground">
-              <span>prompt: {log.prompt_tokens ?? "—"} tok</span>
-              <span>completion: {log.completion_tokens ?? "—"} tok</span>
+              <span>prompt: {log.prompt_tokens ?? "-"} tok</span>
+              <span>completion: {log.completion_tokens ?? "-"} tok</span>
               <span>cost: {fmtCost(log.estimated_cost_usd)}</span>
             </div>
             <Button size="sm" variant="outline" onClick={() => setOpen(open === log.id ? null : log.id)}>

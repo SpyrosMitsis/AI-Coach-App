@@ -21,7 +21,7 @@ interface Msg {
 }
 
 const GREETING =
-  "Hey! I'm your coach — and I can see your real data. Ask me things like " +
+  "Hey! I'm your coach, and I can see your real data. Ask me things like " +
   "“how's my fitness looking?”, “plan my week”, “am I overtraining?”, or " +
   "“set my goal race to the Berlin marathon on 2026-09-27”. I'll check your " +
   "numbers, then plan, generate, or adjust your training for you.";
@@ -321,7 +321,7 @@ export default function CoachPage() {
             className="flex-1"
             disabled={sending}
             onClick={() =>
-              send("Yes — apply that to my real calendar now and push it to my watch, then confirm exactly what you scheduled.")}
+              send("Yes, apply that to my real calendar now and push it to my watch, then confirm exactly what you scheduled.")}
           >
             <CalendarCheck className="h-4 w-4" /> Apply to my calendar
           </Button>

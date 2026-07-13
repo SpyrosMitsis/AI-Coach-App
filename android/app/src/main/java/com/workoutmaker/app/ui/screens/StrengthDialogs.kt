@@ -134,7 +134,7 @@ internal fun PrCelebrationDialog(prs: List<com.workoutmaker.app.strength.PrHit>,
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
                         Text(prEmoji(pr.type), modifier = Modifier.padding(end = 10.dp))
-                        Text(pr.detail, color = Sage, fontWeight = FontWeight.SemiBold)
+                        Text(pr.detail, color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.SemiBold)
                     }
                 }
                 if (prs.size > 8) {
@@ -175,7 +175,7 @@ internal fun RoutineEditorDialog(
                     modifier = Modifier.fillMaxWidth(),
                 )
                 if (items.isEmpty()) {
-                    Text("No exercises yet — add one below.",
+                    Text("No exercises yet, add one below.",
                         style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
                 Column(
@@ -244,7 +244,7 @@ internal fun RoutineEditItemRow(
             Text(item.exerciseName, style = MaterialTheme.typography.titleSmall, modifier = Modifier.weight(1f))
             IconButton(onClick = onUp, enabled = canUp) { Icon(Icons.Filled.KeyboardArrowUp, "Move up") }
             IconButton(onClick = onDown, enabled = canDown) { Icon(Icons.Filled.KeyboardArrowDown, "Move down") }
-            IconButton(onClick = onRemove) { Icon(Icons.Filled.Close, "Remove", tint = BandRed) }
+            IconButton(onClick = onRemove) { Icon(Icons.Filled.Close, "Remove", tint = MaterialTheme.colorScheme.error) }
         }
         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
             Text("Sets", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
@@ -303,7 +303,7 @@ internal fun ExerciseAddDialog(onPick: (String) -> Unit, onClose: () -> Unit) {
 internal fun ConfirmDeleteDialog(what: String, detail: String, onConfirm: () -> Unit, onDismiss: () -> Unit) {
     AlertDialog(
         onDismissRequest = onDismiss,
-        confirmButton = { TextButton(onClick = onConfirm) { Text("Delete", color = BandRed) } },
+        confirmButton = { TextButton(onClick = onConfirm) { Text("Delete", color = MaterialTheme.colorScheme.error) } },
         dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } },
         title = { Text("Delete $what?") },
         text = { Text(detail) },
@@ -362,9 +362,9 @@ internal fun PlateCalcDialog(settings: com.workoutmaker.app.data.AppSettings, on
                 OutlinedTextField(target, { target = it }, label = { Text("Target total (${unit.suffix})") },
                     singleLine = true, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal))
                 Text("Barbell ${unit.format(settings.barbellKg)} ${unit.suffix} + per side:", style = MaterialTheme.typography.bodySmall)
-                if (plates.isEmpty()) Text("— just the bar", style = MaterialTheme.typography.bodyMedium)
+                if (plates.isEmpty()) Text("- just the bar", style = MaterialTheme.typography.bodyMedium)
                 plates.forEach { p ->
-                    Text("${p.count} × ${unit.format(p.plate)} ${unit.suffix}", style = MaterialTheme.typography.bodyLarge, color = Sage)
+                    Text("${p.count} × ${unit.format(p.plate)} ${unit.suffix}", style = MaterialTheme.typography.bodyLarge, color = MaterialTheme.colorScheme.primary)
                 }
             }
         },

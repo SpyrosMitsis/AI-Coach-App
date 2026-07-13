@@ -42,11 +42,11 @@ export async function getWeather(lat: number, lon: number): Promise<WeatherSnaps
 
 function describe(w: WeatherSnapshot): string {
   const bits: string[] = [];
-  if (w.apparentC >= 27) bits.push("hot — slow target paces ~10-20s/km, prioritise hydration, consider early/indoor");
-  else if (w.apparentC <= 0) bits.push("freezing — extend warmup, watch for ice, layer up");
-  else if (w.apparentC <= 5) bits.push("cold — longer warmup");
-  if (w.humidity >= 80 && w.apparentC >= 20) bits.push("very humid — extra cooling/pace caution");
-  if (w.precipProbMax >= 70 || w.precipMm >= 1) bits.push("rain likely — waterproof or move indoors/treadmill");
-  if (w.windKmh >= 30) bits.push("strong wind — expect slower into-wind splits");
-  return bits.length ? bits.join("; ") : "mild — no adjustment needed";
+  if (w.apparentC >= 27) bits.push("hot, slow target paces ~10-20s/km, prioritise hydration, consider early/indoor");
+  else if (w.apparentC <= 0) bits.push("freezing, extend warmup, watch for ice, layer up");
+  else if (w.apparentC <= 5) bits.push("cold, longer warmup");
+  if (w.humidity >= 80 && w.apparentC >= 20) bits.push("very humid, extra cooling/pace caution");
+  if (w.precipProbMax >= 70 || w.precipMm >= 1) bits.push("rain likely, waterproof or move indoors/treadmill");
+  if (w.windKmh >= 30) bits.push("strong wind, expect slower into-wind splits");
+  return bits.length ? bits.join("; ") : "mild, no adjustment needed";
 }

@@ -45,6 +45,7 @@ import androidx.compose.material.icons.filled.KeyboardArrowUp
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.History
+import androidx.compose.material.icons.filled.FitnessCenter
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Star
@@ -113,18 +114,11 @@ import com.workoutmaker.app.ui.components.ScreenScaffold
 import com.workoutmaker.app.ui.components.SectionCard
 import com.workoutmaker.app.ui.components.SectionLabel
 import com.workoutmaker.app.ui.components.SkeletonCard
-import com.workoutmaker.app.ui.theme.BandAmber
-import com.workoutmaker.app.ui.theme.BandRed
-import com.workoutmaker.app.ui.theme.Sage
+import com.workoutmaker.app.ui.theme.amberAccent
 
-internal fun fmtClock(totalSec: Long): String {
-    val s = totalSec.coerceAtLeast(0)
-    val h = s / 3600; val m = (s % 3600) / 60; val sec = s % 60
-    return if (h > 0) "%d:%02d:%02d".format(h, m, sec) else "%d:%02d".format(m, sec)
-}
+internal fun fmtClock(totalSec: Long): String = com.workoutmaker.app.ui.components.fmtClock(totalSec)
 
-internal fun trimKg(v: Double): String =
-    if (kotlin.math.abs(v - v.toLong()) < 0.05) v.toLong().toString() else ((v * 10).toLong() / 10.0).toString()
+internal fun trimKg(v: Double): String = com.workoutmaker.app.ui.components.fmtWeight(v)
 
 @Composable
 fun StrengthScreen(vm: StrengthViewModel = hiltViewModel(), onOpenHistory: () -> Unit = {}) {
@@ -138,6 +132,7 @@ fun StrengthScreen(vm: StrengthViewModel = hiltViewModel(), onOpenHistory: () ->
         is StrengthNav.Picker -> ExercisePickerView(vm)
         is StrengthNav.Stats -> ExerciseStatsView(vm, n.exercise)
         is StrengthNav.WorkoutDetail -> WorkoutDetailView(vm)
+        is StrengthNav.RateEffort -> RateEffortView(vm)
     }
 
     // Guard: an edit of a logged workout was requested while a session is in
@@ -146,7 +141,7 @@ fun StrengthScreen(vm: StrengthViewModel = hiltViewModel(), onOpenHistory: () ->
         AlertDialog(
             onDismissRequest = { vm.keepCurrentSessionOverEdit() },
             confirmButton = {
-                TextButton(onClick = { vm.confirmReplaceWithEdit() }) { Text("Discard & edit", color = BandRed) }
+                TextButton(onClick = { vm.confirmReplaceWithEdit() }) { Text("Discard & edit", color = MaterialTheme.colorScheme.error) }
             },
             dismissButton = { TextButton(onClick = { vm.keepCurrentSessionOverEdit() }) { Text("Keep current") } },
             title = { Text("Unsaved session in progress") },
@@ -164,7 +159,7 @@ fun StrengthScreen(vm: StrengthViewModel = hiltViewModel(), onOpenHistory: () ->
         AlertDialog(
             onDismissRequest = { vm.keepCurrentSession() },
             confirmButton = {
-                TextButton(onClick = { vm.confirmReplaceWithPlanned() }) { Text("Discard & load", color = BandRed) }
+                TextButton(onClick = { vm.confirmReplaceWithPlanned() }) { Text("Discard & load", color = MaterialTheme.colorScheme.error) }
             },
             dismissButton = { TextButton(onClick = { vm.keepCurrentSession() }) { Text("Keep current") } },
             title = { Text("Unsaved session in progress") },
@@ -219,6 +214,7 @@ internal fun StrengthHomeView(vm: StrengthViewModel, onOpenHistory: () -> Unit =
     ScreenScaffold(
         title = "Strength",
         subtitle = "${history.size} workouts logged",
+        eyebrow = "STRENGTH LOG",
         actions = {
             IconButton(onClick = { showStatsPicker = true }, enabled = logged.isNotEmpty()) {
                 Icon(Icons.Filled.BarChart, contentDescription = "Exercise stats")
@@ -232,8 +228,8 @@ internal fun StrengthHomeView(vm: StrengthViewModel, onOpenHistory: () -> Unit =
     ) { mod ->
         status?.let { Text(it, mod, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.primary) }
         if (pendingSync > 0) {
-            Text("⟳ $pendingSync change${if (pendingSync > 1) "s" else ""} saved offline — will sync when you're back online.",
-                mod, style = MaterialTheme.typography.bodySmall, color = BandAmber)
+            Text("⟳ $pendingSync change${if (pendingSync > 1) "s" else ""} saved offline, will sync when you're back online.",
+                mod, style = MaterialTheme.typography.bodySmall, color = amberAccent())
         }
 
         // Deload banner (B2)
@@ -266,13 +262,16 @@ internal fun StrengthHomeView(vm: StrengthViewModel, onOpenHistory: () -> Unit =
 
         SectionCard(mod, title = "Routines") {
             Text(
-                "A reusable template for a single session — your exercises pre-loaded so you can start a workout in one tap (e.g. “Push Day”).",
+                "A reusable template for a single session, your exercises pre-loaded so you can start a workout in one tap (e.g. “Push Day”).",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
             if (routines.isEmpty()) {
-                Text("No routines yet. Start a workout and “Save as routine”, or pick a program below.",
-                    style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                com.workoutmaker.app.ui.components.EmptyState(
+                    title = "No routines yet",
+                    subtitle = "Start a workout and “Save as routine”, or pick a program below.",
+                    icon = Icons.Filled.FitnessCenter,
+                )
             }
             if (routines.isNotEmpty()) {
                 Text(
@@ -293,7 +292,7 @@ internal fun StrengthHomeView(vm: StrengthViewModel, onOpenHistory: () -> Unit =
                 ) {
                     Column(Modifier.weight(1f)) {
                         Text(r.routine.name, style = MaterialTheme.typography.titleSmall)
-                        Text(r.items.joinToString(", ") { it.exerciseName }.ifBlank { "empty" },
+                        Text(r.items.joinToString(", ") { it.exerciseName }.ifBlank { "No exercises yet" },
                             style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
                             maxLines = 1)
                     }
@@ -324,7 +323,7 @@ internal fun TodayPlannedCard(
     SectionCard(mod, title = "Today's plan") {
         WorkoutDetail(pw.workout_json)
         if (pw.completed) {
-            Text("✓ Completed", style = MaterialTheme.typography.labelMedium, color = Sage)
+            Text("✓ Completed", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.primary)
         } else {
             Button(
                 onClick = onStart,
@@ -368,8 +367,11 @@ internal fun ExerciseStatsPickerDialog(
                 LazyColumn(Modifier.heightIn(max = 380.dp).padding(top = 8.dp)) {
                     if (filtered.isEmpty()) {
                         item {
-                            Text("No logged exercises match.", style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            com.workoutmaker.app.ui.components.EmptyState(
+                                title = "No matches",
+                                subtitle = "Try a different search.",
+                                icon = Icons.Filled.Search,
+                            )
                         }
                     }
                     items(filtered) { ex ->
@@ -390,11 +392,11 @@ internal fun ExerciseStatsPickerDialog(
 
 @Composable
 internal fun DeloadBanner(mod: Modifier, reason: String) {
-    Box(mod.background(BandAmber.copy(alpha = 0.18f), RoundedCornerShape(14.dp)).padding(14.dp)) {
+    Box(mod.background(amberAccent().copy(alpha = 0.18f), RoundedCornerShape(14.dp)).padding(14.dp)) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Text("⚠️", Modifier.padding(end = 10.dp))
             Column {
-                Text("Deload suggested", style = MaterialTheme.typography.titleSmall, color = BandAmber, fontWeight = FontWeight.Bold)
+                Text("Deload suggested", style = MaterialTheme.typography.titleSmall, color = amberAccent(), fontWeight = FontWeight.Bold)
                 Text(reason, style = MaterialTheme.typography.bodySmall)
             }
         }
@@ -404,7 +406,7 @@ internal fun DeloadBanner(mod: Modifier, reason: String) {
 @Composable
 internal fun WeeklyVolumeCard(mod: Modifier, report: WeeklyReport) {
     SectionCard(mod, title = "This week's volume") {
-        Text("${report.totalHardSets} hard sets · target 10–20 per muscle",
+        Text("${report.totalHardSets} hard sets · target 10-20 per muscle",
             style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
         if (report.muscleVolume.isEmpty()) {
             Text("Log a session to see per-muscle volume.", style = MaterialTheme.typography.bodySmall,
@@ -412,14 +414,14 @@ internal fun WeeklyVolumeCard(mod: Modifier, report: WeeklyReport) {
         }
         report.muscleVolume.forEach { mv -> VolumeBar(mv) }
         report.balance.forEach { w ->
-            Text("• ${w.text}", style = MaterialTheme.typography.bodySmall, color = BandAmber)
+            Text("• ${w.text}", style = MaterialTheme.typography.bodySmall, color = amberAccent())
         }
     }
 }
 
 @Composable
 internal fun VolumeBar(mv: MuscleVolume) {
-    val color = when (mv.status) { "under" -> BandAmber; "over" -> BandRed; else -> Sage }
+    val color = when (mv.status) { "under" -> amberAccent(); "over" -> MaterialTheme.colorScheme.error; else -> MaterialTheme.colorScheme.primary }
     Row(Modifier.fillMaxWidth().padding(vertical = 2.dp), verticalAlignment = Alignment.CenterVertically) {
         Text(mv.muscle, Modifier.width(86.dp), style = MaterialTheme.typography.bodySmall)
         Box(
@@ -442,7 +444,7 @@ internal fun ProgramsCard(mod: Modifier, programs: List<StrengthProgram>, onAdd:
     SectionCard(mod, title = "Programs") {
         Text(
             "A multi-week training plan (e.g. a 3-day full-body block). Adding one creates a routine for " +
-                "each training day, and auto-progression bumps the loads week to week — so a program is " +
+                "each training day, and auto-progression bumps the loads week to week, so a program is " +
                 "really a set of routines that work together over time.",
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -454,7 +456,7 @@ internal fun ProgramsCard(mod: Modifier, programs: List<StrengthProgram>, onAdd:
                 Row(Modifier.fillMaxWidth().padding(vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) {
                     Column(Modifier.weight(1f)) {
                         Text(p.name, style = MaterialTheme.typography.titleSmall)
-                        Text(p.schedule, style = MaterialTheme.typography.labelSmall, color = Sage)
+                        Text(p.schedule, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.primary)
                         Text(p.description, style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant)
                     }

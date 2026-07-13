@@ -27,6 +27,27 @@ enum class ThemeMode(val label: String) {
     }
 }
 
+// Selectable colour palette (the actual colours live in ui/theme/Theme.kt; this
+// is just the persisted choice). SERENE is the locked baseline.
+enum class ThemePalette(val label: String) {
+    SERENE("Serene Vanguard"), EMBER("Ember"), TIDAL("Tidal"),
+    NOCTURNE("Nocturne"), BLOOM("Bloom"), SOLSTICE("Solstice");
+
+    companion object {
+        fun fromName(n: String?): ThemePalette = entries.firstOrNull { it.name == n } ?: SERENE
+    }
+}
+
+// Sound played when a rest timer finishes while the app is open. (The
+// background alarm keeps the notification channel's system sound.)
+enum class RestChime(val label: String) {
+    SYSTEM("System default"), CHIME("Chime"), BEEP("Beep"), DOUBLE_BEEP("Double beep"), SILENT("Silent");
+
+    companion object {
+        fun fromName(n: String?): RestChime = entries.firstOrNull { it.name == n } ?: SYSTEM
+    }
+}
+
 enum class WeightUnit(val label: String, val suffix: String) {
     KG("Kilograms", "kg"),
     LB("Pounds", "lb");
@@ -45,8 +66,13 @@ data class AppSettings(
     val barbellKg: Double = 20.0,
     val restVibrate: Boolean = true,
     val restNotify: Boolean = true,
+    val restChime: RestChime = RestChime.SYSTEM,
     val keepScreenOn: Boolean = true,
     val themeMode: ThemeMode = ThemeMode.SYSTEM,
+    val themePalette: ThemePalette = ThemePalette.SERENE,
+    // Soft monthly AI-spend cap (USD). 0 = no cap; Diagnostics warns when 30-day
+    // estimated spend crosses it.
+    val spendCapUsd: Double = 0.0,
 )
 
 private val Context.dataStore by preferencesDataStore(name = "app_prefs")
@@ -61,10 +87,13 @@ class AppPreferences @Inject constructor(
         val barbell = doublePreferencesKey("barbell_kg")
         val restVibrate = booleanPreferencesKey("rest_vibrate")
         val restNotify = booleanPreferencesKey("rest_notify")
+        val restChime = stringPreferencesKey("rest_chime")
         val keepScreenOn = booleanPreferencesKey("keep_screen_on")
         val themeMode = stringPreferencesKey("theme_mode")
+        val themePalette = stringPreferencesKey("theme_palette")
         val onboardingComplete = booleanPreferencesKey("onboarding_complete")
         val customsCleanupV1 = booleanPreferencesKey("customs_cleanup_v1")
+        val spendCap = doublePreferencesKey("spend_cap_usd")
     }
 
     // One-time migration guard: collapse reworded custom exercises onto their
@@ -88,8 +117,11 @@ class AppPreferences @Inject constructor(
             barbellKg = p[Keys.barbell] ?: 20.0,
             restVibrate = p[Keys.restVibrate] ?: true,
             restNotify = p[Keys.restNotify] ?: true,
+            restChime = RestChime.fromName(p[Keys.restChime]),
             keepScreenOn = p[Keys.keepScreenOn] ?: true,
             themeMode = ThemeMode.fromName(p[Keys.themeMode]),
+            themePalette = ThemePalette.fromName(p[Keys.themePalette]),
+            spendCapUsd = p[Keys.spendCap] ?: 0.0,
         )
     }
 
@@ -98,8 +130,11 @@ class AppPreferences @Inject constructor(
     suspend fun setBarbell(kg: Double) = edit { it[Keys.barbell] = kg.coerceIn(0.0, 50.0) }
     suspend fun setRestVibrate(on: Boolean) = edit { it[Keys.restVibrate] = on }
     suspend fun setRestNotify(on: Boolean) = edit { it[Keys.restNotify] = on }
+    suspend fun setRestChime(c: RestChime) = edit { it[Keys.restChime] = c.name }
     suspend fun setKeepScreenOn(on: Boolean) = edit { it[Keys.keepScreenOn] = on }
     suspend fun setThemeMode(m: ThemeMode) = edit { it[Keys.themeMode] = m.name }
+    suspend fun setThemePalette(p: ThemePalette) = edit { it[Keys.themePalette] = p.name }
+    suspend fun setSpendCap(usd: Double) = edit { it[Keys.spendCap] = usd.coerceIn(0.0, 1000.0) }
 
     private suspend fun edit(block: (androidx.datastore.preferences.core.MutablePreferences) -> Unit) {
         context.dataStore.edit(block)

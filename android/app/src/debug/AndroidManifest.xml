@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Debug-only overlay: cleartext exemptions for a local Supabase stack live in
+     src/debug/res/xml/network_security_config.xml so release builds ship without
+     them (production talks to https://<ref>.supabase.co only). -->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <application android:networkSecurityConfig="@xml/network_security_config" />
+</manifest>

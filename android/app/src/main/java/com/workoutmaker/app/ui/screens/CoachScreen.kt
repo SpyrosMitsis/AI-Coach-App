@@ -37,12 +37,14 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.ui.draw.clip
+import com.workoutmaker.app.ui.components.EmptyState
 import com.workoutmaker.app.ui.components.GhostButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -67,10 +69,39 @@ import kotlinx.serialization.json.contentOrNull
 import javax.inject.Inject
 
 private const val GREETING =
-    "Hey! I'm your coach — and I can see your real data. Ask me things like " +
+    "Hey! I'm your coach, and I can see your real data. Ask me things like " +
         "“how's my fitness looking?”, “plan my week”, “am I overtraining?”, or " +
         "“set my goal race to the Berlin marathon on 2026-09-27”. I'll check your " +
         "numbers, then plan, generate, or adjust your training for you."
+
+// A conversation starter: the short text shown on the chip, plus the richer,
+// directive prompt actually sent to the coach. The chip stays terse; the prompt
+// under the hood tells the coach to read the data and drive to a concrete
+// outcome in one turn — so the user doesn't have to keep nudging "go on".
+data class CoachStarter(val label: String, val prompt: String)
+
+// The directive prompts behind the starter chips. Each one tells the coach to
+// pull the relevant data itself and finish the job in a single turn — give the
+// answer, take the action, and end with a clear next step — instead of asking a
+// question and waiting. This is what removes the "I have to keep saying go on".
+private const val STARTER_FITNESS =
+    "Give me a full read on my fitness right now. Pull my CTL/ATL/TSB, this week's " +
+        "load and my readiness, then tell me what shape I'm in, what's trending up or " +
+        "down, and the one thing I should focus on this week. Use the real numbers."
+private const val STARTER_PLAN_WEEK =
+    "Plan my full training week. Check my fitness, readiness, recent sessions and goal " +
+        "first, then build the complete week and put it on my calendar, don't ask me to " +
+        "confirm each day. When it's scheduled, summarize the week and why it's built that way."
+private const val STARTER_EXPLAIN_TODAY =
+    "Look at today's planned workout and explain exactly why it's the right session for me " +
+        "today, how it fits my current fitness, fatigue and goal. If it doesn't match how " +
+        "I'm likely feeling, propose a specific adjustment and offer to apply it."
+private const val STARTER_MAKE_TODAY =
+    "Make me today's workout. Check my readiness, recent training and goal, pick the right " +
+        "type and intensity yourself, generate it and put it on my calendar, then tell me the plan."
+private const val STARTER_RECENT =
+    "Review how my recent training has actually gone, how I executed the sessions versus the " +
+        "plan. Tell me what's going well, what's lagging, and the most useful change to make next."
 
 // Live progress line while the agentic loop runs ("checking your fitness…").
 internal fun friendlyToolProgress(tool: String): String = when (tool) {
@@ -88,6 +119,9 @@ internal fun friendlyToolProgress(tool: String): String = when (tool) {
     "remember" -> "Noting that down…"
     else -> "Working…"
 }
+
+// Tools that mutate the calendar/plan — used to drive the "✓ Updated" result card.
+private val WRITE_TOOL_NAMES = setOf("plan_week", "generate_workout", "move_workout", "set_goal_race")
 
 // Maps tool names the agentic coach used into a friendly "what I just did" note.
 private fun friendlyTools(tools: List<String>): String {
@@ -116,34 +150,91 @@ class CoachViewModel @Inject constructor(private val repo: WorkoutRepository) : 
     val messages = MutableStateFlow(listOf(ChatMessage("assistant", GREETING)))
     val sending = MutableStateFlow(false)
     val banner = MutableStateFlow<String?>(null)
+    // When a send fails outright, the failed text is parked here so the screen can
+    // refill the input box — the athlete retries with one tap, not a retype.
+    val draftRestore = MutableStateFlow<String?>(null)
     // Live tool-progress line while the agentic loop runs.
     val liveStatus = MutableStateFlow<String?>(null)
     // After the coach changes the calendar: this week's sessions for the result card.
     val actionWeek = MutableStateFlow<List<com.workoutmaker.app.data.PlannedWorkout>?>(null)
+    // Plain-language summary of the write actions the coach just took (card subtitle).
+    val lastAction = MutableStateFlow<String?>(null)
+    // Whether a full week was (re)planned this turn — gates the card's "Re-plan" escape hatch.
+    val showReplan = MutableStateFlow(false)
     // Contextual conversation starters, built from the cached dashboard.
-    val suggestions = MutableStateFlow(listOf("How's my fitness looking?", "Plan my week"))
+    val suggestions = MutableStateFlow(
+        listOf(
+            CoachStarter("How's my fitness?", STARTER_FITNESS),
+            CoachStarter("Plan my week", STARTER_PLAN_WEEK),
+        ),
+    )
     private var conversationId: String? = null
 
     init {
         viewModelScope.launch {
             val cached = runCatching { repo.cachedDailySummary() }.getOrNull()?.first
-            val chips = mutableListOf("How's my fitness looking?")
+            val chips = mutableListOf(CoachStarter("How's my fitness?", STARTER_FITNESS))
             val today = cached?.today_workout
             if (today?.workout_json != null && !today.completed) {
-                chips += "Explain today's workout"
+                chips += CoachStarter("Explain today's workout", STARTER_EXPLAIN_TODAY)
             } else if (today == null) {
-                chips += "Make me a workout for today"
+                chips += CoachStarter("Workout for today", STARTER_MAKE_TODAY)
             }
-            chips += "Plan my week"
+            chips += CoachStarter("Plan my week", STARTER_PLAN_WEEK)
             cached?.goal?.let { g ->
-                g.weeks_to_goal?.let { w -> chips += "Am I on track for ${g.goal} ($w weeks out)?" }
+                g.weeks_to_goal?.let { w ->
+                    chips += CoachStarter(
+                        "On track for ${g.goal}?",
+                        "Am I on track for my goal of ${g.goal}, $w weeks out? Read my fitness " +
+                            "trend (CTL/ATL/TSB), recent volume and how I've been executing, then tell " +
+                            "me honestly if I'm ahead, on pace, or behind, and the single most important " +
+                            "thing to adjust over the next two weeks.",
+                    )
+                }
             }
-            chips += "How did my last workouts go?"
+            chips += CoachStarter("How did my training go?", STARTER_RECENT)
             suggestions.value = chips.take(5)
         }
     }
 
-    fun dismissActionCard() { actionWeek.value = null }
+    fun dismissActionCard() {
+        actionWeek.value = null
+        lastAction.value = null
+        showReplan.value = false
+    }
+
+    // Re-run the weekly plan from the result card — the same plan-week action the
+    // Calendar tab uses, as a quick "not happy with this? regenerate" escape hatch.
+    fun rePlanWeek() {
+        sending.value = true
+        liveStatus.value = "Re-planning your week…"
+        viewModelScope.launch {
+            runCatching {
+                val monday = java.time.LocalDate.now().with(java.time.DayOfWeek.MONDAY)
+                repo.planWeek(com.workoutmaker.app.data.PlanWeekRequest(start_date = monday.toString()))
+            }.onSuccess {
+                lastAction.value = "re-planned your week"
+                banner.value = "✓ Re-planned your week"
+                loadActionWeek()
+            }.onFailure { banner.value = "Couldn't re-plan: ${it.message}" }
+            sending.value = false
+            liveStatus.value = null
+        }
+    }
+
+    // Reflect any write actions the coach took this turn: a plain-language card
+    // subtitle, the "Re-plan" escape hatch (only after a full week plan), and a
+    // fresh pull of the real calendar for the result card.
+    private fun onToolsUsed(tools: List<String>) {
+        val writes = tools.filter { it in WRITE_TOOL_NAMES }
+        if (writes.isNotEmpty()) {
+            lastAction.value = friendlyTools(writes)
+            showReplan.value = writes.contains("plan_week")
+        }
+        if (tools.any { it == "plan_week" || it == "generate_workout" || it == "move_workout" }) {
+            loadActionWeek()
+        }
+    }
 
     // After plan_week / generate_workout / move_workout: show what's actually on
     // the calendar now, fetched fresh from the source of truth.
@@ -211,6 +302,8 @@ class CoachViewModel @Inject constructor(private val repo: WorkoutRepository) : 
         messages.value = outgoing
         sending.value = true
         banner.value = null
+        lastAction.value = null
+        showReplan.value = false
         liveStatus.value = "Thinking…"
         val history = outgoing.drop(1) // drop the local greeting
 
@@ -242,9 +335,7 @@ class CoachViewModel @Inject constructor(private val repo: WorkoutRepository) : 
                     if (!gotReply) messages.value = messages.value + ChatMessage("assistant", "⚠️ $err")
                 }
                 if (r.toolsUsed.isNotEmpty()) banner.value = "🔧 " + friendlyTools(r.toolsUsed)
-                if (r.toolsUsed.any { it == "plan_week" || it == "generate_workout" || it == "move_workout" }) {
-                    loadActionWeek()
-                }
+                onToolsUsed(r.toolsUsed)
             }.onFailure {
                 if (!gotReply) {
                     // Stream transport failed — retry once over the plain endpoint.
@@ -256,12 +347,15 @@ class CoachViewModel @Inject constructor(private val repo: WorkoutRepository) : 
                         conversationId = reply.conversation_id ?: conversationId
                         messages.value = messages.value + ChatMessage("assistant", reply.reply ?: "(no reply)")
                         if (reply.tools_used.isNotEmpty()) banner.value = "🔧 " + friendlyTools(reply.tools_used)
-                        if (reply.tools_used.any { t -> t == "plan_week" || t == "generate_workout" || t == "move_workout" }) {
-                            loadActionWeek()
-                        }
+                        onToolsUsed(reply.tools_used)
                     }.onFailure { e2 ->
                         banner.value = e2.message
-                        messages.value = messages.value + ChatMessage("assistant", "⚠️ ${e2.message}")
+                        // Both transports failed — revert the stranded user turn and
+                        // hand the text back to the input box so retry is one tap.
+                        if (messages.value.lastOrNull()?.role == "user") {
+                            messages.value = messages.value.dropLast(1)
+                        }
+                        draftRestore.value = text
                     }
                 }
             }
@@ -302,11 +396,24 @@ fun CoachScreen(vm: CoachViewModel = hiltViewModel(), onOpenCalendar: () -> Unit
     val banner by vm.banner.collectAsStateSafe()
     val liveStatus by vm.liveStatus.collectAsStateSafe()
     val actionWeek by vm.actionWeek.collectAsStateSafe()
+    val lastAction by vm.lastAction.collectAsStateSafe()
+    val showReplan by vm.showReplan.collectAsStateSafe()
     val suggestions by vm.suggestions.collectAsStateSafe()
     val showHistory by vm.showHistory.collectAsStateSafe()
     val conversations by vm.conversations.collectAsStateSafe()
-    var input by remember { mutableStateOf("") }
+    // Saveable: a half-typed coach message must survive rotation.
+    var input by rememberSaveable { mutableStateOf("") }
     val listState = rememberLazyListState()
+
+    // A failed send parks its text here — pull it back into the box (unless the
+    // athlete already started typing something new) so retry is one tap.
+    val draftRestore by vm.draftRestore.collectAsStateSafe()
+    LaunchedEffect(draftRestore) {
+        draftRestore?.let {
+            if (input.isBlank()) input = it
+            vm.draftRestore.value = null
+        }
+    }
 
     if (showHistory) {
         ModalBottomSheet(
@@ -320,11 +427,10 @@ fun CoachScreen(vm: CoachViewModel = hiltViewModel(), onOpenCalendar: () -> Unit
                 modifier = Modifier.padding(horizontal = 20.dp, vertical = 8.dp),
             )
             if (conversations.isEmpty()) {
-                Text(
-                    "No past conversations yet.",
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.padding(horizontal = 20.dp, vertical = 12.dp),
+                EmptyState(
+                    title = "No conversations yet",
+                    subtitle = "Your past coaching chats will show up here.",
+                    icon = Icons.Filled.History,
                 )
             } else {
                 LazyColumn(
@@ -350,15 +456,17 @@ fun CoachScreen(vm: CoachViewModel = hiltViewModel(), onOpenCalendar: () -> Unit
 
     Column(Modifier.fillMaxSize().padding(top = 8.dp)) {
         Row(
-            Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp),
+            Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 14.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            Text(
-                "Coach",
-                style = MaterialTheme.typography.headlineSmall,
-                fontWeight = FontWeight.Bold,
-                modifier = Modifier.weight(1f),
-            )
+            Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                com.workoutmaker.app.ui.components.SectionLabel("AI COACH")
+                Text(
+                    "Coach",
+                    style = MaterialTheme.typography.headlineSmall,
+                    fontWeight = FontWeight.Bold,
+                )
+            }
             IconButton(onClick = { vm.openHistory() }) {
                 Icon(Icons.Filled.History, contentDescription = "Chat history")
             }
@@ -374,7 +482,16 @@ fun CoachScreen(vm: CoachViewModel = hiltViewModel(), onOpenCalendar: () -> Unit
         ) {
             items(messages) { msg -> Bubble(msg) }
             actionWeek?.let { week ->
-                item { CalendarResultCard(week, onOpen = onOpenCalendar, onDismiss = { vm.dismissActionCard() }) }
+                item {
+                    CalendarResultCard(
+                        week,
+                        changed = lastAction,
+                        showReplan = showReplan,
+                        onOpen = onOpenCalendar,
+                        onReplan = { vm.rePlanWeek() },
+                        onDismiss = { vm.dismissActionCard() },
+                    )
+                }
             }
             if (sending) {
                 item {
@@ -393,7 +510,10 @@ fun CoachScreen(vm: CoachViewModel = hiltViewModel(), onOpenCalendar: () -> Unit
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
             ) {
                 items(suggestions) { sgn ->
-                    androidx.compose.material3.AssistChip(onClick = { vm.send(sgn) }, label = { Text(sgn) })
+                    androidx.compose.material3.AssistChip(
+                        onClick = { vm.send(sgn.prompt) },
+                        label = { Text(sgn.label) },
+                    )
                 }
             }
         }
@@ -407,13 +527,19 @@ fun CoachScreen(vm: CoachViewModel = hiltViewModel(), onOpenCalendar: () -> Unit
             )
         }
 
-        // Primary action: put what was discussed onto the REAL calendar (the
-        // coach uses its plan_week / generate_workout tools). Saving a reusable
-        // template is the secondary path, tucked into a small menu. Only shown
-        // while the coach is actually proposing sessions — not under plain Q&A,
-        // and not when the action already landed (the calendar card shows then).
+        // Fallback only: the coach normally applies changes itself (its plan_week /
+        // generate_workout tools land on the real calendar and the result card
+        // shows above). This appears just for the rare turn where the coach
+        // proposed sessions in prose without applying them — a manual escape hatch.
+        // Saving a reusable template is tucked into the small "Save" menu.
         val lastAssistant = messages.lastOrNull { it.role == "assistant" }?.content ?: ""
         if (messages.size > 2 && actionWeek == null && looksLikeWorkoutProposal(lastAssistant)) {
+            Text(
+                "Coach proposed this but didn't apply it:",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(horizontal = 16.dp, vertical = 2.dp),
+            )
             Row(
                 Modifier.fillMaxWidth().padding(horizontal = 12.dp),
                 verticalAlignment = Alignment.CenterVertically,
@@ -421,11 +547,11 @@ fun CoachScreen(vm: CoachViewModel = hiltViewModel(), onOpenCalendar: () -> Unit
             ) {
                 GhostButton(
                     onClick = {
-                        vm.send("Yes — apply that to my real calendar now and push it to my watch, then confirm exactly what you scheduled.")
+                        vm.send("Yes, apply that to my real calendar now and push it to my watch, then confirm exactly what you scheduled.")
                     },
                     enabled = !sending,
                     modifier = Modifier.weight(1f),
-                ) { Text("📅 Apply to my calendar") }
+                ) { Text("📅 Put it on my calendar") }
                 var templateMenu by remember { mutableStateOf(false) }
                 Box {
                     TextButton(onClick = { templateMenu = true }, enabled = !sending) {
@@ -564,14 +690,27 @@ private fun ConversationRow(
 @Composable
 private fun CalendarResultCard(
     week: List<com.workoutmaker.app.data.PlannedWorkout>,
+    changed: String?,
+    showReplan: Boolean,
     onOpen: () -> Unit,
+    onReplan: () -> Unit,
     onDismiss: () -> Unit,
 ) {
     com.workoutmaker.app.ui.components.SectionCard {
         Row(verticalAlignment = Alignment.CenterVertically) {
-            com.workoutmaker.app.ui.components.SectionLabel("Now on your calendar")
+            com.workoutmaker.app.ui.components.SectionLabel(
+                if (changed != null) "✓ Updated your calendar" else "Now on your calendar",
+            )
             Spacer(Modifier.weight(1f))
             TextButton(onClick = onDismiss) { Text("Hide", style = MaterialTheme.typography.labelMedium) }
+        }
+        changed?.let {
+            Text(
+                "The coach $it.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(bottom = 4.dp),
+            )
         }
         if (week.isEmpty()) {
             Text(
@@ -608,7 +747,18 @@ private fun CalendarResultCard(
                 }
             }
         }
-        GhostButton(onClick = onOpen, modifier = Modifier.fillMaxWidth()) { Text("View in calendar") }
+        Row(
+            Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            GhostButton(onClick = onOpen, modifier = Modifier.weight(1f)) { Text("View in calendar") }
+            if (showReplan) {
+                TextButton(onClick = onReplan) {
+                    Text("Re-plan", style = MaterialTheme.typography.labelMedium)
+                }
+            }
+        }
     }
 }
 

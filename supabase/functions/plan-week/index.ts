@@ -8,10 +8,10 @@
 //   - Cron (service_role): POST { all_users: true } → plan NEXT week for every
 //     user with user_profiles.auto_plan = true.
 
-import { handleOptions, json } from "../_shared/cors.ts";
+import { errorStatus, handleOptions, json } from "../_shared/cors.ts";
 import { adminClient, getUserId } from "../_shared/supabase.ts";
 import { llmAccess } from "../_shared/llm_keys.ts";
-import { estimateCostUsd, extractJson, llmGenerateWithFallback } from "../_shared/llm.ts";
+import { customPriceFromProfile, estimateCostUsd, extractJson, llmGenerateWithFallback } from "../_shared/llm.ts";
 import {
   buildWeekPrompt,
   trainingPhase,
@@ -20,8 +20,10 @@ import {
 } from "../_shared/prompt.ts";
 import { createEvent, deleteEvent, latestFitness } from "../_shared/intervals.ts";
 import { renderIntervalsWorkout } from "../_shared/intervals_workout.ts";
-import { adherenceBlock, executionBlock, goalBlock, intervalsPhysiology, knowledgeBlock, memoryBlock } from "../_shared/context.ts";
+import { adherenceBlock, executionBlock, goalBlock, intervalsPhysiology } from "../_shared/context.ts";
+import { memoryDocsBlock, memoryFromProfile } from "../_shared/agent_memory.ts";
 import { exerciseCatalogBlock, registerUnknownExercises } from "../_shared/exercise_catalog.ts";
+import { isHardSession, type MainLift, muscleOf, reviewWorkout } from "../_shared/workout_review.ts";
 import type { LlmProvider, Workout } from "../_shared/types.ts";
 import type { SupabaseClient } from "jsr:@supabase/supabase-js@2";
 
@@ -53,7 +55,7 @@ async function planForUser(admin: SupabaseClient, userId: string, start: string,
   // planned (and the actuals feed the prompt via the adherence block).
   const today = new Date().toISOString().slice(0, 10);
   const dates = allDates.filter((d) => d >= today);
-  if (dates.length === 0) throw new Error("that week is already over — nothing left to plan");
+  if (dates.length === 0) throw new Error("that week is already over, nothing left to plan");
   const planFrom = dates[0];
 
   const { data: profile } = await admin.from("user_profiles").select("*").eq("id", userId).single();
@@ -101,7 +103,7 @@ async function planForUser(admin: SupabaseClient, userId: string, start: string,
   const weeklyTssTarget = (onboarding as { weekly_tss_target?: number }).weekly_tss_target ?? 350;
   const availableDays: string[] = Array.isArray(onboarding.days) ? onboarding.days : [];
 
-  const phys = await intervalsPhysiology(admin, profile);
+  const phys = await intervalsPhysiology(admin, profile, onboarding);
   const hrZones = phys.hrZones ?? onboarding.hr_zones ?? [
     { zone: "Z1", min: 95, max: 130 }, { zone: "Z2", min: 131, max: 145 },
     { zone: "Z3", min: 146, max: 160 }, { zone: "Z4", min: 161, max: 172 },
@@ -115,15 +117,55 @@ async function planForUser(admin: SupabaseClient, userId: string, start: string,
     .eq("user_id", userId).gte("date", planFrom).lte("date", end).eq("locked", true);
   const lockedByDate = new Map((lockedRows ?? []).map((r) => [r.date as string, r]));
   const lockedBlock = lockedByDate.size === 0 ? "" :
-    `\n\nFIXED SESSIONS — the athlete has LOCKED these days; DO NOT schedule anything on them. Plan the rest of the week AROUND them (respect easy/recovery before and after a hard fixed session):\n` +
+    `\n\nFIXED SESSIONS, the athlete has LOCKED these days; DO NOT schedule anything on them. Plan the rest of the week AROUND them (respect easy/recovery before and after a hard fixed session):\n` +
     [...lockedByDate.entries()].map(([d, r]) =>
       `- ${d} (${weekdayOf(d)}): ${(r.workout_json as Workout)?.title ?? r.type} [${r.type}]`).join("\n");
 
+  // Athlete's modalities + strength split → constrain and shape the week.
+  const sportsList: string[] = Array.isArray(onboarding.sports) ? onboarding.sports as string[] : [];
+  const splitStyle = (onboarding.split_style as string | undefined) ?? "";
+  const sportsBlock = sportsList.length
+    ? `\n\nSPORTS THE ATHLETE DOES: ${sportsList.join(", ")}. ONLY schedule these modalities (plus rest days). Do NOT introduce a sport they did not list.`
+    : "";
+  const splitBlock = splitStyle && !/^auto$/i.test(splitStyle)
+    ? `\n\nSTRENGTH SPLIT: the athlete follows a ${splitStyle} split, sequence the week's strength days to follow that rotation (e.g. push/pull/legs across three days, or alternating upper/lower), each session built around that day's focus and spaced for ≥48h muscle recovery.`
+    : "";
+
+  // Opt-in periodization: track build weeks via week_plans.focus history and
+  // schedule an automatic deload. Off → no block, exactly today's behavior.
+  let periodizationBlock = "";
+  if (onboarding.periodized === true) {
+    const { data: recentWeeks } = await admin
+      .from("week_plans").select("start_date, focus")
+      .eq("user_id", userId).lt("start_date", start)
+      .order("start_date", { ascending: false }).limit(6);
+    let buildWeeks = 0;
+    for (const w of recentWeeks ?? []) {
+      if (/deload|recovery/i.test((w.focus ?? "") as string)) break;
+      buildWeeks++;
+    }
+    const DELOAD_AFTER = 4;
+    const lastWeekStart = addDays(start, -7);
+    const lastWeekTss = Math.round(
+      acts28.filter((a) => (a.date ?? "") >= lastWeekStart && (a.date ?? "") < start)
+        .reduce((s, a) => s + (a.tss ?? 0), 0),
+    );
+    if (buildWeeks >= DELOAD_AFTER) {
+      periodizationBlock =
+        `\n\nPERIODIZATION. DELOAD WEEK: ${buildWeeks} build weeks since the last deload. Make THIS a recovery/deload week, cut total volume ~40% (fewer sets / shorter sessions), keep a little intensity to stay sharp, and set "week_focus" to "Recovery/Deload".`;
+    } else {
+      const targetTss = lastWeekTss > 0 ? Math.round(lastWeekTss * 1.08) : Math.round(weeklyTssTarget);
+      periodizationBlock =
+        `\n\nPERIODIZATION. BUILD WEEK ${buildWeeks + 1} of ~${DELOAD_AFTER}: progress gently on last week (~${lastWeekTss} TSS), aim for ~${targetTss} TSS via small volume/intensity increases, not a jump. Keep 80/20 and recovery spacing; a deload is due after ${DELOAD_AFTER} build weeks.`;
+    }
+  }
+
   const contextBlocks =
-    knowledgeBlock(profile) + memoryBlock(profile) + phys.block +
+    memoryDocsBlock(memoryFromProfile(profile)) + phys.block +
     await adherenceBlock(admin, userId, since14, start, acts28) +
     await executionBlock(admin, userId, since14) +
     goalBlock(onboarding, weeksToGoal, phase, acts28) + lockedBlock +
+    sportsBlock + splitBlock + periodizationBlock +
     await exerciseCatalogBlock(admin, userId);
 
   const dayList = dates.map((d) => ({
@@ -139,21 +181,21 @@ async function planForUser(admin: SupabaseClient, userId: string, start: string,
     wellness3d, weeklyKm, weeklyTssTarget, hrZones, contextBlocks,
   });
 
-  const { chain, resolveKey, resolveModel } = llmAccess(admin, userId, profile);
+  const { chain, resolveKey, resolveModel, resolveBaseUrl, hosted } = await llmAccess(admin, userId, profile);
   if (chain.length === 0) throw new Error("No AI provider configured");
 
   // Failures are logged to generation_logs (like generate-workout does) so a
   // "re-plan failed" in the app is diagnosable from the logs table.
   const logFailure = async (provider: string | null, raw: string | null, error: string) => {
     await admin.from("generation_logs").insert({
-      user_id: userId, provider, system_prompt: WEEK_SYSTEM_PROMPT,
+      user_id: userId, feature: "plan", hosted, provider, system_prompt: WEEK_SYSTEM_PROMPT,
       user_prompt: userPrompt, raw_response: raw, parsed_ok: false, error,
     }).then(() => {}, () => {});
   };
 
   let outcome;
   try {
-    outcome = await llmGenerateWithFallback(chain, { prompt: userPrompt, systemPrompt: WEEK_SYSTEM_PROMPT }, resolveKey, resolveModel);
+    outcome = await llmGenerateWithFallback(chain, { prompt: userPrompt, systemPrompt: WEEK_SYSTEM_PROMPT }, resolveKey, resolveModel, resolveBaseUrl);
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
     await logFailure(chain[0] ?? null, null, msg);
@@ -166,6 +208,7 @@ async function planForUser(admin: SupabaseClient, userId: string, start: string,
       { prompt: `${userPrompt}\n\nYOUR PREVIOUS RESPONSE was invalid (${v.error}). Return ONLY corrected JSON.`, systemPrompt: WEEK_SYSTEM_PROMPT },
       resolveKey,
       resolveModel,
+      resolveBaseUrl,
     ).catch(() => null);
     if (retry) {
       const v2 = validateWeekPlan(safeJson(retry.text));
@@ -193,12 +236,113 @@ async function planForUser(admin: SupabaseClient, userId: string, start: string,
   await admin.from("planned_workouts").delete()
     .eq("user_id", userId).gte("date", planFrom).lte("date", end).eq("completed", false).eq("locked", false);
 
+  // Content review per day — same engine as generate-workout: strip
+  // contraindicated movements, clamp unsafe loads, recompute endurance TSS, and
+  // fall back to recovery if a day is left unsafe/empty. The strength/recovery
+  // context below is tracked ACROSS the planned week (it used to run on empty
+  // inputs, so the progressive-overload floor, weekly-volume landmark, 48h
+  // recovery and back-to-back-hard guards never fired at week scope).
+  const injuries = [onboarding.injury_history, profile.coach_knowledge].filter(Boolean).join("; ");
+  const weekViolations: string[] = [];
+
+  // --- strength/recovery seed from history (mirrors generate-workout) --------
+  const daysBetweenIso = (a: string, b: string) =>
+    Math.round((new Date(b + "T12:00:00").getTime() - new Date(a + "T12:00:00").getTime()) / DAY);
+  const since48Plan = addDays(planFrom, -2);
+
+  // Muscles trained in the 48h before the plan starts, dated so the first day or
+  // two of the week still see them; later extended with the planned days.
+  const { data: recentStrength } = await admin
+    .from("strength_logs").select("muscle_groups, date")
+    .eq("user_id", userId).gte("date", since48Plan).lt("date", planFrom);
+  const plannedMuscles: { date: string; muscles: string[] }[] = (recentStrength ?? [])
+    .map((r) => ({ date: r.date as string, muscles: (r.muscle_groups ?? []) as string[] }));
+
+  // Hard sets per muscle over the trailing week — the running volume landmark,
+  // grown as the loop schedules each strength day.
+  const { data: weekStrength } = await admin
+    .from("strength_logs").select("muscle_groups, sets, date")
+    .eq("user_id", userId).gte("date", since7);
+  const weeklySetsByMuscle: Record<string, number> = {};
+  for (const r of weekStrength ?? []) {
+    const n = Array.isArray(r.sets) ? r.sets.length : 0;
+    for (const mg of (r.muscle_groups ?? [])) weeklySetsByMuscle[mg] = (weeklySetsByMuscle[mg] ?? 0) + n;
+  }
+
+  // Last top working set per lift → the progressive-overload floor.
+  const { data: mainLiftRows } = await admin
+    .from("strength_logs").select("exercise_name, estimated_1rm, sets, date")
+    .eq("user_id", userId).order("date", { ascending: false }).limit(20);
+  const seenLift = new Set<string>();
+  const mainLifts: MainLift[] = (mainLiftRows ?? [])
+    .filter((r) => { if (seenLift.has(r.exercise_name)) return false; seenLift.add(r.exercise_name); return true; })
+    .slice(0, 5)
+    .map((r) => {
+      const sets = Array.isArray(r.sets) ? r.sets : [];
+      const top = sets.reduce(
+        (best: { w: number; reps: number }, s: { weight_kg?: number; reps?: number }) => {
+          const w = Number(s?.weight_kg ?? 0);
+          return w > best.w ? { w, reps: Number(s?.reps ?? 0) } : best;
+        },
+        { w: 0, reps: 0 },
+      );
+      return { exercise: r.exercise_name, estimated1rm: r.estimated_1rm ?? top.w, lastWeight: top.w, lastReps: top.reps, lastSets: sets.length };
+    });
+
+  // Days since the last hard effort, seeded from history then advanced as the
+  // loop schedules hard days (so back-to-back quality gets caught mid-week).
+  let lastHardDate: string | null = acts28.find((a) => (a.tss ?? 0) > 60)?.date ?? null;
+  // Readiness proxy (0-100) from recent subjective wellness; TSB is the objective
+  // half. Matches the review's "wrecked athlete" semantics.
+  const readiness = Math.round(((wellness3d.energy + (6 - wellness3d.soreness) + wellness3d.sleep) / 15) * 100);
+  const equipment = onboarding.equipment as string | undefined;
+  const sessionMuscles = (w: Workout): string[] =>
+    [...new Set(w.sections.flatMap((s) => s.exercises.map((e) => muscleOf(e))))];
+
   // Don't insert on dates that already hold a locked session.
-  const rows = dates.map((date, i) => {
-    const session = plan.days[i]?.session ??
+  const rows: { user_id: string; date: string; type: string; workout_json: Workout; llm_provider: string; llm_model: string }[] = [];
+  for (let i = 0; i < dates.length; i++) {
+    const date = dates[i];
+    if (lockedByDate.has(date)) continue;
+    let session = plan.days[i]?.session ??
       { type: "rest", title: "Rest day", duration_minutes: 0, tss_estimate: 0, rpe_target: 0, sections: [], coach_note: "Recovery." } as Workout;
-    return { user_id: userId, date, type: session.type, workout_json: session, llm_provider: outcome.provider, llm_model: outcome.model };
-  }).filter((row) => !lockedByDate.has(row.date));
+
+    const muscleGroupsLast48h = [
+      ...new Set(
+        plannedMuscles
+          .filter((m) => { const d = daysBetweenIso(m.date, date); return d >= 1 && d <= 2; })
+          .flatMap((m) => m.muscles),
+      ),
+    ];
+    const rev = reviewWorkout(session, {
+      mainLifts, weeklySetsByMuscle, muscleGroupsLast48h,
+      tsb: fitness.tsb, daysSinceLastHard: lastHardDate ? daysBetweenIso(lastHardDate, date) : 99,
+      experience: onboarding.experience ?? "Intermediate", injuries, readiness, equipment,
+    });
+    session = rev.corrected;
+    if (session.type !== "rest" && session.sections.every((s) => s.exercises.length === 0)) {
+      session = {
+        type: "rest", title: "Recovery / mobility", duration_minutes: 30,
+        tss_estimate: 10, rpe_target: 2, sections: [],
+        coach_note: "Held back: this day conflicted with an injury/constraint on file.",
+      } as Workout;
+    }
+    if (rev.violations.length) weekViolations.push(`${date}: ${rev.violations.join("; ")}`);
+
+    // Advance the running state with the FINAL (reviewed) session so the next
+    // day's checks see it.
+    if (session.type === "strength") {
+      plannedMuscles.push({ date, muscles: sessionMuscles(session) });
+      for (const sec of session.sections) {
+        for (const ex of sec.exercises) {
+          weeklySetsByMuscle[muscleOf(ex)] = (weeklySetsByMuscle[muscleOf(ex)] ?? 0) + Math.max(1, ex.sets ?? 1);
+        }
+      }
+    }
+    if (isHardSession(session)) lastHardDate = date;
+
+    rows.push({ user_id: userId, date, type: session.type, workout_json: session, llm_provider: outcome.provider, llm_model: outcome.model });
+  }
   const { data: inserted, error: insErr } = await admin.from("planned_workouts").insert(rows).select("id, date");
   if (insErr) throw new Error(`save failed: ${insErr.message}`);
 
@@ -224,7 +368,7 @@ async function planForUser(admin: SupabaseClient, userId: string, start: string,
       try {
         const ev = await createEvent(profile.intervals_athlete_id, phys.apiKey, {
           date: row.date, name: session.title, description: renderIntervalsWorkout(session),
-          type: session.type === "run" ? "Run" : session.type === "ride" ? "Ride" : "WeightTraining",
+          type: session.type === "run" ? "Run" : session.type === "ride" ? "Ride" : session.type === "swim" ? "Swim" : "WeightTraining",
         });
         pushed++;
         if (id) await admin.from("planned_workouts").update({ intervals_event_id: ev.id, pushed_at: new Date().toISOString() }).eq("id", id);
@@ -232,12 +376,13 @@ async function planForUser(admin: SupabaseClient, userId: string, start: string,
     }
   }
 
-  const cost = estimateCostUsd(outcome.provider, outcome.promptTokens, outcome.completionTokens);
+  const cost = estimateCostUsd(outcome.provider, outcome.promptTokens, outcome.completionTokens, customPriceFromProfile(outcome.provider, profile), outcome.model);
   await admin.from("generation_logs").insert({
-    user_id: userId, provider: outcome.provider, model: outcome.model,
+    user_id: userId, feature: "plan", hosted, provider: outcome.provider, model: outcome.model,
     prompt_tokens: outcome.promptTokens, completion_tokens: outcome.completionTokens,
     estimated_cost_usd: cost, system_prompt: WEEK_SYSTEM_PROMPT, user_prompt: userPrompt,
     raw_response: outcome.text, parsed_ok: true,
+    error: weekViolations.length ? JSON.stringify(weekViolations) : null,
   });
 
   return {
@@ -281,6 +426,6 @@ Deno.serve(async (req) => {
     const result = await planForUser(admin, userId, start, body.push ?? true);
     return json(result);
   } catch (e) {
-    return json({ error: e instanceof Error ? e.message : String(e) }, 500);
+    return json({ error: e instanceof Error ? e.message : String(e) }, errorStatus(e));
   }
 });

@@ -6,12 +6,17 @@ import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.media.AudioAttributes
+import android.media.AudioManager
 import android.media.RingtoneManager
+import android.media.ToneGenerator
 import android.os.Build
+import android.os.Handler
+import android.os.Looper
 import android.os.VibrationEffect
 import android.os.Vibrator
 import android.os.VibratorManager
 import androidx.core.app.NotificationCompat
+import com.workoutmaker.app.data.RestChime
 
 object Notifications {
     const val CH_TIMER = "rest_timer"
@@ -85,13 +90,36 @@ fun vibrateStrong(ctx: Context) {
     }
 }
 
-/** Play the default notification tone directly (used for the foreground
- *  rest-over cue, where we don't want to post a heads-up banner). */
-fun playRestOverSound(ctx: Context) {
+/** Play the user's chosen rest-over cue directly (foreground path, where we
+ *  don't want to post a heads-up banner). Everything routes through the MEDIA
+ *  stream — the one music uses — so it still sounds with the phone on silent,
+ *  mixing over whatever's playing (gym scenario: silent mode + earbuds). */
+fun playRestOverSound(ctx: Context, chime: RestChime = RestChime.SYSTEM) {
     runCatching {
-        val uri = RingtoneManager.getDefaultUri(RingtoneManager.TYPE_NOTIFICATION)
-        RingtoneManager.getRingtone(ctx, uri)?.play()
+        when (chime) {
+            RestChime.SILENT -> return
+            RestChime.SYSTEM -> {
+                val uri = RingtoneManager.getDefaultUri(RingtoneManager.TYPE_NOTIFICATION)
+                RingtoneManager.getRingtone(ctx, uri)?.apply {
+                    audioAttributes = AudioAttributes.Builder()
+                        .setUsage(AudioAttributes.USAGE_MEDIA)
+                        .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
+                        .build()
+                    play()
+                }
+            }
+            RestChime.CHIME -> playTone(ToneGenerator.TONE_CDMA_ALERT_NETWORK_LITE, 700)
+            RestChime.BEEP -> playTone(ToneGenerator.TONE_PROP_BEEP, 250)
+            RestChime.DOUBLE_BEEP -> playTone(ToneGenerator.TONE_PROP_BEEP2, 750)
+        }
     }
+}
+
+private fun playTone(tone: Int, durationMs: Int) {
+    val gen = ToneGenerator(AudioManager.STREAM_MUSIC, 85)
+    gen.startTone(tone, durationMs)
+    // Release once the tone has played — ToneGenerator holds a native audio track.
+    Handler(Looper.getMainLooper()).postDelayed({ runCatching { gen.release() } }, durationMs + 150L)
 }
 
 /** Fires when a scheduled rest period ends — even if the app was killed or the

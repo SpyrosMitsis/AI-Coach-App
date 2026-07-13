@@ -6,7 +6,14 @@ export type LlmProvider =
   | "deepseek"
   | "openai"
   | "gemini"
-  | "groq";
+  | "groq"
+  // OpenRouter — OpenAI-compatible aggregator (one key, hundreds of models via a
+  // fixed endpoint). Behaves like a built-in provider; the user just picks a
+  // model id (e.g. "anthropic/claude-3.5-sonnet"), default "openrouter/auto".
+  | "openrouter"
+  // User-supplied OpenAI-compatible endpoint (base URL + model + key). Its base
+  // URL lives on the llm_api_keys row, not in the hardcoded provider registry.
+  | "custom";
 
 export interface WorkoutExercise {
   name: string;
@@ -31,7 +38,7 @@ export interface WorkoutSection {
 }
 
 export interface Workout {
-  type: "run" | "ride" | "strength" | "rest";
+  type: "run" | "ride" | "swim" | "strength" | "rest";
   title: string;
   duration_minutes: number;
   tss_estimate: number;

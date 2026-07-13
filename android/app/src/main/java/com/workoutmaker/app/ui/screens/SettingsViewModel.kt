@@ -107,6 +107,11 @@ internal val DURATIONS_MAX = listOf(45, 60, 75, 90, 120)
 
 internal val LEVELS = listOf("Beginner", "Intermediate", "Advanced")
 
+internal val SPLIT_STYLES = listOf("Auto", "Full body", "Upper / lower", "Push / pull / legs")
+
+// Canonical sport keys (stored); UI capitalizes them. Match workout `type` values.
+internal val SPORTS = listOf("run", "ride", "swim", "strength")
+
 internal val BAR_WEIGHTS = listOf(20.0, 15.0, 10.0, 7.0)
 
 @HiltViewModel
@@ -115,7 +120,44 @@ class SettingsViewModel @Inject constructor(
     private val prefs: AppPreferences,
     private val strength: com.workoutmaker.app.strength.StrengthRepository,
     private val health: com.workoutmaker.app.health.HealthConnectManager,
+    private val billing: com.workoutmaker.app.billing.BillingGateway,
 ) : ViewModel() {
+
+    // --- Pro plan / hosted AI (only when this build can bill AND this server
+    // hosts an LLM key — self-hosted stacks and foss builds never see it) ----
+    val planStatus = MutableStateFlow(com.workoutmaker.app.data.PlanStatus())
+    val proAvailable = MutableStateFlow(false)
+    val proBusy = MutableStateFlow(false)
+    val proError = MutableStateFlow<String?>(null)
+
+    fun buyPro(activity: android.app.Activity) = viewModelScope.launch {
+        proBusy.value = true
+        proError.value = null
+        when (val r = com.workoutmaker.app.billing.purchaseAndVerify(activity, billing, repo)) {
+            is com.workoutmaker.app.billing.ProPurchaseResult.Success -> planStatus.value = repo.planStatus()
+            is com.workoutmaker.app.billing.ProPurchaseResult.Cancelled -> Unit
+            is com.workoutmaker.app.billing.ProPurchaseResult.Failed -> proError.value = r.message
+        }
+        proBusy.value = false
+    }
+
+    // Re-verify a purchase Play already knows about (bought on another device,
+    // or verify failed right after the buy).
+    fun restorePro() = viewModelScope.launch {
+        proBusy.value = true
+        proError.value = null
+        runCatching {
+            val token = billing.currentPurchaseToken() ?: error("No active subscription found on this Google account.")
+            repo.verifyPurchase(token)
+            planStatus.value = repo.planStatus()
+        }.onFailure { proError.value = it.message }
+        proBusy.value = false
+    }
+
+    fun setUseHostedAi(on: Boolean) = viewModelScope.launch {
+        runCatching { repo.setUseHostedAi(on) }
+            .onSuccess { planStatus.value = planStatus.value.copy(useHostedAi = on) }
+    }
 
     // CSV import (Strong / Hevy) lives in Settings → Import data.
     val importStatus = MutableStateFlow<String?>(null)
@@ -180,8 +222,11 @@ class SettingsViewModel @Inject constructor(
     fun setBarbell(kg: Double) = viewModelScope.launch { prefs.setBarbell(kg) }
     fun setRestVibrate(on: Boolean) = viewModelScope.launch { prefs.setRestVibrate(on) }
     fun setRestNotify(on: Boolean) = viewModelScope.launch { prefs.setRestNotify(on) }
+    fun setRestChime(c: com.workoutmaker.app.data.RestChime) = viewModelScope.launch { prefs.setRestChime(c) }
     fun setKeepScreenOn(on: Boolean) = viewModelScope.launch { prefs.setKeepScreenOn(on) }
     fun setThemeMode(m: com.workoutmaker.app.data.ThemeMode) = viewModelScope.launch { prefs.setThemeMode(m) }
+    fun setThemePalette(p: com.workoutmaker.app.data.ThemePalette) = viewModelScope.launch { prefs.setThemePalette(p) }
+    fun setSpendCap(usd: Double) = viewModelScope.launch { prefs.setSpendCap(usd) }
 
     // Q11: build a Strong-compatible CSV of all strength history for the user to save.
     suspend fun buildExportCsv(): String = strength.exportCsv()
@@ -224,6 +269,14 @@ class SettingsViewModel @Inject constructor(
     val knowledge = MutableStateFlow("")
     val knowledgeStatus = MutableStateFlow<String?>(null)
 
+    // Rolling coach memory — durable notes the coach carries between sessions.
+    val memory = MutableStateFlow("")
+    val memoryStatus = MutableStateFlow<String?>(null)
+
+    // Coach soul — the coach's identity/voice + its evolving relationship with you.
+    val soul = MutableStateFlow("")
+    val soulStatus = MutableStateFlow<String?>(null)
+
     // P1 races + E4 threshold tests.
     val races = MutableStateFlow<List<com.workoutmaker.app.data.Race>>(emptyList())
     val thresholdTests = MutableStateFlow<List<com.workoutmaker.app.data.ThresholdTest>>(emptyList())
@@ -232,17 +285,31 @@ class SettingsViewModel @Inject constructor(
     // Intervals.icu (athlete id + key hint) and per-provider LLM key rows.
     val intervalsSaved = MutableStateFlow<Pair<String, String?>?>(null)
     val llmKeys = MutableStateFlow<Map<String, com.workoutmaker.app.data.LlmKeyRow>>(emptyMap())
+    // Custom (BYO) provider per-1M-token prices, so its cost isn't shown as $0.
+    val customPrice = MutableStateFlow<Pair<Double?, Double?>>(null to null)
 
     fun load() = viewModelScope.launch {
         repo.loadProfile()?.let { profile.value = it }
+        runCatching { repo.planStatus() }.onSuccess { planStatus.value = it }
+        proAvailable.value = billing.supported && repo.serverHostedAi()
         autoPlan.value = repo.autoPlanEnabled()
         runCatching { repo.modelOverrides() }.onSuccess { modelOverrides.value = it }
         runCatching { repo.loadKnowledge() }.onSuccess { knowledge.value = it }
+        runCatching { repo.loadMemory() }.onSuccess { memory.value = it }
+        runCatching { repo.loadSoul() }.onSuccess { soul.value = it }
         runCatching { repo.generationLogs() }.onSuccess { logs.value = it }
         runCatching { repo.races() }.onSuccess { races.value = it }
         runCatching { repo.thresholdTests() }.onSuccess { thresholdTests.value = it }
         runCatching { repo.intervalsConnection() }.onSuccess { intervalsSaved.value = it }
         runCatching { repo.llmKeyRows() }.onSuccess { rows -> llmKeys.value = rows.associateBy { it.provider } }
+        runCatching { repo.customLlmPricing() }.onSuccess { customPrice.value = it }
+    }
+
+    fun setCustomPricing(inputPer1M: Double?, outputPer1M: Double?) = viewModelScope.launch {
+        runCatching {
+            repo.setCustomLlmPricing(inputPer1M, outputPer1M)
+            customPrice.value = inputPer1M to outputPer1M
+        }
     }
 
     fun addRace(r: com.workoutmaker.app.data.Race, setAsGoal: Boolean) = viewModelScope.launch {
@@ -281,7 +348,7 @@ class SettingsViewModel @Inject constructor(
             repo.addThresholdTest(t)
             thresholdTests.value = repo.thresholdTests()
             repo.loadProfile()?.let { profile.value = it }
-        }.onSuccess { saveStatus.value = "✓ Test logged — zones updated" }
+        }.onSuccess { saveStatus.value = "✓ Test logged, zones updated" }
             .onFailure { saveStatus.value = "Couldn't log: ${it.message}" }
     }
 
@@ -292,6 +359,36 @@ class SettingsViewModel @Inject constructor(
         runCatching { repo.saveKnowledge(knowledge.value) }
             .onSuccess { knowledgeStatus.value = "✓ Saved" }
             .onFailure { knowledgeStatus.value = "Couldn't save: ${it.message}" }
+        busy.value = false
+    }
+
+    fun updateMemory(text: String) { memory.value = text }
+
+    fun saveMemory() = viewModelScope.launch {
+        busy.value = true
+        runCatching { repo.saveMemory(memory.value) }
+            .onSuccess { memoryStatus.value = "✓ Saved" }
+            .onFailure { memoryStatus.value = "Couldn't save: ${it.message}" }
+        busy.value = false
+    }
+
+    fun updateSoul(text: String) { soul.value = text }
+
+    fun saveSoul() = viewModelScope.launch {
+        busy.value = true
+        runCatching { repo.saveSoul(soul.value) }
+            .onSuccess { soulStatus.value = "✓ Saved" }
+            .onFailure { soulStatus.value = "Couldn't save: ${it.message}" }
+        busy.value = false
+    }
+
+    // Re-derive the rolling notes from recent training, then reload them.
+    fun refreshMemory() = viewModelScope.launch {
+        busy.value = true
+        memoryStatus.value = "Refreshing from recent training…"
+        runCatching { repo.refreshMemory(); repo.loadMemory() }
+            .onSuccess { memory.value = it; memoryStatus.value = "✓ Updated" }
+            .onFailure { memoryStatus.value = "Couldn't refresh: ${it.message}" }
         busy.value = false
     }
 
@@ -345,16 +442,59 @@ class SettingsViewModel @Inject constructor(
         viewModelScope.launch { runCatching { repo.setActiveProvider(p) } }
     }
 
-    fun testKey(p: LlmProvider, key: String, sample: Boolean) = viewModelScope.launch {
-        runCatching { repo.testLlmKey(TestKeyRequest(p.key, key, sample)) }
+    // Which provider key is currently being tested (drives the button spinner).
+    val testing = MutableStateFlow<String?>(null)
+
+    fun testKey(
+        p: LlmProvider,
+        key: String,
+        sample: Boolean,
+        baseUrl: String? = null,
+        model: String? = null,
+    ) = viewModelScope.launch {
+        testing.value = p.key
+        runCatching {
+            repo.testLlmKey(
+                TestKeyRequest(p.key, key, sample, baseUrl = baseUrl?.trim()?.ifBlank { null }, model = model?.trim()?.ifBlank { null }),
+            )
+        }
+            .onFailure {
+                // Surface the failure instead of silently doing nothing — most
+                // commonly the function returned an error (e.g. endpoint
+                // unreachable from the server, or DB migration not yet applied).
+                results[p.key] = com.workoutmaker.app.data.TestKeyResponse(
+                    provider = p.key, model = model ?: p.model, is_valid = false,
+                    error = it.message ?: "request failed",
+                )
+            }
             .onSuccess {
                 results[p.key] = it
-                // Refresh the saved-key rows so the masked hint appears.
+                // For the custom provider the model id lives in the per-provider
+                // override (llm_models), so persist it alongside the key.
+                if (p == LlmProvider.CUSTOM && it.is_valid && !model.isNullOrBlank()) {
+                    runCatching {
+                        repo.setModelOverride(p, model.trim())
+                        modelOverrides.value = repo.modelOverrides()
+                    }
+                }
+                // Refresh the saved-key rows so the masked hint + base URL appear.
                 runCatching { repo.llmKeyRows() }.onSuccess { rows -> llmKeys.value = rows.associateBy { r -> r.provider } }
             }
+        testing.value = null
     }
 
     fun signOut() = viewModelScope.launch { repo.signOut() }
+
+    // null = idle, "" = in flight, anything else = error text.
+    val deleteAccountState = MutableStateFlow<String?>(null)
+
+    fun deleteAccount() = viewModelScope.launch {
+        deleteAccountState.value = ""
+        runCatching { repo.deleteAccount() }
+            .onFailure { deleteAccountState.value = it.message ?: "Deletion failed, try again." }
+            .onSuccess { deleteAccountState.value = null }
+        // On success AuthGate flips to the login screen by itself (session gone).
+    }
 }
 
 // ===========================================================================

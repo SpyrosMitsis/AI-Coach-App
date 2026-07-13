@@ -22,7 +22,7 @@ object StrengthPrograms {
         StrengthProgram(
             key = "fullbody3",
             name = "Full Body 3×/week",
-            description = "Beginner-friendly. Three full-body sessions (A/B/A) with the big compounds every session — fast strength gains.",
+            description = "Beginner-friendly. Three full-body sessions (A/B/A) with the big compounds every session, fast strength gains.",
             schedule = "Mon · Wed · Fri (alternate A/B)",
             days = listOf(
                 ProgramDay("Full Body A", listOf("Back Squat" to 3, "Barbell Bench Press" to 3, "Barbell Row" to 3, "Overhead Press" to 2, "Plank" to 3)),
@@ -55,7 +55,7 @@ object StrengthPrograms {
         StrengthProgram(
             key = "strength4",
             name = "Strength (4×/week, main-lift focus)",
-            description = "Powerbuilding. Heavy primary lift each day in low reps, then hypertrophy accessories — drive squat/bench/dead/press up.",
+            description = "Powerbuilding. Heavy primary lift each day in low reps, then hypertrophy accessories, drive squat/bench/dead/press up.",
             schedule = "Squat · Bench · Deadlift · Press days",
             days = listOf(
                 ProgramDay("Squat Day", listOf("Back Squat" to 5, "Romanian Deadlift" to 3, "Leg Press" to 3, "Standing Calf Raise" to 4)),

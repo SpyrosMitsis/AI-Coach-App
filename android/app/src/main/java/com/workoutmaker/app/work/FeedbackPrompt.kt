@@ -68,8 +68,9 @@ class FeedbackPromptWorker @AssistedInject constructor(
         return when (plannedType.lowercase()) {
             "run" -> a.contains("run") || a.contains("walk")
             "ride" -> a.contains("ride") || a.contains("bike") || a.contains("cycl")
+            "swim" -> a.contains("swim")
             "strength" -> a.contains("weight") || a.contains("strength") || a.contains("workout") || a.contains("gym")
-            else -> a.isNotEmpty()
+            else -> false
         }
     }
 
@@ -89,7 +90,7 @@ class FeedbackPromptWorker @AssistedInject constructor(
         val n = NotificationCompat.Builder(applicationContext, Notifications.CH_REMINDERS)
             .setSmallIcon(android.R.drawable.ic_dialog_info)
             .setContentTitle("How did it feel?")
-            .setContentText("Rate \"$workoutTitle\" — your coach uses it to tune the next sessions.")
+            .setContentText("Rate \"$workoutTitle\", your coach uses it to tune the next sessions.")
             .setContentIntent(pi)
             .setAutoCancel(true)
             .build()

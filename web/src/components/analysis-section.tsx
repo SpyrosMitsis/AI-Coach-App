@@ -167,7 +167,7 @@ export function ActivityAnalysisSection({ activityId }: { activityId: string }) 
           title={
             "Pace" +
             (a?.target?.pace_lo != null && a?.target?.pace_hi != null
-              ? ` · target ${fmtPaceSec(a.target.pace_lo)}–${fmtPaceSec(a.target.pace_hi)} /km`
+              ? ` · target ${fmtPaceSec(a.target.pace_lo)}-${fmtPaceSec(a.target.pace_hi)} /km`
               : "")
           }
         >
@@ -197,7 +197,7 @@ export function ActivityAnalysisSection({ activityId }: { activityId: string }) 
         <ChartCard
           title={
             "Heart rate" +
-            (a?.target?.hr_lo != null ? ` · target ${a.target.hr_lo}–${a.target.hr_hi} bpm` : "")
+            (a?.target?.hr_lo != null ? ` · target ${a.target.hr_lo}-${a.target.hr_hi} bpm` : "")
           }
         >
           <ResponsiveContainer width="100%" height={150}>
@@ -311,7 +311,7 @@ export function StrengthAnalysisSection({ date }: { date: string }) {
       {!a && (
         <>
           <p className="text-sm text-muted-foreground">
-            Compare what you lifted against the planned session — coverage, volume and AI coach feedback.
+            Compare what you lifted against the planned session, coverage, volume and AI coach feedback.
           </p>
           <Button variant="outline" className="w-full" disabled={busy} onClick={() => analyze()}>
             <Sparkles className="h-4 w-4" />

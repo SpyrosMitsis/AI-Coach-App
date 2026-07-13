@@ -86,7 +86,7 @@ class CheckinReminderWorker @AssistedInject constructor(
         }
         val n = NotificationCompat.Builder(applicationContext, Notifications.CH_REMINDERS)
             .setContentTitle("Good morning ☀️")
-            .setContentText("How do you feel today? Tap to log energy, soreness & sleep — it tunes today's training.")
+            .setContentText("How do you feel today? Tap to log energy, soreness & sleep, it tunes today's training.")
             .setSmallIcon(android.R.drawable.ic_dialog_info)
             .setContentIntent(pi)
             .setAutoCancel(true)

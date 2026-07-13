@@ -5,13 +5,40 @@ import {
   buildSplits,
   combineScore,
   hrBandForZones,
+  markSplitsInBand,
   paceBandForZones,
   paceInBandScore,
   parsePaceToSec,
   plannedZones,
   scoreLabel,
 } from "./analysis.ts";
+import type { AnalysisSplit } from "./analysis.ts";
 import type { Workout } from "./types.ts";
+
+Deno.test("markSplitsInBand: pace band marks each km on/off target", () => {
+  // Target band 240-260 s/km; grace ±3% → ~233-268.
+  const splits: AnalysisSplit[] = [
+    { km: 1, sec: 250, avg_hr: null }, // in
+    { km: 2, sec: 300, avg_hr: null }, // out (too slow)
+    { km: 3, sec: 265, avg_hr: null }, // in (within +3% grace)
+  ];
+  const onTarget = markSplitsInBand(splits, { lo: 240, hi: 260 }, null);
+  assertEquals(onTarget, 2);
+  assertEquals(splits.map((s) => s.in_band), [true, false, true]);
+});
+
+Deno.test("markSplitsInBand: HR fallback when no pace band; null without any band", () => {
+  const hrSplits: AnalysisSplit[] = [
+    { km: 1, sec: 0, avg_hr: 165 }, // in 160-175
+    { km: 2, sec: 0, avg_hr: 140 }, // out
+  ];
+  assertEquals(markSplitsInBand(hrSplits, null, { lo: 160, hi: 175 }), 1);
+  assertEquals(hrSplits.map((s) => s.in_band), [true, false]);
+
+  const noBand: AnalysisSplit[] = [{ km: 1, sec: 250, avg_hr: 160 }];
+  assertEquals(markSplitsInBand(noBand, null, null), 0);
+  assertEquals(noBand[0].in_band, null);
+});
 
 const workout: Workout = {
   type: "run",

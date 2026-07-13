@@ -30,8 +30,9 @@ android {
         applicationId = "com.workoutmaker.app"
         minSdk = 26
         targetSdk = 35
-        versionCode = 1
-        versionName = "0.1.0"
+        // Every Play upload needs a versionCode bump.
+        versionCode = 2
+        versionName = "1.0.0"
 
         // Supabase project values are injected at build time from gradle
         // properties (see local.properties / CI secrets). These are public
@@ -46,11 +47,40 @@ android {
         buildConfig = true
     }
 
+    // Upload keystore for Play (never committed; values via local.properties /
+    // CI secrets, same resolution as the Supabase values above). Release builds
+    // fall back to unsigned when absent so contributors can still compile.
+    val hasReleaseKeystore = secret("RELEASE_STORE_FILE").isNotEmpty()
+    signingConfigs {
+        if (hasReleaseKeystore) {
+            create("release") {
+                storeFile = file(secret("RELEASE_STORE_FILE"))
+                storePassword = secret("RELEASE_STORE_PASSWORD")
+                keyAlias = secret("RELEASE_KEY_ALIAS")
+                keyPassword = secret("RELEASE_KEY_PASSWORD")
+            }
+        }
+    }
+
     buildTypes {
         release {
-            isMinifyEnabled = false
+            isMinifyEnabled = true
+            isShrinkResources = true
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
+            // Contributors/self-hosters without an upload keystore still get an
+            // installable (debug-signed) release APK, matching the README flow.
+            signingConfig = if (hasReleaseKeystore) signingConfigs.getByName("release")
+            else signingConfigs.getByName("debug")
         }
+    }
+
+    // play = Google Play build with the (proprietary) Billing library.
+    // foss = no Google dependencies at all — F-Droid-able, Pro UI never shows
+    // (billing unsupported + self-hosted servers don't advertise hosted_ai).
+    flavorDimensions += "distribution"
+    productFlavors {
+        create("play") { dimension = "distribution"; isDefault = true }
+        create("foss") { dimension = "distribution" }
     }
 
     compileOptions {
@@ -65,6 +95,7 @@ dependencies {
     implementation(composeBom)
 
     implementation("androidx.core:core-ktx:1.13.1")
+    implementation("androidx.core:core-splashscreen:1.0.1")
     implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.8.6")
     implementation("androidx.lifecycle:lifecycle-runtime-compose:2.8.6")
     implementation("androidx.lifecycle:lifecycle-viewmodel-compose:2.8.6")
@@ -76,6 +107,9 @@ dependencies {
     implementation("androidx.compose.material3:material3")
     implementation("androidx.compose.material:material-icons-extended")
     implementation("androidx.navigation:navigation-compose:2.8.1")
+
+    // Play Billing — play flavor only, so foss builds stay Google-free.
+    "playImplementation"("com.android.billingclient:billing-ktx:7.1.1")
 
     // Hilt DI
     implementation("com.google.dagger:hilt-android:2.52")
