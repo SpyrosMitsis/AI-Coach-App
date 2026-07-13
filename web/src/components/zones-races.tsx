@@ -168,7 +168,7 @@ function ThresholdsCard({
           </div>
         ) : !lthrN && !ftpN && !paceSec ? (
           <p className="text-sm text-muted-foreground">
-            No thresholds set. Tap <b>Edit thresholds</b> to enter your LTHR, threshold pace, or FTP — zones derive automatically.
+            No thresholds set. Tap <b>Edit thresholds</b> to enter your LTHR, threshold pace, or FTP, zones derive automatically.
           </p>
         ) : (
           <div className="space-y-4">
@@ -176,7 +176,7 @@ function ThresholdsCard({
               <ZoneTable title="Pace" subtitle={`threshold ${formatPace(paceSec)} /km`} rows={paceZones.map((z) => [z.name, z.range])} />
             )}
             {hrZones.length > 0 && (
-              <ZoneTable title="Heart rate" subtitle={`LTHR ${lthrN} bpm`} rows={hrZones.map((z) => [z.name, `${z.lo}–${z.hi} bpm`])} />
+              <ZoneTable title="Heart rate" subtitle={`LTHR ${lthrN} bpm`} rows={hrZones.map((z) => [z.name, `${z.lo}-${z.hi} bpm`])} />
             )}
             {powerZones.length > 0 && (
               <ZoneTable title="Power" subtitle={`FTP ${ftpN} W`} rows={powerZones.map((z) => [z.name, z.range])} />
@@ -316,7 +316,7 @@ function RacesCard({
 
         {races.length === 0 && !open && (
           <p className="text-sm text-muted-foreground">
-            No goals yet. Add a race, FTP target, swim time or lift — your A-goal drives periodization &amp; taper.
+            No goals yet. Add a race, FTP target, swim time or lift, your A-goal drives periodization &amp; taper.
           </p>
         )}
 

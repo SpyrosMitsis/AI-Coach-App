@@ -170,7 +170,7 @@ export function computeRecovery(
   if (rhr && rhr.latest != null) parts.push(`resting HR ${rhr.deltaPct > 0 ? "+" : ""}${Math.round(rhr.deltaPct * 100)}%`);
   if (sleep && sleep.hours != null) parts.push(`slept ${sleep.hours}h`);
   const summary = (band === "green" ? "Recovered" : band === "amber" ? "Moderately recovered" : "Under-recovered") +
-    (parts.length ? ` — ${parts.join(", ")}.` : ".");
+    (parts.length ? `, ${parts.join(", ")}.` : ".");
 
   return { score, band, wellness: +wellnessScore.toFixed(2), hrv, rhr, sleep, drivers, summary };
 }

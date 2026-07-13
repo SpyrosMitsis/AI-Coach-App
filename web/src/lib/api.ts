@@ -14,28 +14,28 @@ import type {
 export function humanizeError(raw: string): string {
   const m = raw.toLowerCase();
   if (m.includes("no ai provider configured") || m.includes("no llm key")) {
-    return "No AI provider is set up yet — add an API key in Settings → LLM.";
+    return "No AI provider is set up yet. Add an API key in Settings → LLM.";
   }
   if (m.includes("all providers in fallback chain failed")) {
-    return "All of your AI providers failed — check your API keys in Settings → LLM (a key may be invalid or out of credit).";
+    return "All of your AI providers failed. Check your API keys in Settings → LLM (a key may be invalid or out of credit).";
   }
   if (m.includes("http 401") || m.includes("invalid api key") || m.includes("invalid x-api-key")) {
-    return "An API key was rejected — re-check it in Settings.";
+    return "An API key was rejected. Re-check it in Settings.";
   }
   if (m.includes("http 429") || m.includes("rate limit")) {
-    return "The AI provider is rate-limiting you — wait a minute and try again, or switch the active provider.";
+    return "The AI provider is rate-limiting you. Wait a minute and try again, or switch the active provider.";
   }
   if (m.includes("could not parse workout")) {
-    return "The AI returned something unusable this time — try generating again (this usually works on retry).";
+    return "The AI returned something unusable this time. Try generating again (this usually works on retry).";
   }
   if (m.includes("intervals") && (m.includes("403") || m.includes("401"))) {
-    return "Intervals.icu rejected your credentials — re-connect it in Settings.";
+    return "Intervals.icu rejected your credentials, re-connect it in Settings.";
   }
   if (m.includes("profile not found")) {
-    return "Your profile isn't set up yet — finish onboarding first.";
+    return "Your profile isn't set up yet, finish onboarding first.";
   }
   if (m.includes("failed to fetch") || m.includes("network")) {
-    return "Network problem — check your connection and try again.";
+    return "Network problem, check your connection and try again.";
   }
   return raw;
 }

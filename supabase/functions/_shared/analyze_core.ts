@@ -31,8 +31,42 @@ import {
   RawStreams,
   scoreLabel,
 } from "./analysis.ts";
-import { llmGenerateWithFallback } from "./llm.ts";
+import { customPriceFromProfile, estimateCostUsd, llmGenerateWithFallback } from "./llm.ts";
 import { llmAccess } from "./llm_keys.ts";
+import type { LlmResult } from "./types.ts";
+
+// Best-effort cost row so analysis feedback shows up in spend diagnostics —
+// and, for Pro users on the hosted key, gets metered by the quota RPC.
+async function logFeedbackCost(
+  admin: SupabaseClient,
+  userId: string,
+  profile: Record<string, unknown> | null | undefined,
+  out: LlmResult,
+  hosted: boolean,
+): Promise<void> {
+  try {
+    const cost = estimateCostUsd(
+      out.provider,
+      out.promptTokens,
+      out.completionTokens,
+      customPriceFromProfile(out.provider, profile),
+      out.model,
+    );
+    await admin.from("generation_logs").insert({
+      user_id: userId,
+      feature: "analyze",
+      hosted,
+      provider: out.provider,
+      model: out.model,
+      prompt_tokens: out.promptTokens,
+      completion_tokens: out.completionTokens,
+      estimated_cost_usd: cost,
+      parsed_ok: true,
+    });
+  } catch {
+    // best effort
+  }
+}
 import { customExercises, muscleForName } from "./exercise_catalog.ts";
 import type { Workout } from "./types.ts";
 
@@ -157,7 +191,7 @@ export async function runActivityAnalysis(
     components.push({
       name: "Intensity",
       score,
-      detail: `${Math.round(frac * 100)}% of moving time in the target ${zoneText} pace band (${fmtPace(paceBand.lo)}–${fmtPace(paceBand.hi)})${adherenceText}`,
+      detail: `${Math.round(frac * 100)}% of moving time in the target ${zoneText} pace band (${fmtPace(paceBand.lo)}-${fmtPace(paceBand.hi)})${adherenceText}`,
     });
   } else if (hrBand && act.avg_hr) {
     const inBand = act.avg_hr >= hrBand.lo && act.avg_hr <= hrBand.hi;
@@ -165,7 +199,7 @@ export async function runActivityAnalysis(
     components.push({
       name: "Intensity",
       score: Math.max(0, Math.round(95 - dist * 3)),
-      detail: `avg HR ${act.avg_hr} bpm vs target ${zoneText} (${hrBand.lo}–${hrBand.hi} bpm)${adherenceText}`,
+      detail: `avg HR ${act.avg_hr} bpm vs target ${zoneText} (${hrBand.lo}-${hrBand.hi} bpm)${adherenceText}`,
     });
   }
 
@@ -176,7 +210,7 @@ export async function runActivityAnalysis(
   let feedback: string | null = null;
   let feedbackProvider: string | null = null;
   try {
-    const { chain, resolveKey, resolveModel, resolveBaseUrl } = llmAccess(admin, userId, profile ?? {});
+    const { chain, resolveKey, resolveModel, resolveBaseUrl, hosted } = await llmAccess(admin, userId, profile ?? {});
     if (chain.length) {
       const actualBits = [
         act.type && `type ${act.type}`,
@@ -194,13 +228,13 @@ export async function runActivityAnalysis(
         )
         .join("; ");
       const targetText = paceBand
-        ? ` Target ${zoneText} pace ${fmtPace(paceBand.lo)}–${fmtPace(paceBand.hi)} /km (${onTargetSplits}/${bandedSplits} km on target).`
+        ? ` Target ${zoneText} pace ${fmtPace(paceBand.lo)}-${fmtPace(paceBand.hi)} /km (${onTargetSplits}/${bandedSplits} km on target).`
         : hrBand
-        ? ` Target ${zoneText} HR ${hrBand.lo}–${hrBand.hi} bpm (${onTargetSplits}/${bandedSplits} km on target).`
+        ? ` Target ${zoneText} HR ${hrBand.lo}-${hrBand.hi} bpm (${onTargetSplits}/${bandedSplits} km on target).`
         : "";
       const prompt = `Review this completed session against its plan.
 
-PLANNED: ${planned ? `${planned.title} — ${planned.type}, ~${planned.duration_minutes} min, ~${planned.tss_estimate} TSS.${zoneText ? ` Target intensity ${zoneText}.` : ""} Structure: ${(planned.sections ?? []).map((s) => s.name).join(" → ")}` : "nothing was planned this day."}
+PLANNED: ${planned ? `${planned.title}, ${planned.type}, ~${planned.duration_minutes} min, ~${planned.tss_estimate} TSS.${zoneText ? ` Target intensity ${zoneText}.` : ""} Structure: ${(planned.sections ?? []).map((s) => s.name).join(" → ")}` : "nothing was planned this day."}
 ACTUAL: ${actualBits || "no summary data"}.${targetText}
 ${splitText ? `SPLITS (✓ = in the target band, ✗ = out): ${splitText}.` : ""}
 ${components.length ? `EXECUTION: ${components.map((c) => `${c.name} ${c.score}/100 (${c.detail})`).join("; ")}. Overall ${score}/100.` : ""}
@@ -220,6 +254,7 @@ Write 3-5 sentences of specific coach feedback: what was executed well, where pa
       );
       feedback = out.text.trim() || null;
       feedbackProvider = out.provider;
+      await logFeedbackCost(admin, userId, profile, out, hosted);
     }
   } catch (_e) {
     // best-effort — analysis is still useful without AI feedback
@@ -387,7 +422,7 @@ export async function runStrengthAnalysis(
 
   const logged = logs ?? [];
   if (!logged.length) {
-    throw new Error("no logged strength session on this date — sync the session first");
+    throw new Error("no logged strength session on this date, sync the session first");
   }
   const planned = ((plans ?? [])[0]?.workout_json ?? null) as Workout | null;
   const watch = (watchActs ?? []).find((a) =>
@@ -459,10 +494,10 @@ export async function runStrengthAnalysis(
       });
 
       const subText = cov.substitutions.length
-        ? ` — substituted: ${cov.substitutions.map((s) => `${s.logged}→${s.planned}`).slice(0, 3).join(", ")}`
+        ? `, substituted: ${cov.substitutions.map((s) => `${s.logged}→${s.planned}`).slice(0, 3).join(", ")}`
         : "";
       const missText = cov.skipped.length
-        ? ` — skipped: ${cov.skipped.slice(0, 3).join(", ")}${cov.skipped.length > 3 ? "…" : ""}`
+        ? `, skipped: ${cov.skipped.slice(0, 3).join(", ")}${cov.skipped.length > 3 ? "…" : ""}`
         : "";
       components.push({
         name: "Coverage",
@@ -495,19 +530,19 @@ export async function runStrengthAnalysis(
   let feedback: string | null = null;
   let feedbackProvider: string | null = null;
   try {
-    const { chain, resolveKey, resolveModel, resolveBaseUrl } = llmAccess(admin, userId, profile ?? {});
+    const { chain, resolveKey, resolveModel, resolveBaseUrl, hosted } = await llmAccess(admin, userId, profile ?? {});
     if (chain.length) {
       const actualText = exercises.map((e) =>
         `${e.name}: ${e.actual_sets} sets${e.top_weight_kg ? `, top ${e.top_weight_kg}kg` : ""}, ${e.volume_kg}kg volume${e.planned ? ` (planned ${e.planned})` : ""}`
       ).join("\n");
       const plannedText = planned
-        ? `${planned.title} — ~${planned.duration_minutes} min. Prescribed: ${plannedExercises.map((p) => `${p.name} ${p.sets}×${p.reps}${p.weight_kg ? ` @${p.weight_kg}kg` : ""}`).join("; ")}`
+        ? `${planned.title}, ~${planned.duration_minutes} min. Prescribed: ${plannedExercises.map((p) => `${p.name} ${p.sets}×${p.reps}${p.weight_kg ? ` @${p.weight_kg}kg` : ""}`).join("; ")}`
         : "nothing was planned this day.";
       const watchText = watch
         ? `Watch: ${watch.duration_seconds ? `${Math.round(watch.duration_seconds / 60)} min` : ""}${watch.avg_hr ? `, avg HR ${watch.avg_hr}` : ""}${watch.tss ? `, TSS ${Math.round(watch.tss)}` : ""}.`
         : "";
       const subsText = substitutions.length
-        ? `SUBSTITUTIONS (athlete swapped a same-muscle lift — these COUNT as completed, do NOT call them missed): ${
+        ? `SUBSTITUTIONS (athlete swapped a same-muscle lift, these COUNT as completed, do NOT call them missed): ${
           substitutions.map((s) => `${s.logged} for the planned ${s.planned}`).join("; ")
         }.`
         : "";
@@ -535,6 +570,7 @@ Write 3-5 sentences of specific coach feedback: completion vs the plan, load sel
       );
       feedback = out.text.trim() || null;
       feedbackProvider = out.provider;
+      await logFeedbackCost(admin, userId, profile, out, hosted);
     }
   } catch (_e) {
     // best-effort

@@ -138,7 +138,7 @@ internal fun ProfileSection(vm: SettingsViewModel) {
             }
         }
         Text(
-            "Sessions vary with their purpose — the typical length is a flexible budget, the max is a hard cap. The AI won't pad every workout to the same number.",
+            "Sessions vary with their purpose, the typical length is a flexible budget, the max is a hard cap. The AI won't pad every workout to the same number.",
             style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
         ChipGroup("Equipment", EQUIPMENT, profile.equipment) { e -> vm.updateProfile { it.copy(equipment = e) } }
@@ -173,7 +173,7 @@ internal fun ProfileSection(vm: SettingsViewModel) {
             Text(
                 buildString {
                     append("Goal: ")
-                    append(profile.goal ?: "—")
+                    append(profile.goal ?: "-")
                     profile.goal_date?.let { append(" · $it") }
                     profile.target_pace?.let { append(" · $it") }
                     append("  (set in Goals & races below)")
@@ -284,14 +284,14 @@ internal fun KnowledgeSection(vm: SettingsViewModel) {
     val busy by vm.busy.collectAsStateSafe()
     SectionCard {
         Text(
-            "Durable facts your coach must respect on every plan — e.g. \"left knee — avoid deep lunges\", " +
+            "Durable facts your coach must respect on every plan, e.g. \"left knee, avoid deep lunges\", " +
                 "\"no leg press machine\", \"only dumbbells at home\", \"hate burpees\". The coach chat updates this " +
                 "automatically, and you can edit it here.",
             style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
         OutlinedTextField(
             knowledge, { vm.updateKnowledge(it) }, label = { Text("Constraints & preferences") },
-            placeholder = { Text("- Left knee tendinitis — avoid deep knee flexion\n- Home gym: dumbbells + bands only\n- Runs only before work (mornings)") },
+            placeholder = { Text("- Left knee tendinitis, avoid deep knee flexion\n- Home gym: dumbbells + bands only\n- Runs only before work (mornings)") },
             minLines = 5, modifier = Modifier.fillMaxWidth(),
         )
         Button(onClick = { vm.saveKnowledge() }, enabled = !busy, modifier = Modifier.fillMaxWidth()) { Text("Save knowledge") }
@@ -299,7 +299,7 @@ internal fun KnowledgeSection(vm: SettingsViewModel) {
     }
     SectionCard {
         Text(
-            "Your coach's running notes — durable patterns it has learned from your sessions, " +
+            "Your coach's running notes, durable patterns it has learned from your sessions, " +
                 "feedback and PRs (e.g. how you respond to volume, recurring soreness, what motivates you). " +
                 "It carries these into every chat and plan. Tap Refresh to re-derive them from recent training, " +
                 "or edit them directly.",
@@ -307,7 +307,7 @@ internal fun KnowledgeSection(vm: SettingsViewModel) {
         )
         OutlinedTextField(
             memory, { vm.updateMemory(it) }, label = { Text("Coach's notes about you") },
-            placeholder = { Text("Builds up automatically as you train — or jot something here.") },
+            placeholder = { Text("Builds up automatically as you train, or jot something here.") },
             minLines = 4, modifier = Modifier.fillMaxWidth(),
         )
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -318,7 +318,7 @@ internal fun KnowledgeSection(vm: SettingsViewModel) {
     }
     SectionCard {
         Text(
-            "Your coach's soul — who it is to you: its voice, coaching philosophy, and the " +
+            "Your coach's soul, who it is to you: its voice, coaching philosophy, and the " +
                 "story of how you two train together. It deepens slowly on its own; you rarely need to " +
                 "touch it, but you can shape its personality here. Leave it blank to use the default coach.",
             style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -333,9 +333,82 @@ internal fun KnowledgeSection(vm: SettingsViewModel) {
     }
 }
 
+// Pro (hosted AI) — rendered only when this build can bill (play flavor) AND
+// the server advertises a hosted key. Self-hosted stacks and foss builds
+// never see any of this.
+@Composable
+internal fun ProSection(vm: SettingsViewModel) {
+    val plan = vm.planStatus.collectAsStateSafe().value
+    val busy = vm.proBusy.collectAsStateSafe().value
+    val error = vm.proError.collectAsStateSafe().value
+    val context = androidx.compose.ui.platform.LocalContext.current
+
+    SectionCard(title = if (plan.isPro) "Pro, hosted AI" else "Pro") {
+        if (plan.isPro) {
+            ToggleRow(
+                title = "Use hosted AI",
+                subtitle = "Coach and workouts run on our key, no setup. Turn off to use your own keys below.",
+                checked = plan.useHostedAi,
+                onChange = { vm.setUseHostedAi(it) },
+            )
+            Text(
+                "Fair-use allowance applies; if you hit it, generation pauses until it resets (or add your own key below).",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            TextButton(
+                onClick = {
+                    val url = "https://play.google.com/store/account/subscriptions" +
+                        "?sku=${com.workoutmaker.app.billing.PRO_PRODUCT_ID}&package=${context.packageName}"
+                    context.startActivity(
+                        android.content.Intent(android.content.Intent.ACTION_VIEW, android.net.Uri.parse(url)),
+                    )
+                },
+                modifier = Modifier.fillMaxWidth(),
+            ) { Text("Manage subscription") }
+        } else {
+            Text(
+                "Skip the API keys. Pro runs the coach and workout generation on a fast hosted model, with a fair-use allowance.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Button(
+                onClick = { (context as? android.app.Activity)?.let { vm.buyPro(it) } },
+                enabled = !busy,
+                modifier = Modifier.fillMaxWidth(),
+            ) { Text(if (busy) "Working…" else "Get Pro") }
+            TextButton(onClick = { vm.restorePro() }, enabled = !busy, modifier = Modifier.fillMaxWidth()) {
+                Text("Restore purchase")
+            }
+        }
+        if (error != null) {
+            Text(error, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onErrorContainer)
+        }
+    }
+}
+
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
 internal fun AiSection(vm: SettingsViewModel) {
+    val proAvailable = vm.proAvailable.collectAsStateSafe().value
+    val plan = vm.planStatus.collectAsStateSafe().value
+    if (proAvailable) ProSection(vm)
+
+    // A Pro user on hosted AI shouldn't wade through key plumbing; keep the
+    // BYO section one tap away instead of front and center.
+    val hostedActive = proAvailable && plan.isPro && plan.useHostedAi
+    var byoExpanded by rememberSaveable { mutableStateOf(false) }
+    if (hostedActive && !byoExpanded) {
+        TextButton(onClick = { byoExpanded = true }, modifier = Modifier.fillMaxWidth()) {
+            Text(
+                "Advanced: bring your own keys",
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+        return
+    }
+
     SectionCard(title = "Active provider") {
         FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
             LlmProvider.entries.forEach { p ->
@@ -372,7 +445,7 @@ internal fun ConnectionsSection(vm: SettingsViewModel) {
     ) { granted ->
         if (granted.intersect(vm.healthPermissions).isNotEmpty()) vm.syncHealth()
         else vm.setHealthStatus(
-            "Permission denied. Android stops asking after two denials — use “Open Health Connect” below " +
+            "Permission denied. Android stops asking after two denials. Use “Open Health Connect” below " +
                 "and grant Workout Maker access under App permissions.",
         )
     }
@@ -435,7 +508,7 @@ internal fun ConnectionsSection(vm: SettingsViewModel) {
                             androidx.health.connect.client.HealthConnectClient.ACTION_HEALTH_CONNECT_SETTINGS,
                         ),
                     )
-                }.onFailure { vm.setHealthStatus("Couldn't open Health Connect — open it from your app drawer instead.") }
+                }.onFailure { vm.setHealthStatus("Couldn't open Health Connect, open it from your app drawer instead.") }
             },
             modifier = Modifier.fillMaxWidth(),
         ) { Text("Open Health Connect (manage permissions)") }
@@ -449,7 +522,7 @@ internal fun NotificationsSection(vm: SettingsViewModel) {
     val s by vm.appSettings.collectAsStateSafe()
     val context = androidx.compose.ui.platform.LocalContext.current
     SectionCard {
-        ToggleRow("Rest-timer alert", "Notify when a rest period ends — even if the app is in the background.", s.restNotify) { vm.setRestNotify(it) }
+        ToggleRow("Rest-timer alert", "Notify when a rest period ends, even if the app is in the background.", s.restNotify) { vm.setRestNotify(it) }
         HorizontalDivider(color = MaterialTheme.colorScheme.surfaceContainerHigh)
         ToggleRow("Vibrate on rest end", "Buzz the phone when the rest timer finishes.", s.restVibrate) { vm.setRestVibrate(it) }
     }
@@ -468,7 +541,7 @@ internal fun NotificationsSection(vm: SettingsViewModel) {
             }
         }
         Text(
-            "Played when the rest timer finishes while the app is open. Uses the media volume — sounds even on silent, alongside your music. Background alerts use the system notification sound.",
+            "Played when the rest timer finishes while the app is open. Uses the media volume, sounds even on silent, alongside your music. Background alerts use the system notification sound.",
             style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
     }
@@ -517,7 +590,7 @@ internal fun DiagnosticsSection(vm: SettingsViewModel) {
         // Soft monthly cap: a warning banner only — never blocks generation.
         if (cap > 0 && spent30 >= cap) {
             Text(
-                "⚠ Over your ${money(cap)}/month cap — 30-day spend is ${money(spent30)}. " +
+                "⚠ Over your ${money(cap)}/month cap, 30-day spend is ${money(spent30)}. " +
                     "Consider a cheaper provider or turning off the daily briefing.",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.error,
@@ -552,7 +625,7 @@ internal fun DiagnosticsSection(vm: SettingsViewModel) {
                 Text(if (l.parsed_ok) "✓" else "✗", color = if (l.parsed_ok) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.error)
                 Text(
                     "  ${l.created_at?.take(16)?.replace('T', ' ') ?: ""} · ${l.feature ?: "?"} · ${l.provider ?: "?"} · ${money(l.estimated_cost_usd)}" +
-                        (if (!l.parsed_ok && l.error != null) " — ${l.error.take(50)}" else ""),
+                        (if (!l.parsed_ok && l.error != null) ", ${l.error.take(50)}" else ""),
                     style = MaterialTheme.typography.bodySmall,
                 )
             }
@@ -588,7 +661,7 @@ internal fun DataSection(vm: SettingsViewModel) {
     }
     result?.let { ImportResultDialog(it) { vm.dismissImportResult() } }
     SectionCard(title = "Import strength history") {
-        Text("Import a CSV export from Strong or Hevy. Workouts, sets and weights (kg/lb) are detected automatically. Re-importing the same file is safe — sessions you already have are skipped.",
+        Text("Import a CSV export from Strong or Hevy. Workouts, sets and weights (kg/lb) are detected automatically. Re-importing the same file is safe: sessions you already have are skipped.",
             style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
         Button(
             // Broadest filter: some file pickers (notably Samsung's) grey out CSVs
@@ -704,7 +777,7 @@ internal fun RacesSection(vm: SettingsViewModel) {
     }
 
     SectionCard(title = "Goals & races") {
-        Text("Set goals for any sport — races, FTP targets, swim times, lifts. Your A-goal drives periodization and the taper; B/C goals are tune-ups shown on the countdown.",
+        Text("Set goals for any sport, races, FTP targets, swim times, lifts. Your A-goal drives periodization and the taper; B/C goals are tune-ups shown on the countdown.",
             style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
         if (races.isEmpty()) {
             com.workoutmaker.app.ui.components.EmptyState(
@@ -764,7 +837,7 @@ internal fun AccountSection(vm: SettingsViewModel) {
             title = { Text("Delete account?") },
             text = {
                 Text(
-                    "This permanently deletes your account and everything in it — profile, " +
+                    "This permanently deletes your account and everything in it, profile, " +
                         "workouts, strength logs, coach conversations, and stored API keys. " +
                         "There is no undo. Data already pushed to Intervals.icu stays there.",
                 )
@@ -842,7 +915,7 @@ internal fun ProviderCard(mod: Modifier, provider: LlmProvider, vm: SettingsView
     SectionCard(mod, title = "${provider.label}${if (provider.freeTier) "  · free tier" else ""}") {
         if (isCustom) {
             Text(
-                "Point at any OpenAI-compatible endpoint — Ollama, LM Studio, vLLM, OpenRouter, a LiteLLM proxy. The phone must be able to reach the URL.",
+                "Point at any OpenAI-compatible endpoint. Ollama, LM Studio, vLLM, OpenRouter, a LiteLLM proxy. The phone must be able to reach the URL.",
                 style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
             OutlinedTextField(
@@ -861,7 +934,7 @@ internal fun ProviderCard(mod: Modifier, provider: LlmProvider, vm: SettingsView
             // endpoint has no known price → cost would otherwise read $0).
             var priceIn by remember(customPrice.first) { mutableStateOf(customPrice.first?.toString() ?: "") }
             var priceOut by remember(customPrice.second) { mutableStateOf(customPrice.second?.toString() ?: "") }
-            Text("Pricing (optional, $ per 1M tokens) — for cost tracking only.",
+            Text("Pricing (optional, $ per 1M tokens), for cost tracking only.",
                 style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 OutlinedTextField(
@@ -885,7 +958,7 @@ internal fun ProviderCard(mod: Modifier, provider: LlmProvider, vm: SettingsView
                 Column(Modifier.weight(1f)) {
                     Text(activeModel, style = MaterialTheme.typography.bodySmall)
                     if (overrides[provider.key] != null) {
-                        Text("custom — default is ${provider.model}", style = MaterialTheme.typography.labelSmall,
+                        Text("custom, default is ${provider.model}", style = MaterialTheme.typography.labelSmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant)
                     }
                 }
@@ -956,7 +1029,7 @@ internal fun ModelPickerDialog(provider: LlmProvider, vm: SettingsViewModel, onC
             Column(Modifier.verticalScroll(rememberScrollState())) {
                 // Default always available, even before/without a fetched list.
                 ModelRow(
-                    label = "Default — ${provider.model}",
+                    label = "Default, ${provider.model}",
                     selected = current == null,
                     onClick = { vm.setModel(provider, null); onClose() },
                 )

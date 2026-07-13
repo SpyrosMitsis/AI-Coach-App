@@ -196,7 +196,7 @@ export function reviewWorkout(w: Workout, ctx: ReviewContext): ReviewResult {
       sec.exercises = sec.exercises.filter((ex) => {
         const hit = rules.find((r) => r.forbid.test(ex.name));
         if (hit) {
-          const msg = `${ex.name}: contraindicated — ${hit.reason} (injury on file)`;
+          const msg = `${ex.name}: contraindicated, ${hit.reason} (injury on file)`;
           unsafe.push(msg);
           violations.push(msg);
           return false; // remove it
@@ -218,7 +218,7 @@ export function reviewWorkout(w: Workout, ctx: ReviewContext): ReviewResult {
       sec.exercises = sec.exercises.filter((ex) => {
         const cat = categoryOfExercise(ex.name);
         if (cat && !allowed.has(cat)) {
-          violations.push(`${ex.name}: needs ${cat}, not in the athlete's equipment (${ctx.equipment}) — removed`);
+          violations.push(`${ex.name}: needs ${cat}, not in the athlete's equipment (${ctx.equipment}), removed`);
           return false;
         }
         return true;
@@ -246,7 +246,7 @@ export function reviewWorkout(w: Workout, ctx: ReviewContext): ReviewResult {
           const repsNum = Number((ex.reps ?? "").match(/\d+/)?.[0] ?? NaN);
           if (Math.abs(ex.weight_kg - t.weightKg) > 1e-6 || repsNum !== t.reps) {
             violations.push(
-              `${ex.name}: prescribed ${ex.weight_kg}kg×${ex.reps} ≠ progression target ${t.weightKg}kg×${t.reps} — snapped to the engine target`,
+              `${ex.name}: prescribed ${ex.weight_kg}kg×${ex.reps} ≠ progression target ${t.weightKg}kg×${t.reps}, snapped to the engine target`,
             );
             ex.weight_kg = t.weightKg;
             ex.reps = String(t.reps);
@@ -259,7 +259,7 @@ export function reviewWorkout(w: Workout, ctx: ReviewContext): ReviewResult {
             ex.weight_kg < lift.lastWeight - 1e-6 &&
             !ctx.muscleGroupsLast48h.includes(muscleOf(ex))) {
           violations.push(
-            `${ex.name}: prescribed ${ex.weight_kg}kg is below last top set ${lift.lastWeight}kg — raised to ${lift.lastWeight}kg`,
+            `${ex.name}: prescribed ${ex.weight_kg}kg is below last top set ${lift.lastWeight}kg, raised to ${lift.lastWeight}kg`,
           );
           ex.weight_kg = lift.lastWeight;
         }
@@ -268,10 +268,10 @@ export function reviewWorkout(w: Workout, ctx: ReviewContext): ReviewResult {
         if (typeof ex.weight_kg === "number") {
           if (lift && lift.estimated1rm > 0 && ex.weight_kg > lift.estimated1rm * 1.5) {
             const cap = Math.round(lift.estimated1rm * 1.5);
-            violations.push(`${ex.name}: ${ex.weight_kg}kg exceeds 1.5× est 1RM — clamped to ${cap}kg`);
+            violations.push(`${ex.name}: ${ex.weight_kg}kg exceeds 1.5× est 1RM, clamped to ${cap}kg`);
             ex.weight_kg = cap;
           } else if (ex.weight_kg > ABSOLUTE_LOAD_CAP_KG) {
-            violations.push(`${ex.name}: ${ex.weight_kg}kg exceeds the ${ABSOLUTE_LOAD_CAP_KG}kg sanity cap — clamped`);
+            violations.push(`${ex.name}: ${ex.weight_kg}kg exceeds the ${ABSOLUTE_LOAD_CAP_KG}kg sanity cap, clamped`);
             ex.weight_kg = ABSOLUTE_LOAD_CAP_KG;
           }
         }
@@ -279,7 +279,7 @@ export function reviewWorkout(w: Workout, ctx: ReviewContext): ReviewResult {
         // 48h recovery: flag hard loading of a recently-trained muscle.
         const muscle = muscleOf(ex);
         if (!warm && ctx.muscleGroupsLast48h.includes(muscle) && (ex.weight_kg ?? 0) > 0) {
-          violations.push(`${ex.name}: loads ${muscle}, trained in the last 48h — should be recovering`);
+          violations.push(`${ex.name}: loads ${muscle}, trained in the last 48h, should be recovering`);
         }
 
         if (!warm) prescribedSetsByMuscle[muscle] = (prescribedSetsByMuscle[muscle] ?? 0) + workingSets(ex);
@@ -298,10 +298,10 @@ export function reviewWorkout(w: Workout, ctx: ReviewContext): ReviewResult {
   // Endurance readiness: a hard session on a depleted athlete is a red flag.
   if (isHardSession(corrected)) {
     if (ctx.tsb < -20) {
-      violations.push(`hard session prescribed while very fatigued (TSB ${ctx.tsb.toFixed(0)}) — favor easy/recovery`);
+      violations.push(`hard session prescribed while very fatigued (TSB ${ctx.tsb.toFixed(0)}), favor easy/recovery`);
     }
     if (ctx.daysSinceLastHard <= 1) {
-      violations.push(`hard session ${ctx.daysSinceLastHard}d after the last hard effort — back-to-back quality`);
+      violations.push(`hard session ${ctx.daysSinceLastHard}d after the last hard effort, back-to-back quality`);
     }
   }
 
@@ -322,7 +322,7 @@ export function reviewWorkout(w: Workout, ctx: ReviewContext): ReviewResult {
     }
     if (corrected.rpe_target > 5) corrected.rpe_target = 5;
     violations.push(
-      `low readiness (${ctx.readiness ?? "?"}/100) / TSB ${ctx.tsb.toFixed(0)} — capped to easy aerobic (Z2, RPE ≤5)`,
+      `low readiness (${ctx.readiness ?? "?"}/100) / TSB ${ctx.tsb.toFixed(0)}, capped to easy aerobic (Z2, RPE ≤5)`,
     );
   }
 
@@ -336,13 +336,13 @@ export function reviewWorkout(w: Workout, ctx: ReviewContext): ReviewResult {
     const computed = computeTss(corrected);
     const reported = corrected.tss_estimate;
     if (computed > 0 && Math.abs(reported - computed) / Math.max(computed, 1) > 0.25) {
-      violations.push(`tss_estimate ${reported} differs from computed ${computed} by >25% — replaced`);
+      violations.push(`tss_estimate ${reported} differs from computed ${computed} by >25%, replaced`);
       corrected.tss_estimate = computed;
       tssReplaced = { from: reported, to: computed };
     }
   } else if (corrected.type === "strength" && corrected.tss_estimate > 150) {
     // A strength session rarely exceeds ~150 TSS; clamp obvious overestimates.
-    violations.push(`strength tss_estimate ${corrected.tss_estimate} implausibly high — clamped to 150`);
+    violations.push(`strength tss_estimate ${corrected.tss_estimate} implausibly high, clamped to 150`);
     tssReplaced = { from: corrected.tss_estimate, to: 150 };
     corrected.tss_estimate = 150;
   }

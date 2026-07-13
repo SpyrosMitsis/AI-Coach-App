@@ -74,6 +74,15 @@ android {
         }
     }
 
+    // play = Google Play build with the (proprietary) Billing library.
+    // foss = no Google dependencies at all — F-Droid-able, Pro UI never shows
+    // (billing unsupported + self-hosted servers don't advertise hosted_ai).
+    flavorDimensions += "distribution"
+    productFlavors {
+        create("play") { dimension = "distribution"; isDefault = true }
+        create("foss") { dimension = "distribution" }
+    }
+
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
@@ -86,6 +95,7 @@ dependencies {
     implementation(composeBom)
 
     implementation("androidx.core:core-ktx:1.13.1")
+    implementation("androidx.core:core-splashscreen:1.0.1")
     implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.8.6")
     implementation("androidx.lifecycle:lifecycle-runtime-compose:2.8.6")
     implementation("androidx.lifecycle:lifecycle-viewmodel-compose:2.8.6")
@@ -97,6 +107,9 @@ dependencies {
     implementation("androidx.compose.material3:material3")
     implementation("androidx.compose.material:material-icons-extended")
     implementation("androidx.navigation:navigation-compose:2.8.1")
+
+    // Play Billing — play flavor only, so foss builds stay Google-free.
+    "playImplementation"("com.android.billingclient:billing-ktx:7.1.1")
 
     // Hilt DI
     implementation("com.google.dagger:hilt-android:2.52")

@@ -98,7 +98,7 @@ export default function DashboardPage() {
       }
     },
     onSuccess: (_d, vars) => {
-      setFeedbackStatus(vars.completed ? "✓ Marked done — your next workout will adapt." : null);
+      setFeedbackStatus(vars.completed ? "✓ Marked done, your next workout will adapt." : null);
       setDidIt(false);
       setRpe(null);
       reload();
@@ -127,10 +127,10 @@ export default function DashboardPage() {
     const ratio = last.atl / last.ctl;
     const weekAgo = pts[Math.max(0, pts.length - 8)];
     const ramp = live?.ramp ?? (last.ctl - (weekAgo?.ctl ?? last.ctl));
-    if (ratio >= 1.5) return { color: "#f87171", headline: "High overload risk", detail: `Fatigue is well above your fitness (ratio ${ratio.toFixed(2)}). Take easy days — an injury/illness spike zone.` };
+    if (ratio >= 1.5) return { color: "#f87171", headline: "High overload risk", detail: `Fatigue is well above your fitness (ratio ${ratio.toFixed(2)}). Take easy days, an injury/illness spike zone.` };
     if (ratio >= 1.3 || ramp >= 8) return { color: "#fbbf24", headline: "Ramping fast", detail: `Building quickly (ratio ${ratio.toFixed(2)}, ramp ${ramp >= 0 ? "+" : ""}${ramp.toFixed(1)}). Fine short-term; don't hold it for many weeks.` };
     if (ratio < 0.8 && ramp < 0) return { color: "#fbbf24", headline: "Detraining / very fresh", detail: `Load is low relative to fitness (ratio ${ratio.toFixed(2)}). Good for a taper; otherwise add volume.` };
-    return { color: "#4ade80", headline: "Load well managed", detail: `Fatigue:fitness ratio ${ratio.toFixed(2)} sits in the productive 0.8–1.3 range.` };
+    return { color: "#4ade80", headline: "Load well managed", detail: `Fatigue:fitness ratio ${ratio.toFixed(2)} sits in the productive 0.8-1.3 range.` };
   }, [summary.data, stats.data]);
 
   if (summary.isLoading) return <Skeleton />;
@@ -169,7 +169,7 @@ export default function DashboardPage() {
 
       <WellnessCheckin />
 
-      {/* Readiness — summary by default; the signals live behind "Details". */}
+      {/* Readiness, summary by default; the signals live behind "Details". */}
       <Card>
         <CardContent className="space-y-2 pt-5">
           <div className="flex items-center gap-5">
@@ -268,7 +268,7 @@ export default function DashboardPage() {
                 {d.today_workout.workout_json.title}
               </h3>
               <p className="text-sm text-muted-foreground">
-                Skipped — rest matters too. The plan will adapt and rebuild gradually.
+                Skipped, rest matters too. The plan will adapt and rebuild gradually.
               </p>
               <Button variant="outline" size="sm" disabled={undoSkip.isPending}
                 onClick={() => undoSkip.mutate(d.today_workout!.id)}>
@@ -282,7 +282,7 @@ export default function DashboardPage() {
               <h3 className="text-lg font-semibold">{d.today_workout.workout_json.title}</h3>
               <WorkoutDetail workout={d.today_workout.workout_json} />
               <Input
-                placeholder="Tweak the regenerate (optional) — e.g. shorter, I'm sore, add hills"
+                placeholder="Tweak the regenerate (optional), e.g. shorter, I'm sore, add hills"
                 value={instruction}
                 onChange={(e) => setInstruction(e.target.value)}
               />
@@ -312,7 +312,7 @@ export default function DashboardPage() {
                 <p className="label-caps">How hard was it? (RPE)</p>
                 <RpeBars value={rpe} onSelect={setRpe} />
                 <p className="text-xs text-muted-foreground">
-                  {rpe ? `RPE ${rpe} — ${rpeWord(rpe)}` : "Tap a bar: 1 = very easy, 10 = max effort (optional)"}
+                  {rpe ? `RPE ${rpe}, ${rpeWord(rpe)}` : "Tap a bar: 1 = very easy, 10 = max effort (optional)"}
                 </p>
                 <p className="label-caps">How did it go?</p>
                 <div className="flex gap-2">

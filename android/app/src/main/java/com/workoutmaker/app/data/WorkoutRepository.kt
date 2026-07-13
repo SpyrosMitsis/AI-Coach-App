@@ -375,6 +375,46 @@ class WorkoutRepository @Inject constructor(
             limit(limit)
         }.decodeList()
 
+    // --- Pro plan / hosted AI ------------------------------------------------
+
+    // Whether THIS deployment offers hosted AI, from the last cached summary —
+    // offline-friendly and never blocks Settings on a network call.
+    suspend fun serverHostedAi(): Boolean = runCatching {
+        cache.latestSummary()?.let {
+            json.decodeFromString(DailySummary.serializer(), it.json).server?.hosted_ai
+        } ?: false
+    }.logFailure("serverHostedAi").getOrDefault(false)
+
+    suspend fun planStatus(): PlanStatus = runCatching {
+        val row = profileRow()
+        PlanStatus(
+            plan = (row?.get("plan") as? JsonPrimitive)?.contentOrNull ?: "free",
+            expiresAt = (row?.get("plan_expires_at") as? JsonPrimitive)?.contentOrNull,
+            useHostedAi = (row?.get("use_hosted_ai") as? JsonPrimitive)?.contentOrNull?.toBoolean() ?: true,
+        )
+    }.logFailure("planStatus").getOrDefault(PlanStatus())
+
+    suspend fun setUseHostedAi(on: Boolean) {
+        supabase.postgrest.from("user_profiles").update({ set("use_hosted_ai", on) }) {
+            filter { eq("id", uid()) }
+        }
+        invalidateProfileCache()
+    }
+
+    // Server-side verification of a Play purchase; the fn is the only writer
+    // of the plan columns. Returns the resulting plan ("pro" on success).
+    suspend fun verifyPurchase(purchaseToken: String): String {
+        val body = kotlinx.serialization.json.buildJsonObject {
+            put("purchase_token", JsonPrimitive(purchaseToken))
+        }.toString()
+        val res: Map<String, JsonElement> = json.decodeFromString(
+            supabase.functions.invoke("verify-purchase") { setBody(body) }.body(),
+        )
+        invalidateProfileCache()
+        (res["error"] as? JsonPrimitive)?.contentOrNull?.let { throw IllegalStateException(it) }
+        return (res["plan"] as? JsonPrimitive)?.contentOrNull ?: "free"
+    }
+
     // Per-1M-token prices for the custom (BYO) provider, so its spend isn't $0.
     suspend fun customLlmPricing(): Pair<Double?, Double?> = runCatching {
         val row = profileRow()

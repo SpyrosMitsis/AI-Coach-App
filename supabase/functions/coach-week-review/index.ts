@@ -8,7 +8,7 @@
 // Best-effort: any failure yields { review: null } and the card shows just its
 // deterministic stats.
 
-import { handleOptions, json } from "../_shared/cors.ts";
+import { errorStatus, handleOptions, json } from "../_shared/cors.ts";
 import { adminClient, getUserId } from "../_shared/supabase.ts";
 import { llmAccess } from "../_shared/llm_keys.ts";
 import { customPriceFromProfile, estimateCostUsd, llmGenerateWithFallback } from "../_shared/llm.ts";
@@ -60,7 +60,7 @@ Deno.serve(async (req) => {
 
     const { data: profile } = await admin
       .from("user_profiles")
-      .select("display_name, onboarding, active_llm_provider, llm_fallback_chain, coach_knowledge, training_memory, coach_soul, coach_soul_updated_at, llm_custom_input_per_1m, llm_custom_output_per_1m")
+      .select("display_name, onboarding, active_llm_provider, llm_fallback_chain, coach_knowledge, training_memory, coach_soul, coach_soul_updated_at, llm_custom_input_per_1m, llm_custom_output_per_1m, plan, plan_expires_at, use_hosted_ai")
       .eq("id", userId)
       .single();
     const onboarding = (profile?.onboarding ?? {}) as Record<string, unknown>;
@@ -121,7 +121,7 @@ Deno.serve(async (req) => {
     });
     const systemPrompt = WEEK_REVIEW_SYSTEM + memoryDocsBlock(memoryFromProfile(profile));
 
-    const { chain, resolveKey, resolveModel, resolveBaseUrl } = llmAccess(admin, userId, profile);
+    const { chain, resolveKey, resolveModel, resolveBaseUrl, hosted } = await llmAccess(admin, userId, profile);
     if (chain.length === 0) return json({ review: null, week_start: weekStart });
 
     const outcome = await llmGenerateWithFallback(
@@ -139,6 +139,7 @@ Deno.serve(async (req) => {
         await admin.from("generation_logs").insert({
           user_id: userId,
           feature: "week_review",
+          hosted,
           provider: outcome.provider,
           model: outcome.model,
           prompt_tokens: outcome.promptTokens,
@@ -151,6 +152,6 @@ Deno.serve(async (req) => {
 
     return json({ review, week_start: weekStart, provider: outcome.provider });
   } catch (e) {
-    return json({ error: e instanceof Error ? e.message : String(e) }, 500);
+    return json({ error: e instanceof Error ? e.message : String(e) }, errorStatus(e));
   }
 });

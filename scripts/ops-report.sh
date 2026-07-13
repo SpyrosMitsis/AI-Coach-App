@@ -36,4 +36,30 @@ select user_id,
 from generation_logs
 where created_at >= date_trunc('month', now())
 group by 1 order by usd desc nulls last limit 10;
+
+\echo ''
+\echo '=== HOSTED spend by day (last 14, the money that is yours) ==='
+select created_at::date                            as day,
+       count(*)                                    as calls,
+       round(sum(estimated_cost_usd)::numeric, 4)  as usd
+from generation_logs
+where hosted and created_at > now() - interval '14 days'
+group by 1 order by 1 desc;
+
+\echo ''
+\echo '=== Hosted top spenders this month (check against HOSTED_USER_MONTHLY_USD) ==='
+select g.user_id,
+       p.plan,
+       count(*)                                    as calls,
+       round(sum(g.estimated_cost_usd)::numeric, 4) as usd
+from generation_logs g
+left join user_profiles p on p.id = g.user_id
+where g.hosted and g.created_at >= date_trunc('month', now())
+group by 1, 2 order by usd desc nulls last limit 10;
+
+\echo ''
+\echo '=== Recent billing events ==='
+select created_at, source, event_type, outcome, user_id
+from billing_events
+order by created_at desc limit 20;
 SQL

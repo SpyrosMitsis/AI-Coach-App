@@ -3,6 +3,8 @@ package com.workoutmaker.app
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
+import androidx.core.splashscreen.SplashScreen.Companion.installSplashScreen
+import androidx.lifecycle.lifecycleScope
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Chat
@@ -48,6 +50,7 @@ import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
+import kotlinx.coroutines.launch
 import javax.inject.Inject
 
 private data class Tab(val route: String, val label: String, val icon: ImageVector)
@@ -73,8 +76,23 @@ class ThemeViewModel @Inject constructor(prefs: AppPreferences) : ViewModel() {
 
 @AndroidEntryPoint
 class MainActivity : ComponentActivity() {
+    @Inject lateinit var billing: com.workoutmaker.app.billing.BillingGateway
+    @Inject lateinit var repo: com.workoutmaker.app.data.WorkoutRepository
+
     override fun onCreate(savedInstanceState: Bundle?) {
+        installSplashScreen()
         super.onCreate(savedInstanceState)
+
+        // Heal a lost RTDN renewal: if Play knows an active subscription but the
+        // profile says free, re-verify server-side. Cheap no-op for everyone else.
+        lifecycleScope.launch {
+            runCatching {
+                if (!billing.supported || repo.auth.currentUserOrNull() == null) return@runCatching
+                if (repo.planStatus().isPro) return@runCatching
+                val token = billing.currentPurchaseToken() ?: return@runCatching
+                repo.verifyPurchase(token)
+            }
+        }
         setContent {
             val themeVm: ThemeViewModel = hiltViewModel()
             val mode by themeVm.themeMode.collectAsState()

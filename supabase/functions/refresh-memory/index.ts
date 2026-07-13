@@ -20,7 +20,7 @@ Deno.serve(async (req) => {
     const admin = adminClient();
 
     const [{ data: profile }, { data: feedback }, { data: planned }, { data: strength }] = await Promise.all([
-      admin.from("user_profiles").select("training_memory, coach_soul, coach_soul_updated_at, active_llm_provider, llm_fallback_chain, onboarding").eq("id", userId).single(),
+      admin.from("user_profiles").select("training_memory, coach_soul, coach_soul_updated_at, active_llm_provider, llm_fallback_chain, onboarding, plan, plan_expires_at, use_hosted_ai").eq("id", userId).single(),
       admin.from("workout_feedback").select("date, difficulty, actual_rpe, completed, notes").eq("user_id", userId).order("date", { ascending: false }).limit(8),
       admin.from("planned_workouts").select("date, type, workout_json").eq("user_id", userId).order("date", { ascending: false }).limit(6),
       admin.from("strength_logs").select("date, exercise_name, estimated_1rm, sets").eq("user_id", userId).order("date", { ascending: false }).limit(12),
@@ -46,7 +46,7 @@ Deno.serve(async (req) => {
       `RECENT FEEDBACK:\n${fbLines}\n\nRECENT SESSIONS:\n${wkLines}\n\n` +
       `RECENT STRENGTH:\n${stLines}`;
 
-    const bundle = llmAccess(admin, userId, profile);
+    const bundle = await llmAccess(admin, userId, profile);
     const mem = memoryFromProfile(profile);
 
     // memory.md every call; soul.md only when due (time-gated) or still unseeded.

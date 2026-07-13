@@ -172,7 +172,7 @@ export default function StrengthPage() {
     setSessionStart(Date.now());
     setLinkedPlannedId(plannedId);
     setEditing(null);
-    setBanner(plannedId ? "Logging your planned session — finishing marks it done on the calendar." : null);
+    setBanner(plannedId ? "Logging your planned session, finishing marks it done on the calendar." : null);
     window.scrollTo({ top: 0, behavior: "smooth" });
   };
 
@@ -195,7 +195,7 @@ export default function StrengthPage() {
     setLinkedPlannedId(null);
     setEditing(w);
     setOpenSession(null);
-    setBanner(`Editing “${w.name}” — adjust sets/reps and Save changes.`);
+    setBanner(`Editing “${w.name}”, adjust sets/reps and Save changes.`);
     window.scrollTo({ top: 0, behavior: "smooth" });
   };
 
@@ -246,10 +246,10 @@ export default function StrengthPage() {
       const r = await api.generateWorkout({ type: "strength", push: false });
       if (r.workout?.sections?.length) {
         seedFromWorkout(r.workout, r.workout_id ?? null);
-        setBanner("✓ AI session ready — adjust and log");
+        setBanner("✓ AI session ready, adjust and log");
         qc.invalidateQueries({ queryKey: ["today-planned-strength"] });
       } else {
-        setBanner("AI couldn't build a strength session — check your provider key & profile.");
+        setBanner("AI couldn't build a strength session, check your provider key & profile.");
       }
     } catch (e) {
       setBanner((e as Error).message);
@@ -343,7 +343,7 @@ export default function StrengthPage() {
     },
     onSuccess: ({ linked, edited }) => {
       discard();
-      setBanner(edited ? "✓ Session updated" : linked ? "✓ Logged — planned session marked done" : "✓ Workout saved");
+      setBanner(edited ? "✓ Session updated" : linked ? "✓ Logged, planned session marked done" : "✓ Workout saved");
       qc.invalidateQueries({ queryKey: ["strength-workouts"] });
       qc.invalidateQueries({ queryKey: ["today-planned-strength"] });
     },
@@ -602,7 +602,7 @@ export default function StrengthPage() {
               </div>
               <div className="flex gap-2">
                 <Button className="flex-1" disabled={save.isPending} onClick={() => save.mutate()}>
-                  {save.isPending ? "Saving…" : editing ? "Save changes" : linkedPlannedId ? "Finish — marks plan done" : "Finish workout"}
+                  {save.isPending ? "Saving…" : editing ? "Save changes" : linkedPlannedId ? "Finish, marks plan done" : "Finish workout"}
                 </Button>
                 <Button variant="ghost" disabled={saveAsRoutine.isPending} onClick={() => saveAsRoutine.mutate()}>
                   Save as routine
@@ -619,7 +619,7 @@ export default function StrengthPage() {
         <CardHeader className="pb-2"><CardTitle className="text-base">Routines</CardTitle></CardHeader>
         <CardContent className="space-y-2">
           <p className="text-xs text-muted-foreground">
-            A reusable template for a single session — your exercises pre-loaded so you can start a workout in one tap.
+            A reusable template for a single session, your exercises pre-loaded so you can start a workout in one tap.
           </p>
           {(routines.data?.routines ?? []).length === 0 && (
             <p className="text-sm text-muted-foreground">No routines yet. Build a session above and “Save as routine”.</p>
@@ -658,7 +658,7 @@ export default function StrengthPage() {
         </CardContent>
       </Card>
 
-      {/* Rich history — click a session for full detail + analysis */}
+      {/* Rich history, click a session for full detail + analysis */}
       <Card>
         <CardHeader className="pb-2"><CardTitle className="text-base">Recent sessions</CardTitle></CardHeader>
         <CardContent className="space-y-2">

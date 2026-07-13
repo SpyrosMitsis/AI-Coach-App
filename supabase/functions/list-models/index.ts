@@ -88,7 +88,7 @@ Deno.serve(async (req) => {
       .eq("id", userId)
       .single();
 
-    const { resolveKey, resolveModel, resolveBaseUrl } = llmAccess(admin, userId, profile);
+    const { resolveKey, resolveModel, resolveBaseUrl } = await llmAccess(admin, userId, profile, { allowHosted: false });
     const apiKey = await resolveKey(provider);
     if (!apiKey) {
       return json({

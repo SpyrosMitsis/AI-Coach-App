@@ -55,8 +55,8 @@ confirm() { # confirm "question"
 # ============================================================================
 gradlew() { ( cd "$ROOT/android" && ./gradlew "$@" ); }
 
-cmd_android_build()   { say "assembleDebug (JDK17)"; gradlew :app:assembleDebug -q; }
-cmd_android_install() { say "installDebug (JDK17) -> $ANDROID_SERIAL"; gradlew :app:installDebug -q; say "installed."; }
+cmd_android_build()   { say "assemblePlayDebug (JDK17)"; gradlew :app:assemblePlayDebug -q; }
+cmd_android_install() { say "installPlayDebug (JDK17) -> $ANDROID_SERIAL"; gradlew :app:installPlayDebug -q; say "installed."; }
 
 cmd_android_restart() {
   need adb

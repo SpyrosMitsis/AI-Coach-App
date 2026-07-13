@@ -285,13 +285,13 @@ export async function exerciseCatalogBlock(
     ? `\n- Athlete's custom exercises (also valid): ${custom.map((c) => c.name).join(", ")}`
     : "";
   const repertoireBlock = repertoire.length
-    ? `\n\nTHE ATHLETE'S OWN REPERTOIRE — exercises they actually log (this is what their gym's ` +
+    ? `\n\nTHE ATHLETE'S OWN REPERTOIRE, exercises they actually log (this is what their gym's ` +
       `machines and their preferences support): ${repertoire.join(", ")}.\n` +
       `STRONGLY prefer these over other library entries: an unfamiliar variation (e.g. a different ` +
       `leg-curl machine) usually just means equipment they don't have. Go outside the repertoire only ` +
       `when it has nothing for a muscle/pattern the session needs.`
     : "";
-  return `\n\nSTRENGTH EXERCISE LIBRARY (the athlete logs sessions against this list — names must match EXACTLY):\n` +
+  return `\n\nSTRENGTH EXERCISE LIBRARY (the athlete logs sessions against this list, names must match EXACTLY):\n` +
     lines.join("\n") + customLine + repertoireBlock + `\n` +
     `Rules for strength exercises:\n` +
     `- Every strength exercise "name" MUST be copied character-for-character from the library above.\n` +

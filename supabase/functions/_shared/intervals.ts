@@ -116,7 +116,7 @@ export function runHrZones(athlete: IntervalsAthleteFull): HrZone[] {
 
 // Speed (m/s) → "m:ss/km" pace string.
 export function paceFromMs(ms: number): string {
-  if (!ms || ms <= 0) return "—";
+  if (!ms || ms <= 0) return "-";
   const secPerKm = 1000 / ms;
   const m = Math.floor(secPerKm / 60);
   const s = Math.round(secPerKm % 60);
@@ -129,7 +129,7 @@ export interface PaceZone { name: string; pace: string }
 export function runPaceZones(athlete: IntervalsAthleteFull): { thresholdPace: string; zones: PaceZone[] } {
   const run = runSportSettings(athlete);
   const tp = run?.threshold_pace;
-  if (!tp) return { thresholdPace: "—", zones: [] };
+  if (!tp) return { thresholdPace: "-", zones: [] };
   const pcts = run?.pace_zones ?? [];
   const names = run?.pace_zone_names ?? [];
   const zones: PaceZone[] = pcts.map((pct, i) => ({

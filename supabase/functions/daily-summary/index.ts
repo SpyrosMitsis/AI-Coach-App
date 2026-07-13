@@ -10,6 +10,7 @@
 import { handleOptions, json } from "../_shared/cors.ts";
 import { adminClient, getUserId } from "../_shared/supabase.ts";
 import { computeRecovery } from "../_shared/recovery.ts";
+import { hostedLlm } from "../_shared/entitlement.ts";
 
 const DAY = 86_400_000;
 const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
@@ -208,8 +209,8 @@ Deno.serve(async (req) => {
         : weeksToGoal <= 2 ? "Taper" : weeksToGoal <= 6 ? "Peak" : weeksToGoal <= 14 ? "Build" : "Base";
       const ctlVals = acts.filter((a) => a.ctl != null).map((a) => Number(a.ctl));
       const ctlTrend = ctlVals.length >= 2 ? Math.round((ctlVals[0] - ctlVals[ctlVals.length - 1]) * 10) / 10 : 0;
-      const onTrack = ctlTrend > 1 ? "Fitness building — on track"
-        : ctlTrend < -1 ? (phase === "Taper" ? "Tapering as planned" : "Fitness slipping — rebuild consistency")
+      const onTrack = ctlTrend > 1 ? "Fitness building, on track"
+        : ctlTrend < -1 ? (phase === "Taper" ? "Tapering as planned" : "Fitness slipping, rebuild consistency")
         : "Holding steady";
       goal = { goal: onboard.goal ?? "Goal", goal_date: onboard.goal_date ?? null, weeks_to_goal: weeksToGoal, phase, ctl_trend: ctlTrend, on_track: onTrack };
     }
@@ -234,6 +235,9 @@ Deno.serve(async (req) => {
       week_review: weekReview,
       active_llm_provider: profile?.active_llm_provider ?? "groq",
       goal,
+      // Deployment capabilities — self-hosted stacks without the hosted LLM
+      // secrets advertise false and the app never shows Pro UI.
+      server: { hosted_ai: hostedLlm() !== null },
     });
   } catch (e) {
     return json({ error: e instanceof Error ? e.message : String(e) }, 500);

@@ -2,11 +2,18 @@
 // User LLM provider chain + key resolution, shared by every function that
 // calls llmGenerateWithFallback. Builds [active, ...fallback] from the profile
 // and a memoized resolver that decrypts llm_api_keys rows on demand.
+//
+// This is the single choke point for LLM access, so the hosted-AI (Pro) path
+// lives here too: an entitled user with the hosted toggle on gets a chain of
+// exactly [hosted provider] running on the operator's key — after the spend
+// quota clears (QuotaError → typed 429). Everyone else is untouched.
 // ============================================================================
 
 import type { SupabaseClient } from "jsr:@supabase/supabase-js@2";
 import { decryptSecret } from "./supabase.ts";
 import type { LlmProvider } from "./types.ts";
+import { hostedLlm, type PlanFields, wantsHostedAi } from "./entitlement.ts";
+import { assertHostedQuota } from "./quota.ts";
 
 export interface LlmAccess {
   chain: LlmProvider[];
@@ -17,19 +24,43 @@ export interface LlmAccess {
   // OpenAI-compatible base URL for the "custom" provider (llm_api_keys.base_url);
   // null for built-in providers or when unconfigured.
   resolveBaseUrl: (provider: LlmProvider) => Promise<string | null>;
+  // True when this access runs on the operator's key (Pro hosted AI) — logged
+  // to generation_logs.hosted so quotas can meter it.
+  hosted: boolean;
 }
 
-interface ProfileLlmFields {
+interface ProfileLlmFields extends PlanFields {
   active_llm_provider?: LlmProvider | null;
   llm_fallback_chain?: LlmProvider[] | null;
   llm_models?: Record<string, string> | null;
 }
 
-export function llmAccess(
+export interface LlmAccessOptions {
+  // list-models must resolve the user's OWN keys even for Pro users — it
+  // drives the BYO-key Settings UI. Everything user-facing that *generates*
+  // leaves this true.
+  allowHosted?: boolean;
+}
+
+export async function llmAccess(
   admin: SupabaseClient,
   userId: string,
   profile: ProfileLlmFields | null | undefined,
-): LlmAccess {
+  opts: LlmAccessOptions = {},
+): Promise<LlmAccess> {
+  if ((opts.allowHosted ?? true) && wantsHostedAi(profile)) {
+    // Throws QuotaError (status 429) when the user or deployment is capped.
+    await assertHostedQuota(admin, userId);
+    const h = hostedLlm()!;
+    return {
+      chain: [h.provider],
+      hosted: true,
+      resolveKey: (p) => Promise.resolve(p === h.provider ? h.key : null),
+      resolveModel: (p) => (p === h.provider ? h.model : undefined),
+      resolveBaseUrl: () => Promise.resolve(null),
+    };
+  }
+
   const chain: LlmProvider[] = [
     profile?.active_llm_provider,
     ...(profile?.llm_fallback_chain ?? []),
@@ -82,5 +113,5 @@ export function llmAccess(
     return typeof m === "string" && m.trim() ? m : undefined;
   };
 
-  return { chain, resolveKey, resolveModel, resolveBaseUrl };
+  return { chain, resolveKey, resolveModel, resolveBaseUrl, hosted: false };
 }

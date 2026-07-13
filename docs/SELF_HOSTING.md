@@ -111,6 +111,13 @@ self-hosted instance without the hosted-AI secrets simply never shows any Pro UI
 Nothing in the app phones home to the maintainer's infrastructure; your instance is
 fully independent, and every feature works on the free bring-your-own-key model.
 
+If you DO want hosted AI on your own instance (e.g. serving your family on your
+key without per-person setup), set the optional secrets from
+`supabase/functions/.env.example` (`HOSTED_LLM_PROVIDER`, `HOSTED_LLM_KEY`,
+optional `HOSTED_LLM_MODEL`, and the `HOSTED_*_USD` spend caps) and grant users
+`plan = 'pro'` directly in the `user_profiles` table — Play Billing is only one
+way to set that column. `HOSTED_AI_DISABLED=1` turns it all off instantly.
+
 ## Rotating `ENCRYPTION_KEY`
 
 If the key may have leaked you have two options.

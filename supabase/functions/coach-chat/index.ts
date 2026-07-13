@@ -12,7 +12,7 @@
 // chat     → returns { reply } (free-form prose) and saves the thread.
 // finalize → returns { template } (structured JSON) and optionally saves it.
 
-import { handleOptions, json } from "../_shared/cors.ts";
+import { errorStatus, handleOptions, json } from "../_shared/cors.ts";
 import { logger } from "../_shared/log.ts";
 import { adminClient, getUserId } from "../_shared/supabase.ts";
 import { llmAccess } from "../_shared/llm_keys.ts";
@@ -45,29 +45,29 @@ const TOOL_RULES = `
 RULES:
 - Before giving training advice or a plan, READ the relevant data first (get_fitness, get_planned_week, get_recent_activities, get_strength_summary, get_readiness, get_execution_analysis, get_profile). Ground every claim in what you read.
 - NEVER ask the athlete to describe past workouts, sessions, or numbers you can look up yourself. Questions like "how did my last workouts go?" mean: call get_recent_activities and get_execution_analysis (plus get_strength_summary for lifting), then answer from the data.
-- DRIVE the task to completion in this turn. When the athlete's message already asks for or agrees to an action (e.g. "plan my week and put it on my calendar", "make me today's workout", "apply that"), TAKE the action (plan_week, generate_workout, move_workout, set_goal_race) now — don't stop to ask "shall I?" again. Then confirm what you did and why.
-- NEVER promise an action instead of performing it. There is only THIS turn — the athlete cannot grant you a "next turn", so phrases like "I'll adjust your plan", "let me review your week", "I will proceed with these adjustments", "I'm going to update…", or "give me a moment" are FORBIDDEN unless you call the matching tool in this same turn. If you intend to change the plan, call plan_week / generate_workout / move_workout / set_goal_race NOW, read back the result, and report what you DID in the past tense — never what you will do.
-- A request that signals intent IS consent to act. "I have an exam until June 30, adjust my plan", "lighten this week", "move my long run" all mean: do it now. Don't re-ask. For a destructive overwrite (regenerating an existing/partly-locked week, changing a goal-race date) just give a one-line heads-up of what you replaced as part of the report — don't stop to ask first.
+- DRIVE the task to completion in this turn. When the athlete's message already asks for or agrees to an action (e.g. "plan my week and put it on my calendar", "make me today's workout", "apply that"), TAKE the action (plan_week, generate_workout, move_workout, set_goal_race) now, don't stop to ask "shall I?" again. Then confirm what you did and why.
+- NEVER promise an action instead of performing it. There is only THIS turn, the athlete cannot grant you a "next turn", so phrases like "I'll adjust your plan", "let me review your week", "I will proceed with these adjustments", "I'm going to update…", or "give me a moment" are FORBIDDEN unless you call the matching tool in this same turn. If you intend to change the plan, call plan_week / generate_workout / move_workout / set_goal_race NOW, read back the result, and report what you DID in the past tense, never what you will do.
+- A request that signals intent IS consent to act. "I have an exam until June 30, adjust my plan", "lighten this week", "move my long run" all mean: do it now. Don't re-ask. For a destructive overwrite (regenerating an existing/partly-locked week, changing a goal-race date) just give a one-line heads-up of what you replaced as part of the report, don't stop to ask first.
 - Only pause to ask first when the action is genuinely ambiguous AND unsignalled. When you do ask, ask once and propose a specific default.
-- Don't end a turn by handing trivial work back ("want me to schedule it?") when the request already implied yes — just do it and report.
+- Don't end a turn by handing trivial work back ("want me to schedule it?") when the request already implied yes, just do it and report.
 - Call remember when the athlete shares a durable preference, constraint, or injury.
 - Be efficient: a few targeted reads, then act/answer. You have at most 6 tool calls per turn.
-- Final messages are warm but concise, and sound like a human coach — NOT a stats readout. Translate the data into plain language ("you're a bit run-down", "you're fresh"); don't recite raw metrics like "CTL 7, ATL 14, TSB -7, readiness 57/100". Quote a number only when it's directly actionable (a target pace, a working weight). End with what you did or one clear next step.`;
+- Final messages are warm but concise, and sound like a human coach. NOT a stats readout. Translate the data into plain language ("you're a bit run-down", "you're fresh"); don't recite raw metrics like "CTL 7, ATL 14, TSB -7, readiness 57/100". Quote a number only when it's directly actionable (a target pace, a working weight). End with what you did or one clear next step.`;
 
 // System prompt suffix when the provider has native tool calling.
 const NATIVE_TOOL_PREAMBLE = `
 
-YOU ARE AN AGENTIC COACH WITH TOOLS. You can read the athlete's real training data and act on their plan. Don't invent numbers — read them.
+YOU ARE AN AGENTIC COACH WITH TOOLS. You can read the athlete's real training data and act on their plan. Don't invent numbers, read them.
 ${TOOL_RULES}`;
 
 const TOOL_PROTOCOL = `
 
-YOU ARE AN AGENTIC COACH WITH TOOLS. You can read the athlete's real training data and act on their plan. Don't invent numbers — read them.
+YOU ARE AN AGENTIC COACH WITH TOOLS. You can read the athlete's real training data and act on their plan. Don't invent numbers, read them.
 
 TOOLS:
 ${toolCatalogPrompt()}
 
-RESPONSE FORMAT — output ONLY one JSON object, nothing else:
+RESPONSE FORMAT, output ONLY one JSON object, nothing else:
 • Use a tool:  {"action":"tool","tool":"<name>","args":{ ... }}
 • Reply to athlete:  {"action":"final","message":"<concise, specific reply>"}
 ${TOOL_RULES}`;
@@ -86,7 +86,7 @@ function cleanReply(text: string): string {
       const o = JSON.parse(t) as Record<string, unknown>;
       const m = o.message ?? o.reply ?? o.final;
       if (typeof m === "string" && m.trim()) return m.trim();
-    } catch { /* not JSON — keep as-is */ }
+    } catch { /* not JSON, keep as-is */ }
   }
   return t;
 }
@@ -111,7 +111,7 @@ function looksLikeStall(text: string): boolean {
 }
 
 const STALL_NUDGE =
-  "You described an action but did not perform it — no tool was called this turn. " +
+  "You described an action but did not perform it, no tool was called this turn. " +
   "If you intend to change the plan, call the tool NOW (plan_week / generate_workout / move_workout / set_goal_race), read the result, and report what you DID in the past tense. " +
   "If no change is actually needed, answer plainly without promising any future work.";
 
@@ -164,12 +164,17 @@ Deno.serve(async (req) => {
     const messages: ChatMessage[] = Array.isArray(body.messages) ? body.messages : [];
     const mode: string = body.mode ?? "chat";
     if (!messages.length) return json({ error: "messages required" }, 400);
+    // Cost guard for every user (thread totals are trimmed later, but a single
+    // giant message would ride through as the anchor turn).
+    if (messages.some((m) => typeof m?.content === "string" && m.content.length > 8000)) {
+      return json({ error: "Message too long." }, 400);
+    }
     log.info("request", { mode, turns: messages.length, purpose: body.purpose, finalizeKind: body.finalizeKind });
 
     // --- athlete context so the coach grounds advice in real data ----------
     const { data: profile } = await admin
       .from("user_profiles")
-      .select("display_name, onboarding, active_llm_provider, llm_fallback_chain, coach_knowledge, training_memory, coach_soul, coach_soul_updated_at, llm_custom_input_per_1m, llm_custom_output_per_1m")
+      .select("display_name, onboarding, active_llm_provider, llm_fallback_chain, coach_knowledge, training_memory, coach_soul, coach_soul_updated_at, llm_custom_input_per_1m, llm_custom_output_per_1m, plan, plan_expires_at, use_hosted_ai")
       .eq("id", userId)
       .single();
     const onboarding = (profile?.onboarding ?? {}) as Record<string, unknown>;
@@ -189,7 +194,7 @@ Deno.serve(async (req) => {
       convSummary = ((conv?.summary ?? "") as string).trim();
     }
     const summaryBlock = convSummary
-      ? `\n\nCONVERSATION SO FAR (summary of earlier turns archived from context — rely on it; don't re-ask what it already covers):\n${convSummary}`
+      ? `\n\nCONVERSATION SO FAR (summary of earlier turns archived from context, rely on it; don't re-ask what it already covers):\n${convSummary}`
       : "";
 
     const since28 = new Date(Date.now() - 28 * DAY).toISOString().slice(0, 10);
@@ -249,13 +254,13 @@ Deno.serve(async (req) => {
     });
 
     const context =
-      `ATHLETE CONTEXT (background for YOUR reasoning — interpret it in plain language; never read these numbers back to the athlete as a list):
+      `ATHLETE CONTEXT (background for YOUR reasoning, interpret it in plain language; never read these numbers back to the athlete as a list):
 - Name: ${profile?.display_name ?? "athlete"}; today is ${today}
 - Goal: ${onboarding.goal ?? "not set"}; experience: ${onboarding.experience ?? "unknown"}
 - Available days: ${(onboarding.days as string[] | undefined)?.join(", ") ?? "unknown"}; session length: ${onboarding.session_duration ?? "?"} min
 - Equipment: ${onboarding.equipment ?? "unknown"}; injuries: ${onboarding.injury_history ?? "none noted"}
 - Form/freshness: ${freshnessWord(ctl - atl)} (TSB ${(ctl - atl).toFixed(0)})
-- Recovery today: ${recoveryWord(recovery.band)} (${recovery.score}/100); weekly load so far ~${weeklyTss} TSS — background only, don't quote it unless they ask
+- Recovery today: ${recoveryWord(recovery.band)} (${recovery.score}/100); weekly load so far ~${weeklyTss} TSS, background only, don't quote it unless they ask
 - Today's plan: ${todayLine}
 - Last completed sessions (newest first): ${recentLines.join(" | ") || "none recorded in the last 28 days"}
 - ~${weeklyKm.toFixed(0)} km/week recently; training phase: ${trainingPhase(weeksToGoal)}` +
@@ -265,7 +270,7 @@ Deno.serve(async (req) => {
     const systemPrompt = `${COACH_SYSTEM_PROMPT}\n\n${context}`;
 
     // --- resolve provider keys (fallback chain) ----------------------------
-    const { chain, resolveKey, resolveModel, resolveBaseUrl } = llmAccess(admin, userId, profile);
+    const { chain, resolveKey, resolveModel, resolveBaseUrl, hosted } = await llmAccess(admin, userId, profile);
 
     // --- build the turn list -----------------------------------------------
     const turns: ChatMessage[] = trimThread(messages);
@@ -401,7 +406,7 @@ Deno.serve(async (req) => {
         }
 
         replyText = cleanReply(replyText);
-        if (!replyText.trim()) replyText = "I gathered your data but need a bit more to act — what would you like me to do?";
+        if (!replyText.trim()) replyText = "I gathered your data but need a bit more to act, what would you like me to do?";
 
         // Log this turn's LLM spend (feature=chat) — the agentic loop's calls were
         // previously invisible in the diagnostics. Background; never blocks the reply.
@@ -415,6 +420,7 @@ Deno.serve(async (req) => {
               await admin.from("generation_logs").insert({
                 user_id: userId,
                 feature: "chat",
+                hosted,
                 provider,
                 model,
                 prompt_tokens: promptTokens,
@@ -508,6 +514,7 @@ Deno.serve(async (req) => {
         await admin.from("generation_logs").insert({
           user_id: userId,
           feature: mode === "finalize" ? "finalize" : "chat",
+          hosted,
           provider: outcome.provider,
           model: outcome.model,
           prompt_tokens: outcome.promptTokens,
@@ -578,6 +585,6 @@ Deno.serve(async (req) => {
     });
   } catch (e) {
     log.error("failed", { err: e instanceof Error ? e.message : String(e) });
-    return json({ error: e instanceof Error ? e.message : String(e) }, 500);
+    return json({ error: e instanceof Error ? e.message : String(e) }, errorStatus(e));
   }
 });

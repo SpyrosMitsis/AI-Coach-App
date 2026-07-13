@@ -21,3 +21,4 @@ local.properties
 
 # personal machine defaults for scripts/dev.sh (project ref, device serial, …)
 scripts/dev.local.sh
+.vercel

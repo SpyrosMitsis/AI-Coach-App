@@ -8,7 +8,7 @@
 //   - Cron (service_role): POST { all_users: true } → plan NEXT week for every
 //     user with user_profiles.auto_plan = true.
 
-import { handleOptions, json } from "../_shared/cors.ts";
+import { errorStatus, handleOptions, json } from "../_shared/cors.ts";
 import { adminClient, getUserId } from "../_shared/supabase.ts";
 import { llmAccess } from "../_shared/llm_keys.ts";
 import { customPriceFromProfile, estimateCostUsd, extractJson, llmGenerateWithFallback } from "../_shared/llm.ts";
@@ -55,7 +55,7 @@ async function planForUser(admin: SupabaseClient, userId: string, start: string,
   // planned (and the actuals feed the prompt via the adherence block).
   const today = new Date().toISOString().slice(0, 10);
   const dates = allDates.filter((d) => d >= today);
-  if (dates.length === 0) throw new Error("that week is already over — nothing left to plan");
+  if (dates.length === 0) throw new Error("that week is already over, nothing left to plan");
   const planFrom = dates[0];
 
   const { data: profile } = await admin.from("user_profiles").select("*").eq("id", userId).single();
@@ -117,7 +117,7 @@ async function planForUser(admin: SupabaseClient, userId: string, start: string,
     .eq("user_id", userId).gte("date", planFrom).lte("date", end).eq("locked", true);
   const lockedByDate = new Map((lockedRows ?? []).map((r) => [r.date as string, r]));
   const lockedBlock = lockedByDate.size === 0 ? "" :
-    `\n\nFIXED SESSIONS — the athlete has LOCKED these days; DO NOT schedule anything on them. Plan the rest of the week AROUND them (respect easy/recovery before and after a hard fixed session):\n` +
+    `\n\nFIXED SESSIONS, the athlete has LOCKED these days; DO NOT schedule anything on them. Plan the rest of the week AROUND them (respect easy/recovery before and after a hard fixed session):\n` +
     [...lockedByDate.entries()].map(([d, r]) =>
       `- ${d} (${weekdayOf(d)}): ${(r.workout_json as Workout)?.title ?? r.type} [${r.type}]`).join("\n");
 
@@ -128,7 +128,7 @@ async function planForUser(admin: SupabaseClient, userId: string, start: string,
     ? `\n\nSPORTS THE ATHLETE DOES: ${sportsList.join(", ")}. ONLY schedule these modalities (plus rest days). Do NOT introduce a sport they did not list.`
     : "";
   const splitBlock = splitStyle && !/^auto$/i.test(splitStyle)
-    ? `\n\nSTRENGTH SPLIT: the athlete follows a ${splitStyle} split — sequence the week's strength days to follow that rotation (e.g. push/pull/legs across three days, or alternating upper/lower), each session built around that day's focus and spaced for ≥48h muscle recovery.`
+    ? `\n\nSTRENGTH SPLIT: the athlete follows a ${splitStyle} split, sequence the week's strength days to follow that rotation (e.g. push/pull/legs across three days, or alternating upper/lower), each session built around that day's focus and spaced for ≥48h muscle recovery.`
     : "";
 
   // Opt-in periodization: track build weeks via week_plans.focus history and
@@ -152,11 +152,11 @@ async function planForUser(admin: SupabaseClient, userId: string, start: string,
     );
     if (buildWeeks >= DELOAD_AFTER) {
       periodizationBlock =
-        `\n\nPERIODIZATION — DELOAD WEEK: ${buildWeeks} build weeks since the last deload. Make THIS a recovery/deload week — cut total volume ~40% (fewer sets / shorter sessions), keep a little intensity to stay sharp, and set "week_focus" to "Recovery/Deload".`;
+        `\n\nPERIODIZATION. DELOAD WEEK: ${buildWeeks} build weeks since the last deload. Make THIS a recovery/deload week, cut total volume ~40% (fewer sets / shorter sessions), keep a little intensity to stay sharp, and set "week_focus" to "Recovery/Deload".`;
     } else {
       const targetTss = lastWeekTss > 0 ? Math.round(lastWeekTss * 1.08) : Math.round(weeklyTssTarget);
       periodizationBlock =
-        `\n\nPERIODIZATION — BUILD WEEK ${buildWeeks + 1} of ~${DELOAD_AFTER}: progress gently on last week (~${lastWeekTss} TSS) — aim for ~${targetTss} TSS via small volume/intensity increases, not a jump. Keep 80/20 and recovery spacing; a deload is due after ${DELOAD_AFTER} build weeks.`;
+        `\n\nPERIODIZATION. BUILD WEEK ${buildWeeks + 1} of ~${DELOAD_AFTER}: progress gently on last week (~${lastWeekTss} TSS), aim for ~${targetTss} TSS via small volume/intensity increases, not a jump. Keep 80/20 and recovery spacing; a deload is due after ${DELOAD_AFTER} build weeks.`;
     }
   }
 
@@ -181,14 +181,14 @@ async function planForUser(admin: SupabaseClient, userId: string, start: string,
     wellness3d, weeklyKm, weeklyTssTarget, hrZones, contextBlocks,
   });
 
-  const { chain, resolveKey, resolveModel, resolveBaseUrl } = llmAccess(admin, userId, profile);
+  const { chain, resolveKey, resolveModel, resolveBaseUrl, hosted } = await llmAccess(admin, userId, profile);
   if (chain.length === 0) throw new Error("No AI provider configured");
 
   // Failures are logged to generation_logs (like generate-workout does) so a
   // "re-plan failed" in the app is diagnosable from the logs table.
   const logFailure = async (provider: string | null, raw: string | null, error: string) => {
     await admin.from("generation_logs").insert({
-      user_id: userId, feature: "plan", provider, system_prompt: WEEK_SYSTEM_PROMPT,
+      user_id: userId, feature: "plan", hosted, provider, system_prompt: WEEK_SYSTEM_PROMPT,
       user_prompt: userPrompt, raw_response: raw, parsed_ok: false, error,
     }).then(() => {}, () => {});
   };
@@ -378,7 +378,7 @@ async function planForUser(admin: SupabaseClient, userId: string, start: string,
 
   const cost = estimateCostUsd(outcome.provider, outcome.promptTokens, outcome.completionTokens, customPriceFromProfile(outcome.provider, profile), outcome.model);
   await admin.from("generation_logs").insert({
-    user_id: userId, feature: "plan", provider: outcome.provider, model: outcome.model,
+    user_id: userId, feature: "plan", hosted, provider: outcome.provider, model: outcome.model,
     prompt_tokens: outcome.promptTokens, completion_tokens: outcome.completionTokens,
     estimated_cost_usd: cost, system_prompt: WEEK_SYSTEM_PROMPT, user_prompt: userPrompt,
     raw_response: outcome.text, parsed_ok: true,
@@ -426,6 +426,6 @@ Deno.serve(async (req) => {
     const result = await planForUser(admin, userId, start, body.push ?? true);
     return json(result);
   } catch (e) {
-    return json({ error: e instanceof Error ? e.message : String(e) }, 500);
+    return json({ error: e instanceof Error ? e.message : String(e) }, errorStatus(e));
   }
 });

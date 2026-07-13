@@ -8,11 +8,11 @@ package com.workoutmaker.app.data
 // zones are % of FTP (Coggan, collapsed to 5 bands).
 
 data class PaceZone(val name: String, val fastSec: Int, val slowSec: Int) {
-    val range: String get() = "${Zones.formatPace(fastSec)}–${Zones.formatPace(slowSec)} /km"
+    val range: String get() = "${Zones.formatPace(fastSec)}-${Zones.formatPace(slowSec)} /km"
 }
 
 data class PowerZone(val name: String, val min: Int, val max: Int) {
-    val range: String get() = "$min–$max W"
+    val range: String get() = "$min-$max W"
 }
 
 object Zones {
@@ -134,7 +134,7 @@ object Zones {
         }
         zoneNum(hrZone)?.let { n ->
             if (lthr != null && lthr > 0) {
-                hrZonesFromLthr(lthr).getOrNull(n - 1)?.let { return "${it.min}–${it.max} bpm" }
+                hrZonesFromLthr(lthr).getOrNull(n - 1)?.let { return "${it.min}-${it.max} bpm" }
             }
         }
         return null

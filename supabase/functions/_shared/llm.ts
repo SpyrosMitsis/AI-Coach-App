@@ -29,6 +29,11 @@ export interface ProviderSpec {
 // that across up to ~12 sequential calls. AbortSignal.timeout auto-cleans.
 const LLM_TIMEOUT_MS = 60_000;
 
+// COST-SAFETY INVARIANT: every adapter below hardcodes 2,500 max output tokens
+// (and llm_native_tools.ts does the same). The hosted-AI quota math in
+// _shared/quota.ts assumes this ceiling; do not raise it without re-running
+// the per-call cost estimates in docs/PLAY_RELEASE.md.
+
 export const PROVIDERS: Record<LlmProvider, ProviderSpec> = {
   anthropic: {
     label: "Anthropic",

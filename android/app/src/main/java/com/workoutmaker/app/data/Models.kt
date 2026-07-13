@@ -168,6 +168,11 @@ data class GoalProgress(
 @Serializable
 data class Vo2Max(val value: Double, val change: Double? = null)
 
+// What this deployment can do. A self-hosted backend without the hosted LLM
+// secrets reports hosted_ai=false and the app never shows Pro UI.
+@Serializable
+data class ServerCapabilities(val hosted_ai: Boolean = false)
+
 @Serializable
 data class DailySummary(
     val date: String,
@@ -183,7 +188,18 @@ data class DailySummary(
     val week_review: WeekReview? = null,
     val active_llm_provider: String,
     val goal: GoalProgress? = null,
+    val server: ServerCapabilities? = null,
 )
+
+// Billing state from user_profiles — plan columns are server-written only
+// (verify-purchase / play-rtdn); use_hosted_ai is the user's own toggle.
+data class PlanStatus(
+    val plan: String = "free",
+    val expiresAt: String? = null,
+    val useHostedAi: Boolean = true,
+) {
+    val isPro: Boolean get() = plan == "pro"
+}
 
 @Serializable
 data class GenerateRequest(

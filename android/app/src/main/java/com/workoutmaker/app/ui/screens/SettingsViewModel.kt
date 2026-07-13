@@ -120,7 +120,44 @@ class SettingsViewModel @Inject constructor(
     private val prefs: AppPreferences,
     private val strength: com.workoutmaker.app.strength.StrengthRepository,
     private val health: com.workoutmaker.app.health.HealthConnectManager,
+    private val billing: com.workoutmaker.app.billing.BillingGateway,
 ) : ViewModel() {
+
+    // --- Pro plan / hosted AI (only when this build can bill AND this server
+    // hosts an LLM key — self-hosted stacks and foss builds never see it) ----
+    val planStatus = MutableStateFlow(com.workoutmaker.app.data.PlanStatus())
+    val proAvailable = MutableStateFlow(false)
+    val proBusy = MutableStateFlow(false)
+    val proError = MutableStateFlow<String?>(null)
+
+    fun buyPro(activity: android.app.Activity) = viewModelScope.launch {
+        proBusy.value = true
+        proError.value = null
+        when (val r = com.workoutmaker.app.billing.purchaseAndVerify(activity, billing, repo)) {
+            is com.workoutmaker.app.billing.ProPurchaseResult.Success -> planStatus.value = repo.planStatus()
+            is com.workoutmaker.app.billing.ProPurchaseResult.Cancelled -> Unit
+            is com.workoutmaker.app.billing.ProPurchaseResult.Failed -> proError.value = r.message
+        }
+        proBusy.value = false
+    }
+
+    // Re-verify a purchase Play already knows about (bought on another device,
+    // or verify failed right after the buy).
+    fun restorePro() = viewModelScope.launch {
+        proBusy.value = true
+        proError.value = null
+        runCatching {
+            val token = billing.currentPurchaseToken() ?: error("No active subscription found on this Google account.")
+            repo.verifyPurchase(token)
+            planStatus.value = repo.planStatus()
+        }.onFailure { proError.value = it.message }
+        proBusy.value = false
+    }
+
+    fun setUseHostedAi(on: Boolean) = viewModelScope.launch {
+        runCatching { repo.setUseHostedAi(on) }
+            .onSuccess { planStatus.value = planStatus.value.copy(useHostedAi = on) }
+    }
 
     // CSV import (Strong / Hevy) lives in Settings → Import data.
     val importStatus = MutableStateFlow<String?>(null)
@@ -253,6 +290,8 @@ class SettingsViewModel @Inject constructor(
 
     fun load() = viewModelScope.launch {
         repo.loadProfile()?.let { profile.value = it }
+        runCatching { repo.planStatus() }.onSuccess { planStatus.value = it }
+        proAvailable.value = billing.supported && repo.serverHostedAi()
         autoPlan.value = repo.autoPlanEnabled()
         runCatching { repo.modelOverrides() }.onSuccess { modelOverrides.value = it }
         runCatching { repo.loadKnowledge() }.onSuccess { knowledge.value = it }
@@ -309,7 +348,7 @@ class SettingsViewModel @Inject constructor(
             repo.addThresholdTest(t)
             thresholdTests.value = repo.thresholdTests()
             repo.loadProfile()?.let { profile.value = it }
-        }.onSuccess { saveStatus.value = "✓ Test logged — zones updated" }
+        }.onSuccess { saveStatus.value = "✓ Test logged, zones updated" }
             .onFailure { saveStatus.value = "Couldn't log: ${it.message}" }
     }
 
@@ -452,7 +491,7 @@ class SettingsViewModel @Inject constructor(
     fun deleteAccount() = viewModelScope.launch {
         deleteAccountState.value = ""
         runCatching { repo.deleteAccount() }
-            .onFailure { deleteAccountState.value = it.message ?: "Deletion failed — try again." }
+            .onFailure { deleteAccountState.value = it.message ?: "Deletion failed, try again." }
             .onSuccess { deleteAccountState.value = null }
         // On success AuthGate flips to the login screen by itself (session gone).
     }

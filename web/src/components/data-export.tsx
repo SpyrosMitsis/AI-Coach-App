@@ -103,7 +103,7 @@ export function DataExport() {
     <Card>
       <CardHeader className="pb-2">
         <CardTitle className="text-base">Export your data</CardTitle>
-        <CardDescription>Your data is yours — download it anytime.</CardDescription>
+        <CardDescription>Your data is yours, download it anytime.</CardDescription>
       </CardHeader>
       <CardContent className="space-y-2">
         <Button variant="outline" className="w-full justify-start" disabled={busy !== null} onClick={exportStrength}>

@@ -46,18 +46,18 @@ export const DEFAULT_SOUL =
 I'm your endurance + strength coach: warm but direct, grounded in real
 sports-science, and biased toward action. I drive the plan rather than waiting to
 be asked, I explain the "why" briefly, and I keep a calm, encouraging tone even
-when I'm pushing you. I talk like a human, not a dashboard — I interpret your
+when I'm pushing you. I talk like a human, not a dashboard: I interpret your
 numbers into plain language instead of reciting stats at you, and I only quote a
 figure when it's something you can act on.
 
 ## How I coach
 - Honor the science: 80/20 intensity, periodization, progressive overload,
   autoregulate from real readiness signals.
-- Meet you where you are — adapt to your constraints, equipment, and life.
+- Meet you where you are, adapting to your constraints, equipment, and life.
 - Celebrate the wins, name the patterns, never shame a missed session.
 
 ## Relationship & history
-(Nothing yet — this fills in as we train together.)`;
+(Nothing yet. This fills in as we train together.)`;
 
 // Map an already-fetched profile row → AgentMemory (no DB round-trip).
 export function memoryFromProfile(
@@ -101,20 +101,20 @@ export function memoryDocsBlock(mem: AgentMemory): string {
   const parts: string[] = [];
   if (mem.soul.trim()) {
     parts.push(
-      `COACH IDENTITY & RELATIONSHIP (your "soul" — this is WHO YOU ARE to this ` +
+      `COACH IDENTITY & RELATIONSHIP (your "soul", this is WHO YOU ARE to this ` +
         `athlete; stay in this voice and draw on the shared history):\n${mem.soul.trim()}`,
     );
   }
   if (mem.user.trim()) {
     parts.push(
-      `ATHLETE CONSTRAINTS & PREFERENCES (HARD RULES — never violate these):\n${mem.user.trim()}\n` +
+      `ATHLETE CONSTRAINTS & PREFERENCES (HARD RULES, never violate these):\n${mem.user.trim()}\n` +
         `- If an injury is noted, avoid loading/aggravating it and prefer safe alternatives.\n` +
         `- Only prescribe exercises the athlete's available equipment supports.`,
     );
   }
   if (mem.memory.trim()) {
     parts.push(
-      `ATHLETE MEMORY (long-term notes from past sessions — honor these):\n${mem.memory.trim()}`,
+      `ATHLETE MEMORY (long-term notes from past sessions, honor these):\n${mem.memory.trim()}`,
     );
   }
   return parts.length ? "\n\n" + parts.join("\n\n") : "";
@@ -138,7 +138,7 @@ export async function updateUserDoc(
     .map((m) => `${m.role === "user" ? "Athlete" : "Coach"}: ${m.content}`)
     .join("\n");
   const prompt =
-    `You maintain an athlete's durable COACHING KNOWLEDGE — a short bullet list of facts a coach must always honor: injuries/limitations, equipment they have or lack, scheduling constraints, exercise preferences and dislikes, dietary/other constraints.\n\n` +
+    `You maintain an athlete's durable COACHING KNOWLEDGE, a short bullet list of facts a coach must always honor: injuries/limitations, equipment they have or lack, scheduling constraints, exercise preferences and dislikes, dietary/other constraints.\n\n` +
     `EXISTING KNOWLEDGE:\n${existing.trim() || "(empty)"}\n\n` +
     `RECENT CONVERSATION:\n${transcript}\n\n` +
     `Return the UPDATED knowledge as a concise markdown bullet list (max ~12 bullets). Merge new durable facts, drop anything the athlete has retracted, keep it terse. If nothing durable changed, return the existing list unchanged. Output ONLY the bullet list, no preamble.`;
@@ -175,7 +175,8 @@ const MEMORY_SYSTEM = `You maintain a running coach's private notes about ONE at
 Fold new evidence into the existing notes. Keep DURABLE patterns (how they
 respond to volume/intensity, recurring niggles, scheduling preferences,
 motivation, what works) and drop stale specifics. Output ONLY the updated notes
-as plain prose, <=120 words, no preamble.`;
+as plain prose, <=120 words, no preamble. Never use em dashes (\u2014) or en dashes (\u2013);
+use commas, periods, or colons instead.`;
 
 // memory.md — rolling episodic notes. `evidence` is the caller-assembled recent
 // feedback/sessions/strength block. Returns the saved notes.
@@ -200,15 +201,16 @@ export async function updateMemoryDoc(
 }
 
 const SOUL_SYSTEM =
-  `You maintain the SOUL document of an AI endurance + strength coach — its
+  `You maintain the SOUL document of an AI endurance + strength coach, its
 identity, voice, and its relationship with ONE athlete. This document changes
 RARELY and SLOWLY. Preserve the coach's established voice and philosophy almost
 verbatim. Only the "Relationship & history" section may grow: add at most 1-2
-durable, human observations about the bond/arc with this athlete — milestones
-reached, how they like to be coached, recurring rapport — written in the coach's
+durable, human observations about the bond/arc with this athlete, milestones
+reached, how they like to be coached, recurring rapport, written in the coach's
 first-person voice. NEVER put training numbers, plans, or transient data here
 (those live in other notes). Keep the whole document under ~200 words. Output
-ONLY the updated soul markdown, no preamble.`;
+ONLY the updated soul markdown, no preamble. Never use em dashes (—) or en
+dashes (-); use commas, periods, or colons instead.`;
 
 // soul.md — the coach's identity, deepened conservatively. Time-gated: skips if
 // it was evolved within `minHours` (unless still on the seed, which it personalizes).

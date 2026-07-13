@@ -167,7 +167,7 @@ export default function SettingsPage() {
 
               {(o.goal_date || o.target_pace) && (
                 <p className="text-xs text-muted-foreground">
-                  Goal: {o.goal ?? "—"}
+                  Goal: {o.goal ?? "-"}
                   {o.goal_date ? ` · ${o.goal_date}` : ""}
                   {o.target_pace ? ` · ${o.target_pace}` : ""} (set in Goals &amp; races below)
                 </p>
@@ -225,14 +225,14 @@ export default function SettingsPage() {
         <CardHeader className="pb-2">
           <CardTitle className="text-base">Coach knowledge</CardTitle>
           <CardDescription>
-            Durable facts your coach must respect on every plan — injuries, equipment, scheduling.
+            Durable facts your coach must respect on every plan, injuries, equipment, scheduling.
             The coach chat updates this automatically; you can edit it here.
           </CardDescription>
         </CardHeader>
         <CardContent className="space-y-2">
           <textarea
             className="min-h-[120px] w-full rounded-md border border-input bg-transparent px-3 py-2 text-sm placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-            placeholder={"- Left knee tendinitis — avoid deep knee flexion\n- Home gym: dumbbells + bands only\n- Runs only before work (mornings)"}
+            placeholder={"- Left knee tendinitis, avoid deep knee flexion\n- Home gym: dumbbells + bands only\n- Runs only before work (mornings)"}
             value={knowledge ?? ""}
             onChange={(e) => setKnowledge(e.target.value)}
           />

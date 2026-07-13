@@ -8,7 +8,7 @@
 // 4. CTL/ATL/TSB             9. save planned_workouts + generation_logs
 // 5. choose type            10. optional push to Intervals.icu calendar
 
-import { handleOptions, json } from "../_shared/cors.ts";
+import { errorStatus, handleOptions, json } from "../_shared/cors.ts";
 import { logger } from "../_shared/log.ts";
 import { adminClient, decryptSecret, getUserId } from "../_shared/supabase.ts";
 import {
@@ -357,7 +357,7 @@ Deno.serve(async (req) => {
 
     // 6a-pre. surrounding week so this session fits the block, not just today.
     if (type !== "rest") {
-      userPrompt += `\n\nTHIS WEEK AROUND TODAY (fit today INTO this — don't clash): ${surroundingSummary}.` +
+      userPrompt += `\n\nTHIS WEEK AROUND TODAY (fit today INTO this, don't clash): ${surroundingSummary}.` +
         ` Keep ≥24h between hard efforts and between heavy leg work and the long run.` +
         (adjacentHard ? ` A HARD day is adjacent to today, so keep today EASY/recovery or a non-competing modality.` : "");
     }
@@ -365,7 +365,8 @@ Deno.serve(async (req) => {
     // 6a-ext. free-text athlete request for this specific date (e.g. "social
     // 10k run with friends, keep it easy"). Honored as a hard constraint.
     if (typeof body.request === "string" && body.request.trim()) {
-      userPrompt += `\n\nATHLETE'S REQUEST FOR THIS SESSION (honor this exactly — it's a fixed plan, e.g. a social run or a session with friends; match the stated distance/duration/vibe and keep it physiologically sensible):\n"${body.request.trim()}"`;
+      // Clamped: this is a prompt insert, not a document (cost guard).
+      userPrompt += `\n\nATHLETE'S REQUEST FOR THIS SESSION (honor this exactly, it's a fixed plan, e.g. a social run or a session with friends; match the stated distance/duration/vibe and keep it physiologically sensible):\n"${body.request.trim().slice(0, 500)}"`;
     }
 
     // 6b. fold in recent post-workout feedback (autoregulation loop) --------
@@ -380,7 +381,7 @@ Deno.serve(async (req) => {
         `- ${f.date}: ${f.completed === false ? "NOT completed; " : ""}rated ${f.difficulty ?? "?"}` +
         `${f.actual_rpe ? `, actual RPE ${f.actual_rpe}` : ""}${f.notes ? ` ("${f.notes}")` : ""}`
       ).join("\n");
-      userPrompt += `\n\nRECENT SESSION FEEDBACK (autoregulate from this — if recent sessions were "too_hard" or skipped, reduce intensity/volume; if "too_easy", progress):\n${lines}`;
+      userPrompt += `\n\nRECENT SESSION FEEDBACK (autoregulate from this, if recent sessions were "too_hard" or skipped, reduce intensity/volume; if "too_easy", progress):\n${lines}`;
     }
 
     // 6a-coherence. adjacent already-planned days (±2) so a single-day
@@ -402,7 +403,7 @@ Deno.serve(async (req) => {
         }).join("\n");
         userPrompt +=
           `\n\nADJACENT PLANNED DAYS (do NOT place a hard/quality session back-to-back ` +
-          `with one of these — if a neighbour is hard, make today easy/recovery or the ` +
+          `with one of these, if a neighbour is hard, make today easy/recovery or the ` +
           `complementary modality; separate hard runs and heavy leg days by ≥24h):\n${lines}`;
       }
     }
@@ -438,7 +439,7 @@ Deno.serve(async (req) => {
         `Revise the following workout per the athlete's request, keeping it
 physiologically sound and honoring the same training science.
 
-ATHLETE REQUEST: ${String(body.adjustment)}
+ATHLETE REQUEST: ${String(body.adjustment).slice(0, 1000)}
 
 CURRENT WORKOUT (JSON):
 ${JSON.stringify(body.base_workout)}
@@ -447,7 +448,7 @@ Return the revised workout as JSON only, same schema.`;
     }
 
     // 7. resolve fallback chain + keys, then generate ----------------------
-    const { chain, resolveKey, resolveModel, resolveBaseUrl } = llmAccess(admin, userId, profile);
+    const { chain, resolveKey, resolveModel, resolveBaseUrl, hosted } = await llmAccess(admin, userId, profile);
     if (chain.length === 0) {
       return json({ error: "No AI provider configured. Add an API key in Settings." }, 400);
     }
@@ -465,6 +466,7 @@ Return the revised workout as JSON only, same schema.`;
       await admin.from("generation_logs").insert({
         user_id: userId,
         feature: "workout",
+        hosted,
         provider: chain[0] ?? null,
         system_prompt: SYSTEM_PROMPT,
         user_prompt: userPrompt,
@@ -493,7 +495,7 @@ Return the revised workout as JSON only, same schema.`;
       try {
         const repairPrompt =
           `${userPrompt}\n\nYOUR PREVIOUS RESPONSE could not be parsed/validated (${parseError}). ` +
-          `Return ONLY a corrected JSON object that exactly matches the schema — no prose, no code fences.`;
+          `Return ONLY a corrected JSON object that exactly matches the schema, no prose, no code fences.`;
         const retry = await llmGenerateWithFallback(chain, { prompt: repairPrompt, systemPrompt: SYSTEM_PROMPT, temperature: 0.4 }, resolveKey, resolveModel, resolveBaseUrl);
         const v2 = validateWorkout(extractJson(retry.text));
         if (v2.ok && v2.workout) {
@@ -513,6 +515,7 @@ Return the revised workout as JSON only, same schema.`;
       await admin.from("generation_logs").insert({
         user_id: userId,
         feature: "workout",
+        hosted,
         provider: outcome.provider,
         model: outcome.model,
         prompt_tokens: outcome.promptTokens,
@@ -556,7 +559,7 @@ Return the revised workout as JSON only, same schema.`;
     if (review.violations.length) {
       try {
         const fixPrompt =
-          `${userPrompt}\n\nYOUR PREVIOUS WORKOUT had these problems — fix ALL of them and ` +
+          `${userPrompt}\n\nYOUR PREVIOUS WORKOUT had these problems, fix ALL of them and ` +
           `return ONLY corrected JSON matching the schema:\n- ${review.violations.join("\n- ")}`;
         const retry = await llmGenerateWithFallback(
           chain,
@@ -646,6 +649,7 @@ Return the revised workout as JSON only, same schema.`;
     await admin.from("generation_logs").insert({
       user_id: userId,
       feature: "workout",
+      hosted,
       provider: outcome.provider,
       model: outcome.model,
       prompt_tokens: outcome.promptTokens,
@@ -710,6 +714,6 @@ Return the revised workout as JSON only, same schema.`;
     });
   } catch (e) {
     log.error("failed", { ms: Date.now() - startedAt, err: e instanceof Error ? e.message : String(e) });
-    return json({ error: e instanceof Error ? e.message : String(e) }, 500);
+    return json({ error: e instanceof Error ? e.message : String(e) }, errorStatus(e));
   }
 });
