@@ -139,9 +139,17 @@ class MainActivity : ComponentActivity() {
         }
 
         // Ship any crash captured on a previous run (no-op when none pending).
+        // Wait for the stored session to restore first: at onCreate the auth
+        // status is still Initializing and currentUserOrNull() is null.
         lifecycleScope.launch {
             runCatching {
-                if (repo.auth.currentUserOrNull() != null) repo.uploadPendingCrashes()
+                val restored = supabase.auth.sessionStatus.first {
+                    it is io.github.jan.supabase.gotrue.SessionStatus.Authenticated ||
+                        it is io.github.jan.supabase.gotrue.SessionStatus.NotAuthenticated
+                }
+                if (restored is io.github.jan.supabase.gotrue.SessionStatus.Authenticated) {
+                    repo.uploadPendingCrashes()
+                }
             }
         }
 
