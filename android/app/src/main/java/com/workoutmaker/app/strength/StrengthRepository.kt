@@ -20,14 +20,34 @@ data class FinishedSet(val weightKg: Double, val reps: Int, val rpe: Int?, val i
 data class FinishedExercise(val name: String, val sets: List<FinishedSet>)
 
 // Cloud backup DTOs (timestamps are epoch millis to round-trip with Room).
+// Every column except the primary/foreign keys is NULLABLE in the schema, so a
+// row written with a missing value (e.g. a web-logged set with is_warmup null, or
+// a workout with no note) must decode cleanly instead of throwing and taking the
+// whole restore/merge down with it. Nulls are coalesced to safe defaults when
+// mapped to Room (see toEntity below).
 @Serializable
-data class CloudWorkout(val id: String, val name: String, val started_at: Long, val ended_at: Long, val duration_sec: Int, val total_volume_kg: Double, val note: String = "")
+data class CloudWorkout(val id: String, val name: String? = null, val started_at: Long? = null, val ended_at: Long? = null, val duration_sec: Int? = null, val total_volume_kg: Double? = null, val note: String? = null)
 @Serializable
-data class CloudSet(val id: String, val workout_id: String, val exercise_name: String, val muscle: String, val idx: Int, val weight_kg: Double, val reps: Int, val rpe: Int? = null, val is_warmup: Boolean = false)
+data class CloudSet(val id: String, val workout_id: String, val exercise_name: String? = null, val muscle: String? = null, val idx: Int? = null, val weight_kg: Double? = null, val reps: Int? = null, val rpe: Int? = null, val is_warmup: Boolean? = null)
 @Serializable
-data class CloudRoutine(val id: String, val name: String, val created_at: Long)
+data class CloudRoutine(val id: String, val name: String? = null, val created_at: Long? = null)
 @Serializable
-data class CloudRoutineItem(val id: String, val routine_id: String, val exercise_name: String, val position: Int, val target_sets: Int, val target_reps: String, val rest_sec: Int)
+data class CloudRoutineItem(val id: String, val routine_id: String, val exercise_name: String? = null, val position: Int? = null, val target_sets: Int? = null, val target_reps: String? = null, val rest_sec: Int? = null)
+
+// Cloud -> Room, coalescing any null cloud values to safe defaults.
+private fun CloudWorkout.toEntity(synced: Boolean = true) = WorkoutEntity(
+    id, name ?: "Workout", started_at ?: 0L, ended_at ?: (started_at ?: 0L),
+    duration_sec ?: 0, total_volume_kg ?: 0.0, note ?: "", synced,
+)
+private fun CloudSet.toEntity() = SetEntity(
+    id, workout_id, exercise_name ?: "", muscle ?: "", idx ?: 0,
+    weight_kg ?: 0.0, reps ?: 0, rpe, is_warmup ?: false,
+)
+private fun CloudRoutine.toEntity() = RoutineEntity(id, name ?: "Routine", created_at ?: 0L)
+private fun CloudRoutineItem.toEntity() = RoutineItemEntity(
+    id, routine_id, exercise_name ?: "", position ?: 0,
+    target_sets ?: 3, target_reps ?: "8-12", rest_sec ?: 120,
+)
 @Serializable
 data class CloudCustomExercise(val name: String, val muscle: String, val category: String, val compound: Boolean = false)
 
@@ -343,8 +363,8 @@ class StrengthRepository @Inject constructor(
                 val cs = supabase.postgrest.from("strength_workout_sets").select {
                     filter { isIn("workout_id", ids) }
                 }.decodeList<CloudSet>()
-                cw.forEach { dao.insertWorkout(WorkoutEntity(it.id, it.name, it.started_at, it.ended_at, it.duration_sec, it.total_volume_kg, it.note)) }
-                if (cs.isNotEmpty()) dao.insertSets(cs.map { SetEntity(it.id, it.workout_id, it.exercise_name, it.muscle, it.idx, it.weight_kg, it.reps, it.rpe, it.is_warmup) })
+                cw.forEach { dao.insertWorkout(it.toEntity()) }
+                if (cs.isNotEmpty()) dao.insertSets(cs.map { it.toEntity() })
             }
             val cr = supabase.postgrest.from("strength_routines").select {
                 order("created_at", Order.DESCENDING); limit(100)
@@ -354,8 +374,8 @@ class StrengthRepository @Inject constructor(
                 val cri = supabase.postgrest.from("strength_routine_items").select {
                     filter { isIn("routine_id", rids) }
                 }.decodeList<CloudRoutineItem>()
-                cr.forEach { dao.insertRoutine(RoutineEntity(it.id, it.name, it.created_at)) }
-                if (cri.isNotEmpty()) dao.insertRoutineItems(cri.map { RoutineItemEntity(it.id, it.routine_id, it.exercise_name, it.position, it.target_sets, it.target_reps, it.rest_sec) })
+                cr.forEach { dao.insertRoutine(it.toEntity()) }
+                if (cri.isNotEmpty()) dao.insertRoutineItems(cri.map { it.toEntity() })
             }
             cw.size
         }
@@ -390,12 +410,12 @@ class StrengthRepository @Inject constructor(
         // A web edit shows up as a changed cloud row. Local pending edits
         // (synced = false) win — they'll overwrite the cloud on the next push.
         val changed = cloud.filter { c ->
-            val l = localById[c.id]
-            l != null && l.synced && (
-                l.name != c.name || l.note != c.note || l.endedAt != c.ended_at ||
-                    l.durationSec != c.duration_sec ||
-                    kotlin.math.abs(l.totalVolumeKg - c.total_volume_kg) > 0.01
-                )
+            val l = localById[c.id] ?: return@filter false
+            if (!l.synced) return@filter false
+            val ce = c.toEntity()
+            l.name != ce.name || l.note != ce.note || l.endedAt != ce.endedAt ||
+                l.durationSec != ce.durationSec ||
+                kotlin.math.abs(l.totalVolumeKg - ce.totalVolumeKg) > 0.01
         }
         if (missing.isEmpty() && changed.isEmpty()) return 0
         val ids = (missing + changed).map { it.id }
@@ -405,8 +425,8 @@ class StrengthRepository @Inject constructor(
         // Changed workouts are replaced wholesale (old local sets dropped first).
         changed.forEach { dao.deleteSetsForWorkout(it.id) }
         // synced defaults true ⇒ a merged workout isn't queued for re-push.
-        (missing + changed).forEach { dao.insertWorkout(WorkoutEntity(it.id, it.name, it.started_at, it.ended_at, it.duration_sec, it.total_volume_kg, it.note)) }
-        if (cs.isNotEmpty()) dao.insertSets(cs.map { SetEntity(it.id, it.workout_id, it.exercise_name, it.muscle, it.idx, it.weight_kg, it.reps, it.rpe, it.is_warmup) })
+        (missing + changed).forEach { dao.insertWorkout(it.toEntity()) }
+        if (cs.isNotEmpty()) dao.insertSets(cs.map { it.toEntity() })
         return missing.size + changed.size
     }
 

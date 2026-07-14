@@ -273,6 +273,9 @@ class StrengthViewModel @Inject constructor(
             val restored = runCatching { repo.restoreIfEmpty() }.getOrElse {
                 // Only reachable when local history is empty (post-reinstall), so
                 // an empty screen here would silently mask un-restored history.
+                // Log it: a decode failure here (not just a network blip) was
+                // invisible before and looked like a connection problem.
+                android.util.Log.w("StrengthVM", "restoreIfEmpty failed", it)
                 status.value = "Couldn't restore your history from the cloud, check your connection and reopen this tab"
                 0
             }
