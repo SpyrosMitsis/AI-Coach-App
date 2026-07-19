@@ -64,6 +64,8 @@ class AuthViewModel @Inject constructor(
     // Non-error guidance (confirmation mail sent, reset mail sent…).
     val info = MutableStateFlow<String?>(null)
     val busy = MutableStateFlow(false)
+    // Set when a sign-in failed because no account exists: the form flips to Create.
+    val promptCreate = MutableStateFlow(false)
 
     // Offline cold start: the SDK reports NetworkError when it can't refresh the
     // stored session. If one IS stored locally, let the user into the app (the
@@ -86,8 +88,22 @@ class AuthViewModel @Inject constructor(
         busy.value = true
         error.value = null
         info.value = null
+        promptCreate.value = false
         runCatching { repo.signIn(email.trim(), pw) }
-            .onFailure { error.value = friendlyAuthError(it) }
+            .onFailure { t ->
+                // Supabase returns the same "invalid credentials" for a wrong
+                // password AND a missing account. Ask the server which it is so we
+                // can point a new user at Create instead of a dead end.
+                if ((t.message ?: "").contains("Invalid login credentials", true)) {
+                    when (repo.accountExists(email.trim())) {
+                        false -> { error.value = "No account yet. Create one below."; promptCreate.value = true }
+                        true -> error.value = "Wrong password. Try again or reset it."
+                        null -> error.value = friendlyAuthError(t)
+                    }
+                } else {
+                    error.value = friendlyAuthError(t)
+                }
+            }
         busy.value = false
     }
 

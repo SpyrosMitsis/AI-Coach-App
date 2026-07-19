@@ -35,6 +35,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -79,7 +80,32 @@ class HomeViewModel @Inject constructor(
     private val repo: WorkoutRepository,
     private val strength: com.workoutmaker.app.strength.StrengthRepository,
     private val location: com.workoutmaker.app.data.LocationProvider,
+    private val prefs: com.workoutmaker.app.data.AppPreferences,
+    planChanges: com.workoutmaker.app.data.PlanChangeBus,
 ) : ViewModel() {
+    // Onboarding skippers land here with an empty profile and every workout is
+    // generated from guesses. Nudge until the profile is minimally usable
+    // (sports + availability); dismissal snoozes for 14 days.
+    val showSetupNudge = MutableStateFlow(false)
+    private suspend fun refreshSetupNudge() {
+        val p = profile.value ?: return
+        val unusable = p.sports.isEmpty() || p.day_availability.isEmpty()
+        if (!unusable) { showSetupNudge.value = false; return }
+        val dismissed = runCatching { prefs.setupNudgeDismissedAt() }.getOrNull()
+        showSetupNudge.value = dismissed == null ||
+            System.currentTimeMillis() - dismissed > 14L * 24 * 60 * 60 * 1000
+    }
+    fun dismissSetupNudge() {
+        showSetupNudge.value = false
+        viewModelScope.launch { runCatching { prefs.dismissSetupNudge() } }
+    }
+    // Reload the dashboard when the coach (or any other screen) mutates the
+    // plan: this VM survives tab switches, so today's workout went stale
+    // otherwise. load(), not refresh(): no need to force an Intervals re-sync.
+    init {
+        viewModelScope.launch { planChanges.changes.collect { load() } }
+    }
+
     val summary = MutableStateFlow<DailySummary?>(null)
     val fitness = MutableStateFlow<com.workoutmaker.app.data.IntervalsStats?>(null)
     // Thresholds for turning a planned step's zone into a concrete target range.
@@ -172,6 +198,7 @@ class HomeViewModel @Inject constructor(
         runCatching { repo.wellnessCheckin(date.toString()) }
             .onSuccess { wellnessToday.value = it; wellnessLoaded.value = true }
         if (profile.value == null) runCatching { repo.loadProfile() }.onSuccess { profile.value = it }
+        refreshSetupNudge()
         runCatching { repo.intervalsStats() }.onSuccess { fitness.value = it }
         loading.value = false
         // The briefing is today-only — it's a live coaching note, and we never
@@ -380,6 +407,7 @@ class HomeViewModel @Inject constructor(
 @Composable
 fun HomeScreen(
     onOpenRecoveryHistory: () -> Unit = {},
+    onOpenSettings: () -> Unit = {},
     vm: HomeViewModel = hiltViewModel(),
 ) {
     val summary by vm.summary.collectAsStateSafe()
@@ -575,6 +603,23 @@ fun HomeScreen(
             }.getOrNull()
         }
         val isStale = isToday && (s.recovery_synced_date == null || (staleDays != null && staleDays >= 2L))
+        // Setup nudge for onboarding skippers: quiet, dismissable, disappears
+        // for good the moment the profile is actually usable.
+        val showSetupNudge by vm.showSetupNudge.collectAsStateSafe()
+        if (showSetupNudge) {
+            SectionCard(mod) {
+                com.workoutmaker.app.ui.components.SectionLabel("FINISH SETUP")
+                Text(
+                    "Your coach is running on guesses. Two minutes of setup, your sports, week and goals, makes every workout yours.",
+                    style = MaterialTheme.typography.bodyMedium,
+                )
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Button(onClick = onOpenSettings, modifier = Modifier.weight(1f)) { Text("Set up now") }
+                    TextButton(onClick = { vm.dismissSetupNudge() }) { Text("Later") }
+                }
+            }
+        }
+
         SectionCard(mod) {
             if (isStale) RecoveryStaleBanner(s.recovery_synced_date)
             Row(verticalAlignment = Alignment.CenterVertically) {

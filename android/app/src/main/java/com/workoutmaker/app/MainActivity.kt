@@ -246,6 +246,13 @@ private fun MainScaffold() {
                     // singleTop: a fast double-tap must not stack two copies
                     // (Back then appears broken, popping to the duplicate).
                     onOpenRecoveryHistory = { nav.navigate("recovery-history") { launchSingleTop = true } },
+                    onOpenSettings = {
+                        nav.navigate("settings") {
+                            popUpTo(nav.graph.findStartDestination().id) { saveState = true }
+                            launchSingleTop = true
+                            restoreState = true
+                        }
+                    },
                 )
             }
             composable("recovery-history") {

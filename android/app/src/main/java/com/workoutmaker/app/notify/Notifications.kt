@@ -95,6 +95,13 @@ fun vibrateOnce(ctx: Context, ms: Long = 450) {
     runCatching { vibrator(ctx)?.vibrate(VibrationEffect.createOneShot(ms, VibrationEffect.DEFAULT_AMPLITUDE)) }
 }
 
+/** A light celebratory triple-tap, softer and quicker than [vibrateStrong]. */
+fun vibrateCelebrate(ctx: Context) {
+    runCatching {
+        vibrator(ctx)?.vibrate(VibrationEffect.createWaveform(longArrayOf(0, 30, 60, 30, 60, 55), -1))
+    }
+}
+
 /** A stronger double-buzz used when a rest timer ends. */
 fun vibrateStrong(ctx: Context) {
     runCatching {
@@ -124,6 +131,20 @@ fun playRestOverSound(ctx: Context, chime: RestChime = RestChime.SYSTEM) {
             RestChime.BEEP -> playTone(ToneGenerator.TONE_PROP_BEEP, 250)
             RestChime.DOUBLE_BEEP -> playTone(ToneGenerator.TONE_PROP_BEEP2, 750)
         }
+    }
+}
+
+/**
+ * A soft, quiet tick for the last seconds of a rest countdown, so the athlete
+ * gets ready for the set instead of being startled by the buzzer. Deliberately
+ * quieter (vol 45 vs the cue's 85) and short; routes through MEDIA like the
+ * rest-over cue so it mixes over music with the phone on silent.
+ */
+fun playCountdownTick(ctx: Context) {
+    runCatching {
+        val gen = ToneGenerator(AudioManager.STREAM_MUSIC, 45)
+        gen.startTone(ToneGenerator.TONE_PROP_ACK, 60)
+        android.os.Handler(ctx.mainLooper).postDelayed({ runCatching { gen.release() } }, 200)
     }
 }
 

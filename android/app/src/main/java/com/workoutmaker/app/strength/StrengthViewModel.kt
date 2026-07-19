@@ -52,6 +52,10 @@ class UiSet(
     var note by mutableStateOf(note)
     var suggestedWeight by mutableStateOf(suggestedWeight)
     var suggestedReps by mutableStateOf(suggestedReps)
+
+    // The athlete confirmed an outlier weight/reps for THIS set, so the sanity
+    // dialog must not re-ask. Cleared whenever either field is edited again.
+    var confirmedOdd by mutableStateOf(false)
 }
 
 class UiExercise(val name: String) {
@@ -797,6 +801,7 @@ class StrengthViewModel @Inject constructor(
     private fun runRestLoop() {
         restJob?.cancel()
         restJob = viewModelScope.launch {
+            var lastTicked = -1
             while (true) {
                 val remain = Math.ceil((restEndAt - System.currentTimeMillis()) / 1000.0).toInt()
                 if (remain <= 0) {
@@ -805,6 +810,14 @@ class StrengthViewModel @Inject constructor(
                     if (cfg.restVibrate) com.workoutmaker.app.notify.vibrateStrong(context)
                     if (cfg.restNotify) com.workoutmaker.app.notify.playRestOverSound(context, cfg.restChime)
                     break
+                }
+                // Soft 3-2-1 ticks so the buzzer is a confirmation, not a jump
+                // scare. Same gates as the cue itself: sound on + not silent.
+                if (remain <= 3 && remain != lastTicked &&
+                    cfg.restNotify && cfg.restChime != com.workoutmaker.app.data.RestChime.SILENT
+                ) {
+                    lastTicked = remain
+                    com.workoutmaker.app.notify.playCountdownTick(context)
                 }
                 restRemaining.value = remain
                 delay(200) // smooth updates; value comes from the clock, not a decrement

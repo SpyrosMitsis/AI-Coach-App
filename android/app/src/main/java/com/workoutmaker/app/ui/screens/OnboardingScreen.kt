@@ -1,22 +1,31 @@
 package com.workoutmaker.app.ui.screens
 
+import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.animation.core.tween
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.slideInHorizontally
+import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.safeDrawingPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
 import androidx.compose.material3.FilterChip
@@ -26,32 +35,87 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.workoutmaker.app.data.AppPreferences
+import com.workoutmaker.app.data.AppSettings
 import com.workoutmaker.app.data.LlmProvider
+import com.workoutmaker.app.data.Race
 import com.workoutmaker.app.data.TestKeyRequest
+import com.workoutmaker.app.data.ThemeMode
+import com.workoutmaker.app.data.ThemePalette
 import com.workoutmaker.app.data.TrainingProfile
 import com.workoutmaker.app.data.WorkoutRepository
+import com.workoutmaker.app.data.deriveLegacyFields
 import com.workoutmaker.app.ui.collectAsStateSafe
 import com.workoutmaker.app.ui.components.SectionCard
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharingStarted
+import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import javax.inject.Inject
+
+// The onboarding steps, in order. RACE and EQUIPMENT are conditional; the rest
+// always show. Conditional steps come AFTER the step that decides them (SPORTS),
+// so the visible-step index of the current screen never shifts under the user.
+internal enum class ObStep { WELCOME, APPEARANCE, PERSONAL, SPORTS, ACTIVITY, PERFORMANCE, RACE, AVAILABILITY, EQUIPMENT, INJURIES, COACH, CONNECT, REVIEW }
+
+// A step, plus (for ACTIVITY) which sport it asks about.
+internal data class StepSpec(val kind: ObStep, val sport: String? = null)
+
+internal fun visibleSteps(p: TrainingProfile): List<StepSpec> = buildList {
+    add(StepSpec(ObStep.WELCOME)) // includes the theme picker (was its own step)
+    add(StepSpec(ObStep.PERSONAL))
+    add(StepSpec(ObStep.SPORTS))
+    // Import before asking: a connected watch answers the zones/thresholds
+    // questions the later steps would otherwise pose, so CONNECT comes early.
+    add(StepSpec(ObStep.CONNECT))
+    // One guided step per selected activity (goal + level; the gym adds its split).
+    SPORTS.filter { p.sports.contains(it) }.forEach { add(StepSpec(ObStep.ACTIVITY, it)) }
+    // "Your numbers": optional performance anchors, one section per sport.
+    if (p.sports.isNotEmpty()) add(StepSpec(ObStep.PERFORMANCE))
+    if (shouldAskGoalRace(p)) add(StepSpec(ObStep.RACE))
+    add(StepSpec(ObStep.AVAILABILITY))
+    if (sportNeedsEquipment(p.sports)) add(StepSpec(ObStep.EQUIPMENT))
+    add(StepSpec(ObStep.INJURIES))
+    add(StepSpec(ObStep.COACH))
+    add(StepSpec(ObStep.REVIEW))
+}
+
+private fun stepTitle(spec: StepSpec): String = when (spec.kind) {
+    ObStep.WELCOME -> "Welcome"
+    ObStep.APPEARANCE -> "Make it yours"
+    ObStep.PERSONAL -> "About you"
+    ObStep.SPORTS -> "What you train"
+    ObStep.ACTIVITY -> spec.sport?.let { sportLabel(it) } ?: "Your training"
+    ObStep.PERFORMANCE -> "Your numbers"
+    ObStep.RACE -> "Your goal race"
+    ObStep.AVAILABILITY -> "Your week"
+    ObStep.EQUIPMENT -> "Your equipment"
+    ObStep.INJURIES -> "Injuries"
+    ObStep.COACH -> "Your AI coach"
+    ObStep.CONNECT -> "Connect your watch"
+    ObStep.REVIEW -> "Review & finish"
+}
 
 @HiltViewModel
 class OnboardingViewModel @Inject constructor(
     private val repo: WorkoutRepository,
+    private val prefs: AppPreferences,
     private val billing: com.workoutmaker.app.billing.BillingGateway,
 ) : ViewModel() {
     val complete = MutableStateFlow<Boolean?>(null)
@@ -63,6 +127,11 @@ class OnboardingViewModel @Inject constructor(
     val busy = MutableStateFlow(false)
     var provider by androidx.compose.runtime.mutableStateOf(LlmProvider.GROQ)
 
+    // Appearance step: same device-local theme prefs the Settings screen edits.
+    val appSettings = prefs.settings.stateIn(viewModelScope, SharingStarted.Eagerly, AppSettings())
+    fun setThemeMode(m: ThemeMode) = viewModelScope.launch { prefs.setThemeMode(m) }
+    fun setThemePalette(p: ThemePalette) = viewModelScope.launch { prefs.setThemePalette(p) }
+
     // Zero-setup Pro path: shown only when this build can bill AND this server
     // hosts an LLM key. The one summary fetch also warms the Room cache.
     val hostedAvailable = MutableStateFlow(false)
@@ -72,13 +141,21 @@ class OnboardingViewModel @Inject constructor(
 
     init {
         recheck()
-        if (billing.supported) {
-            viewModelScope.launch {
-                runCatching {
-                    val summary = repo.dailySummary()
-                    hostedAvailable.value = summary.server?.hosted_ai == true
-                    proActive.value = repo.planStatus().isPro
-                }
+    }
+
+    // Billing state is PER ACCOUNT: it must reload every time the signed-in
+    // user changes, not once per ViewModel. Fetching it only in init meant a
+    // fresh sign-up on a device whose previous account had Pro saw "Pro is
+    // active" during onboarding, while actually being free.
+    private fun refreshBilling() {
+        hostedAvailable.value = false
+        proActive.value = false
+        if (!billing.supported) return
+        viewModelScope.launch {
+            runCatching {
+                val summary = repo.dailySummary()
+                hostedAvailable.value = summary.server?.hosted_ai == true
+                proActive.value = repo.planStatus().isPro
             }
         }
     }
@@ -94,22 +171,73 @@ class OnboardingViewModel @Inject constructor(
         checkedUid = uid
         repo.ensureAccountScope()
         complete.value = repo.isOnboardingComplete()
+        refreshBilling()
     }
 
     fun buyPro(activity: android.app.Activity) = viewModelScope.launch {
         proBusy.value = true
         proError.value = null
         when (val r = com.workoutmaker.app.billing.purchaseAndVerify(activity, billing, repo)) {
-            is com.workoutmaker.app.billing.ProPurchaseResult.Success -> proActive.value = true
+            // Success only means the server VERIFIED the token, not that it granted
+            // Pro: a pending/on-hold purchase verifies fine and still returns "free".
+            // Re-read the plan columns rather than assuming (Settings does the same).
+            is com.workoutmaker.app.billing.ProPurchaseResult.Success -> {
+                proActive.value = repo.planStatus().isPro
+                if (!proActive.value) {
+                    proError.value = "Google Play is still confirming your purchase. " +
+                        "Pro switches on by itself once it clears."
+                }
+            }
             is com.workoutmaker.app.billing.ProPurchaseResult.Cancelled -> Unit
             is com.workoutmaker.app.billing.ProPurchaseResult.Failed -> proError.value = r.message
         }
         proBusy.value = false
     }
 
+    // First-week preview on the review step: the payoff moment. plan-week reads
+    // the profile from the DB, so save the in-progress answers first — safe,
+    // because OnboardingGate keys on OUR `complete` flag (set only in finish()),
+    // not the DB column, so the screen stays put. push=false: no watch spam
+    // before the athlete has even entered the app.
+    val previewWeek = MutableStateFlow<com.workoutmaker.app.data.PlanWeekResult?>(null)
+    val previewBusy = MutableStateFlow(false)
+    val previewError = MutableStateFlow<String?>(null)
+    fun previewFirstWeek() = viewModelScope.launch {
+        previewBusy.value = true
+        previewError.value = null
+        runCatching {
+            repo.saveProfile(profile.value.deriveLegacyFields())
+            repo.planWeek(
+                com.workoutmaker.app.data.PlanWeekRequest(
+                    start_date = java.time.LocalDate.now().toString(),
+                    push = false,
+                ),
+            )
+        }.onSuccess { previewWeek.value = it }
+            .onFailure {
+                com.workoutmaker.app.util.AppLog.w("onboarding", "preview failed", it)
+                previewError.value = com.workoutmaker.app.util.friendlyFnError(
+                    it, "Couldn't build the preview. Finish setup and plan from the app instead.",
+                )
+            }
+        previewBusy.value = false
+    }
+
     fun update(t: (TrainingProfile) -> TrainingProfile) { profile.value = t(profile.value) }
-    fun next() { step.value = (step.value + 1).coerceAtMost(2) }
-    fun back() { step.value = (step.value - 1).coerceAtLeast(0) }
+    fun goNext(lastIndex: Int) { step.value = (step.value + 1).coerceAtMost(lastIndex) }
+    fun goBack() { step.value = (step.value - 1).coerceAtLeast(0) }
+
+    // The goal race is stored in the races table (safe mid-onboarding), but the
+    // goal date/pace is set LOCALLY on the in-progress profile — NOT saved yet.
+    // Calling repo.setGoalRace here would flip onboarding_complete early and wipe
+    // the in-progress answers, so finish() is the single persist point.
+    fun addGoalRace(race: Race, setGoal: Boolean) = viewModelScope.launch {
+        runCatching { repo.addRace(race) }
+        if (setGoal) {
+            val pace = race.target?.takeIf { race.sport == "run" && it.isNotBlank() }
+            update { it.copy(goal_date = race.date, target_pace = pace ?: it.target_pace) }
+        }
+    }
 
     fun testKey(key: String) = viewModelScope.launch {
         busy.value = true
@@ -135,80 +263,169 @@ class OnboardingViewModel @Inject constructor(
         busy.value = false
     }
 
-    fun finish() = viewModelScope.launch {
+    // Set between a successful save and actually entering the app, so the
+    // celebration has a moment to play. OnboardingGate swaps this screen out the
+    // instant `complete` flips, which would otherwise kill the animation on the
+    // frame it started. Only ever set here, on an explicit Finish: a cold-start
+    // restore goes through recheck(), so returning users never see confetti.
+    val celebrating = MutableStateFlow(false)
+
+    // [celebrate] is false when skipping setup (nothing to celebrate) and when the
+    // user has animations turned off, in which case we enter the app immediately
+    // rather than make them wait out an animation they will never see.
+    fun finish(celebrate: Boolean = false) = viewModelScope.launch {
         busy.value = true
         finishStatus.value = null
-        runCatching { repo.saveProfile(profile.value) }
+        // Derive the single-value fields the live backend reads from the rich ones.
+        runCatching { repo.saveProfile(profile.value.deriveLegacyFields()) }
             // saveProfile flips onboarding_complete → enters the app. Entering
             // without the save would leave every downstream feature profileless.
-            .onSuccess { complete.value = true }
+            .onSuccess {
+                if (celebrate) {
+                    celebrating.value = true
+                    kotlinx.coroutines.delay(CELEBRATION_MS)
+                }
+                complete.value = true
+            }
             .onFailure { finishStatus.value = "Couldn't save your profile: ${it.message}. Check your connection and try again." }
         busy.value = false
+    }
+
+    private companion object {
+        // Long enough for Confetti's DURATION_MS burst to play out fully (it is
+        // deliberately shorter), short enough not to feel like a loading screen.
+        const val CELEBRATION_MS = 2_400L
     }
 }
 
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
 fun OnboardingScreen(vm: OnboardingViewModel = hiltViewModel()) {
-    val step by vm.step.collectAsStateSafe()
+    val stepIndex by vm.step.collectAsStateSafe()
     val profile by vm.profile.collectAsStateSafe()
     val busy by vm.busy.collectAsStateSafe()
     val finishStatus by vm.finishStatus.collectAsStateSafe()
 
-    androidx.compose.foundation.layout.Box(Modifier.fillMaxSize()) {
-    com.workoutmaker.app.ui.components.BreathingBackdrop(Modifier.fillMaxSize(), intensity = 0.6f)
-    Column(Modifier.fillMaxSize().padding(20.dp).verticalScroll(rememberScrollState())) {
-        Text("Welcome", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.Bold)
-        Text("Let's set up your coach", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
-        StepDots(step, total = 3, modifier = Modifier.padding(vertical = 14.dp))
+    val celebrating by vm.celebrating.collectAsStateSafe()
 
-        // Directional slide between steps, in the app's tween(240) language.
-        androidx.compose.animation.AnimatedContent(
-            targetState = step,
-            transitionSpec = {
-                val forward = targetState > initialState
-                val enter = androidx.compose.animation.slideInHorizontally(
-                    androidx.compose.animation.core.tween(240),
-                ) { if (forward) it / 3 else -it / 3 } + androidx.compose.animation.fadeIn(androidx.compose.animation.core.tween(240))
-                val exit = androidx.compose.animation.slideOutHorizontally(
-                    androidx.compose.animation.core.tween(240),
-                ) { if (forward) -it / 3 else it / 3 } + androidx.compose.animation.fadeOut(androidx.compose.animation.core.tween(150))
-                enter.togetherWith(exit)
-            },
-            label = "onboardingStep",
-        ) { s ->
-            Column {
-                when (s) {
-                    0 -> StepGoal(profile, vm)
-                    1 -> StepKey(vm)
-                    else -> StepConnect(vm)
-                }
-            }
-        }
+    val steps = remember(profile.sports, profile.goals_by_sport) { visibleSteps(profile) }
+    val idx = stepIndex.coerceIn(0, steps.lastIndex)
+    val current = steps[idx]
+    val animationsOn = com.workoutmaker.app.ui.components.rememberAnimationsEnabled()
 
-        Spacer16()
-        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-            if (step > 0) OutlinedButton(onClick = { vm.back() }, modifier = Modifier.weight(1f)) { Text("Back") }
-            if (step < 2) {
-                Button(onClick = { vm.next() }, modifier = Modifier.weight(1f)) { Text("Next") }
-            } else {
-                Button(onClick = { vm.finish() }, enabled = !busy, modifier = Modifier.weight(1f)) {
-                    Text(if (busy) "Saving…" else "Finish")
-                }
-            }
-        }
-        finishStatus?.let {
-            Text(
-                it,
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onErrorContainer,
-                modifier = Modifier.padding(top = 8.dp),
+    Box(Modifier.fillMaxSize()) {
+        com.workoutmaker.app.ui.components.BreathingBackdrop(Modifier.fillMaxSize(), intensity = 0.6f)
+        // Onboarding renders OUTSIDE MainScaffold (see AuthGate.OnboardingGate), so it
+        // inherits none of the Scaffold's window insets — and targetSdk 35 forces
+        // edge-to-edge. Inset the content only; the backdrop above stays full-bleed.
+        // Fixed header and fixed nav buttons; only the step content scrolls.
+        // Back/Next stop drifting with each step's height, and the thumb always
+        // finds them in the same place.
+        var confirmSkip by remember { mutableStateOf(false) }
+        if (confirmSkip) {
+            androidx.compose.material3.AlertDialog(
+                onDismissRequest = { confirmSkip = false },
+                title = { Text("Skip setup?") },
+                text = {
+                    Text(
+                        "Without your sports, week and goals, the coach plans from generic " +
+                            "defaults instead of you. You can finish setup anytime in Settings.",
+                    )
+                },
+                confirmButton = {
+                    TextButton(onClick = { confirmSkip = false; vm.finish() }) { Text("Skip anyway") }
+                },
+                dismissButton = {
+                    TextButton(onClick = { confirmSkip = false }) { Text("Keep going") }
+                },
             )
         }
-        if (step < 2) {
-            TextButton(onClick = { vm.finish() }, modifier = Modifier.fillMaxWidth()) { Text("Skip setup for now") }
+        Column(Modifier.fillMaxSize().safeDrawingPadding().padding(20.dp)) {
+            Row(verticalAlignment = Alignment.Top) {
+                Column(Modifier.weight(1f)) {
+                    Text(
+                        "STEP ${idx + 1} OF ${steps.size}",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.primary,
+                        fontWeight = FontWeight.Bold,
+                    )
+                    Text(stepTitle(current), style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
+                }
+                if (current.kind != ObStep.REVIEW) {
+                    TextButton(onClick = { confirmSkip = true }) { Text("Skip") }
+                }
+            }
+            StepDots(idx, total = steps.size, modifier = Modifier.padding(vertical = 14.dp))
+
+            // Directional slide between steps, in the app's tween(240) language.
+            // Each step scrolls independently (state is per AnimatedContent slot,
+            // so a new step always starts at the top).
+            AnimatedContent(
+                targetState = idx,
+                modifier = Modifier.weight(1f),
+                transitionSpec = {
+                    val forward = targetState > initialState
+                    val enter = slideInHorizontally(tween(240)) { if (forward) it / 3 else -it / 3 } + fadeIn(tween(240))
+                    val exit = slideOutHorizontally(tween(240)) { if (forward) -it / 3 else it / 3 } + fadeOut(tween(150))
+                    enter.togetherWith(exit)
+                },
+                label = "onboardingStep",
+            ) { i ->
+                Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState())) {
+                    val spec = steps.getOrElse(i) { steps.last() }
+                    when (spec.kind) {
+                        ObStep.WELCOME -> StepWelcome(vm)
+                        ObStep.APPEARANCE -> StepAppearance(vm)
+                        ObStep.PERSONAL -> StepPersonal(profile, vm)
+                        ObStep.SPORTS -> StepSports(profile, vm)
+                        ObStep.ACTIVITY -> StepActivity(spec.sport ?: "strength", profile, vm)
+                        ObStep.PERFORMANCE -> StepPerformance(profile, vm)
+                        ObStep.RACE -> StepRace(profile, vm)
+                        ObStep.AVAILABILITY -> StepAvailability(profile, vm)
+                        ObStep.EQUIPMENT -> StepEquipment(profile, vm)
+                        ObStep.INJURIES -> StepInjuries(profile, vm)
+                        ObStep.COACH -> StepKey(vm)
+                        ObStep.CONNECT -> StepConnect(vm)
+                        ObStep.REVIEW -> StepReview(profile, vm)
+                    }
+                    Spacer16()
+                }
+            }
+
+            finishStatus?.let {
+                Text(
+                    it,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onErrorContainer,
+                    modifier = Modifier.padding(vertical = 4.dp),
+                )
+            }
+            Row(
+                Modifier.fillMaxWidth().padding(top = 8.dp),
+                horizontalArrangement = Arrangement.spacedBy(10.dp),
+            ) {
+                if (idx > 0) OutlinedButton(onClick = { vm.goBack() }, modifier = Modifier.weight(1f)) { Text("Back") }
+                if (current.kind != ObStep.REVIEW) {
+                    Button(onClick = { vm.goNext(steps.lastIndex) }, modifier = Modifier.weight(1f)) { Text("Next") }
+                } else {
+                    Button(
+                        onClick = { vm.finish(celebrate = animationsOn) },
+                        enabled = !busy,
+                        modifier = Modifier.weight(1f),
+                    ) {
+                        Text(if (busy) "Saving…" else "Finish")
+                    }
+                }
+            }
         }
-    }
+        // Above the content and full-bleed, so it falls past the insets too.
+        // The buzz belongs to the celebration moment, not the drawing: with
+        // animations off, finish() never celebrates, so neither fires.
+        val ctx = androidx.compose.ui.platform.LocalContext.current
+        LaunchedEffect(celebrating) {
+            if (celebrating) com.workoutmaker.app.notify.vibrateCelebrate(ctx)
+        }
+        com.workoutmaker.app.ui.components.Confetti(playing = celebrating)
     }
 }
 
@@ -236,35 +453,426 @@ private fun StepDots(step: Int, total: Int, modifier: Modifier = Modifier) {
     }
 }
 
-@Composable private fun Spacer16() = androidx.compose.foundation.layout.Spacer(Modifier.padding(8.dp))
+@Composable private fun Spacer16() = Spacer(Modifier.padding(8.dp))
+
+// Frameless step body: content flows on the backdrop with steady spacing (no
+// boxing card, no repeated title — the header above already names the step).
+@Composable
+private fun StepColumn(content: @Composable ColumnScope.() -> Unit) {
+    Column(verticalArrangement = Arrangement.spacedBy(14.dp), content = content)
+}
+
+// --- Steps -----------------------------------------------------------------
+
+@Composable
+private fun StepWelcome(vm: OnboardingViewModel) {
+    val s by vm.appSettings.collectAsStateSafe()
+    StepColumn {
+        Text(
+            "Let's set up your coach",
+            style = MaterialTheme.typography.titleMedium,
+            fontWeight = FontWeight.SemiBold,
+        )
+        Text(
+            "A few quick steps and your AI coach will plan training that fits your goals, " +
+                "your week and your equipment. Everything here can be changed later in Settings.",
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        // The theme picker rides along here (it used to be a whole step): one
+        // fewer screen between the athlete and the questions that matter.
+        AppearancePicker(
+            themeMode = s.themeMode,
+            palette = s.themePalette,
+            onMode = { vm.setThemeMode(it) },
+            onPalette = { vm.setThemePalette(it) },
+        )
+    }
+}
+
+@Composable
+private fun StepAppearance(vm: OnboardingViewModel) {
+    val s by vm.appSettings.collectAsStateSafe()
+    StepColumn {
+        AppearancePicker(
+            themeMode = s.themeMode,
+            palette = s.themePalette,
+            onMode = { vm.setThemeMode(it) },
+            onPalette = { vm.setThemePalette(it) },
+        )
+    }
+}
+
+@Composable
+private fun StepPersonal(profile: TrainingProfile, vm: OnboardingViewModel) {
+    val year = java.time.LocalDate.now().year
+    StepColumn {
+        Text(
+            "This tunes training load, recovery and intensity to you. All optional, but it helps the coach calibrate.",
+            style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        OutlinedTextField(
+            profile.display_name ?: "",
+            { v -> vm.update { it.copy(display_name = v.ifBlank { null }) } },
+            label = { Text("Your name") },
+            placeholder = { Text("What should the coach call you?") },
+            singleLine = true, modifier = Modifier.fillMaxWidth(),
+        )
+        // "Other" is stored but the backend only uses M/F for demographics, so
+        // it reads as "not stated" downstream — the honest treatment.
+        ChipGroup("Sex", listOf("Male", "Female", "Other"), profile.sex?.replaceFirstChar { c -> c.uppercase() }) { s ->
+            vm.update { it.copy(sex = if (it.sex == s.lowercase()) null else s.lowercase()) }
+        }
+        // Single-word labels + unit suffixes keep all three boxes the same height.
+        // Soft validation: an out-of-range value shows red but never blocks —
+        // the guard is against typos (SetSanity philosophy), not the athlete.
+        val ageBad = profile.birth_year?.let { (year - it) !in 10..100 } == true
+        val heightBad = profile.height_cm?.let { it !in 100..230 } == true
+        val weightBad = profile.weight_kg?.let { it !in 30..250 } == true
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            OutlinedTextField(
+                profile.birth_year?.let { (year - it).toString() } ?: "",
+                { v -> vm.update { it.copy(birth_year = v.toIntOrNull()?.let { a -> year - a }) } },
+                label = { Text("Age") }, singleLine = true, isError = ageBad,
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number), modifier = Modifier.weight(1f),
+            )
+            OutlinedTextField(
+                profile.height_cm?.toString() ?: "", { v -> vm.update { it.copy(height_cm = v.toIntOrNull()) } },
+                label = { Text("Height") }, suffix = { Text("cm") }, singleLine = true, isError = heightBad,
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number), modifier = Modifier.weight(1f),
+            )
+            OutlinedTextField(
+                profile.weight_kg?.toString() ?: "", { v -> vm.update { it.copy(weight_kg = v.toIntOrNull()) } },
+                label = { Text("Weight") }, suffix = { Text("kg") }, singleLine = true, isError = weightBad,
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number), modifier = Modifier.weight(1f),
+            )
+        }
+        if (ageBad || heightBad || weightBad) {
+            Text(
+                "That looks like a typo, double-check the highlighted field.",
+                style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error,
+            )
+        }
+    }
+}
+
+@Composable
+private fun StepSports(profile: TrainingProfile, vm: OnboardingViewModel) {
+    StepColumn {
+        SportSelector(profile.sports) { s -> vm.update { it.copy(sports = it.sports.toggled(s)) } }
+    }
+}
+
+// One activity's own questions: its goal(s) + level (+ split for the gym).
+@Composable
+private fun StepActivity(sport: String, profile: TrainingProfile, vm: OnboardingViewModel) {
+    StepColumn {
+        SportGoalsLevel(
+            sport = sport,
+            goals = profile.goals_by_sport[sport].orEmpty(),
+            level = profile.experience_by_sport[sport],
+            splitStyle = profile.split_style,
+            onGoalToggle = { g -> vm.update { it.copy(goals_by_sport = it.goals_by_sport.toggleIn(sport, g)) } },
+            onLevel = { lvl -> vm.update { it.copy(experience_by_sport = it.experience_by_sport + (sport to lvl)) } },
+            onSplit = { s -> vm.update { it.copy(split_style = if (s == "Auto") null else s) } },
+        )
+    }
+}
+
+@Composable
+private fun StepPerformance(profile: TrainingProfile, vm: OnboardingViewModel) {
+    val intervalsConnected = (vm.intervalsStatus.collectAsStateSafe().value ?: "").startsWith("\u2713")
+    StepColumn {
+        PerformanceEditor(
+            profile = profile,
+            intervalsConnected = intervalsConnected,
+            onUpdate = { t -> vm.update(t) },
+        )
+    }
+}
+
+@Composable
+private fun StepRace(profile: TrainingProfile, vm: OnboardingViewModel) {
+    var showAdd by remember { mutableStateOf(false) }
+    if (showAdd) AddRaceDialog(onClose = { showAdd = false }) { race, setGoal ->
+        vm.addGoalRace(race, setGoal); showAdd = false
+    }
+    StepColumn {
+        Text(
+            "Optional. Set the event you're building toward and your A-goal drives periodization and the taper. You can add or change it later in Settings.",
+            style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        val goalDate = profile.goal_date?.let { runCatching { java.time.LocalDate.parse(it) }.getOrNull() }
+        if (goalDate != null) {
+            // The race as a real card: date, phase countdown, target pace, and
+            // clear Change/Remove actions instead of one ambiguous button.
+            val phase = com.workoutmaker.app.data.Periodization.phaseFor(goalDate, java.time.LocalDate.now())
+            SectionCard {
+                com.workoutmaker.app.ui.components.SectionLabel("YOUR GOAL RACE")
+                Text(
+                    goalDate.format(java.time.format.DateTimeFormatter.ofPattern("EEE d MMM yyyy")),
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.SemiBold,
+                )
+                Text(
+                    phase.weeksToGoal?.let { "${phase.name} phase · $it week${if (it == 1) "" else "s"} to go" }
+                        ?: "Race day has passed",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.primary,
+                )
+                profile.target_pace?.let {
+                    Text(
+                        "Target pace $it",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    OutlinedButton(onClick = { showAdd = true }, modifier = Modifier.weight(1f)) { Text("Change") }
+                    TextButton(onClick = { vm.update { it.copy(goal_date = null, target_pace = null) } }) {
+                        Text("Remove")
+                    }
+                }
+            }
+        } else {
+            OutlinedButton(onClick = { showAdd = true }, modifier = Modifier.fillMaxWidth()) {
+                Text("Add goal race")
+            }
+        }
+    }
+}
 
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
-private fun StepGoal(profile: TrainingProfile, vm: OnboardingViewModel) {
-    SectionCard(title = "Your goal") {
-        Chips("What are you training for?", GOALS, profile.goal) { g -> vm.update { it.copy(goal = g) } }
-        Chips("Experience", LEVELS, profile.experience) { e -> vm.update { it.copy(experience = e) } }
-        Text("Days you can train", style = MaterialTheme.typography.labelLarge)
+private fun StepAvailability(profile: TrainingProfile, vm: OnboardingViewModel) {
+    StepColumn {
+        WeeklyAvailabilityEditor(profile.day_availability) { list -> vm.update { it.copy(day_availability = list) } }
+        // Weekly load target as effort chips, priced from the athlete's OWN
+        // minutes (Periodization.availabilityCeiling mirrors the server's
+        // clamp) — so the number is always achievable and never TSS jargon.
+        val minutes = profile.day_availability.sumOf { it.max_minutes }
+        com.workoutmaker.app.data.Periodization.availabilityCeiling(minutes)?.let { ceiling ->
+            Text(
+                "How hard should your weeks be?",
+                style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.SemiBold,
+            )
+            FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                com.workoutmaker.app.data.Periodization.Effort.entries.forEach { e ->
+                    val target = e.targetFor(ceiling)
+                    FilterChip(
+                        selected = profile.weekly_tss_target == target,
+                        onClick = { vm.update { it.copy(weekly_tss_target = target) } },
+                        label = { Text("${e.label} · ~$target TSS") },
+                    )
+                }
+            }
+            Text(
+                "Based on your ${minutes / 60}h ${minutes % 60}min week. The coach plans toward this; change it anytime in Settings.",
+                style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            // Progression lives right under the effort choice so the chart can
+            // show what THAT choice does over the weeks — one story, in order.
+            PeriodizationControl(
+                periodized = profile.periodized,
+                onChange = { p -> vm.update { it.copy(periodized = p) } },
+                weeklyTssTarget = profile.weekly_tss_target,
+            )
+        }
+    }
+}
+
+@Composable
+private fun StepEquipment(profile: TrainingProfile, vm: OnboardingViewModel) {
+    StepColumn {
+        Text(
+            "Pick what you can train with, the coach only prescribes lifts your kit supports.",
+            style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        EquipmentSelector(profile.equipment_list) { e -> vm.update { it.copy(equipment_list = it.equipment_list.toggled(e)) } }
+    }
+}
+
+// Injuries / niggles the coach should train around. Quick-add chips append to
+// the free text; tapping a present chip removes it.
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun StepInjuries(profile: TrainingProfile, vm: OnboardingViewModel) {
+    StepColumn {
+        Text(
+            "Anything the coach should train around? Injuries, niggles or areas to protect. " +
+                "The coach avoids loading these and picks safer alternatives.",
+            style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        val current = profile.injury_history ?: ""
         FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-            DAYS.forEach { d ->
+            INJURY_AREAS.forEach { area ->
+                val severity = injurySeverity(current, area)
                 FilterChip(
-                    selected = profile.days.contains(d),
-                    onClick = { vm.update { p -> p.copy(days = if (p.days.contains(d)) p.days - d else p.days + d) } },
-                    label = { Text(d) },
+                    selected = severity != null,
+                    onClick = { vm.update { it.copy(injury_history = toggleInjury(it.injury_history, area)) } },
+                    label = { Text(if (severity != null && severity.isNotEmpty()) "$area · $severity" else area) },
                 )
             }
         }
-        Text("Session length", style = MaterialTheme.typography.labelLarge)
-        FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-            DURATIONS.forEach { d ->
-                FilterChip(selected = profile.session_duration == d, onClick = { vm.update { it.copy(session_duration = d) } }, label = { Text("${d}m") })
-            }
-        }
-        Chips("Equipment", EQUIPMENT, profile.equipment) { e -> vm.update { it.copy(equipment = e) } }
-        OutlinedTextField(profile.goal_date ?: "", { v -> vm.update { it.copy(goal_date = v) } },
-            label = { Text("Goal race date YYYY-MM-DD (optional)") }, modifier = Modifier.fillMaxWidth())
+        Text(
+            "Tap an area again to set how serious it is; a fourth tap removes it.",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        OutlinedTextField(
+            profile.injury_history ?: "",
+            { v -> vm.update { it.copy(injury_history = v.ifBlank { null }) } },
+            label = { Text("Injuries / notes (optional)") },
+            modifier = Modifier.fillMaxWidth(),
+        )
     }
 }
+
+// Structured-ish injuries in the same free-text field the backend already
+// reads: each tap cycles area → "(mild)" → "(moderate)" → "(serious)" → gone.
+// The parenthetical enriches the coach prompts (profileFactsBlock renders it)
+// without breaking the safety engine's keyword matching on the area name.
+private val INJURY_SEVERITIES = listOf("", "mild", "moderate", "serious")
+
+/** Current severity for [area]: null = not present, "" = present unqualified. */
+internal fun injurySeverity(current: String, area: String): String? {
+    val part = current.split(",").map { it.trim() }
+        .firstOrNull { it.startsWith(area, ignoreCase = true) } ?: return null
+    return Regex("""\((mild|moderate|serious)\)""", RegexOption.IGNORE_CASE)
+        .find(part)?.groupValues?.get(1)?.lowercase() ?: ""
+}
+
+internal fun toggleInjury(current: String?, area: String): String? {
+    val parts = (current ?: "").split(",").map { it.trim() }.filter { it.isNotEmpty() }
+    val severity = injurySeverity(current ?: "", area)
+    val rest = parts.filterNot { it.startsWith(area, ignoreCase = true) }
+    val next = when (severity) {
+        null -> rest + area                              // add, unqualified
+        "serious" -> rest                                // cycle past the end: remove
+        else -> {
+            val idx = INJURY_SEVERITIES.indexOf(severity)
+            rest + "$area (${INJURY_SEVERITIES[idx + 1]})"
+        }
+    }
+    return next.joinToString(", ").ifBlank { null }
+}
+
+@Composable
+private fun StepReview(profile: TrainingProfile, vm: OnboardingViewModel) {
+    StepColumn {
+        Text("You're all set", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+        profile.display_name?.takeIf { it.isNotBlank() }?.let { ReviewLine("Name", it) }
+        val trained = SPORTS.filter { profile.sports.contains(it) }
+        if (trained.isEmpty()) {
+            ReviewLine("Activities", "-")
+        } else trained.forEach { sport ->
+            val goals = profile.goals_by_sport[sport].orEmpty().joinToString(", ")
+            val level = profile.experience_by_sport[sport]
+            val detail = listOfNotNull(goals.ifBlank { null }, level).joinToString(" · ").ifBlank { "-" }
+            ReviewLine(sportLabel(sport), detail)
+        }
+        if (profile.day_availability.isNotEmpty()) {
+            val q = availabilityToQuestions(profile.day_availability)
+            val summary = "${q.daysPerWeek} days/wk · ${durationLabel(q.typicalMin)}" +
+                (q.longDays.takeIf { it.isNotEmpty() }
+                    ?.let { " · long ${it.joinToString("+")} ${durationLabel(q.longMin)}" } ?: "")
+            ReviewLine("Availability", summary)
+        }
+        val numbers = listOfNotNull(
+            profile.threshold_pace_per_km?.let { "threshold $it/km" },
+            profile.ftp?.let { "FTP ${it}w" },
+            profile.css_per_100m?.let { "CSS $it/100m" },
+            profile.lthr?.let { "LTHR $it" },
+            profile.starting_lifts.takeIf { it.isNotEmpty() }?.let { "${it.size} lifts" },
+        )
+        if (numbers.isNotEmpty()) ReviewLine("Your numbers", numbers.joinToString(" · "))
+        profile.weekly_tss_target?.let { ReviewLine("Weekly load", "~$it TSS") }
+        if (profile.sports.contains("strength")) {
+            ReviewLine("Progression", if (profile.periodized) "Periodized" else "Steady")
+        }
+        if (profile.equipment_list.isNotEmpty()) {
+            ReviewLine("Equipment", profile.equipment_list.joinToString(", "))
+        }
+        profile.injury_history?.takeIf { it.isNotBlank() }?.let { ReviewLine("Injuries", it) }
+        profile.goal_date?.let { ReviewLine("Goal race", it) }
+
+        // The payoff: build the actual first week from these answers, right
+        // here — setup stops being a form and becomes a result.
+        val preview by vm.previewWeek.collectAsStateSafe()
+        val previewBusy by vm.previewBusy.collectAsStateSafe()
+        val previewError by vm.previewError.collectAsStateSafe()
+        when {
+            preview != null -> SectionCard {
+                com.workoutmaker.app.ui.components.SectionLabel("YOUR FIRST WEEK")
+                preview!!.week_focus?.let {
+                    Text(it, style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.SemiBold)
+                }
+                preview!!.days.forEach { d ->
+                    Row(Modifier.fillMaxWidth().padding(vertical = 2.dp), verticalAlignment = Alignment.CenterVertically) {
+                        Text(
+                            d.weekday,
+                            Modifier.width(44.dp),
+                            style = MaterialTheme.typography.labelMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                        Text(
+                            if (d.type == "rest") "Rest" else d.title,
+                            Modifier.weight(1f),
+                            style = MaterialTheme.typography.bodySmall,
+                            maxLines = 1,
+                        )
+                        if (d.tss > 0) {
+                            Text(
+                                "${d.tss} TSS",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                    }
+                }
+                Text(
+                    "Already on your calendar. Tap Finish and start training.",
+                    style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.primary,
+                )
+            }
+            previewBusy -> Row(verticalAlignment = Alignment.CenterVertically) {
+                androidx.compose.material3.CircularProgressIndicator(
+                    Modifier.width(18.dp).height(18.dp), strokeWidth = 2.dp,
+                )
+                Text(
+                    "Building your first week (about 30 seconds)…",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(start = 10.dp),
+                )
+            }
+            else -> {
+                previewError?.let {
+                    Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
+                }
+                OutlinedButton(
+                    onClick = { vm.previewFirstWeek() },
+                    modifier = Modifier.fillMaxWidth(),
+                ) { Text("Build my first week now") }
+            }
+        }
+        Text(
+            "Tap Finish to save. You can fine-tune everything later in Settings.",
+            style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.padding(top = 6.dp),
+        )
+    }
+}
+
+@Composable
+private fun ReviewLine(label: String, value: String) {
+    Row(Modifier.fillMaxWidth().padding(vertical = 2.dp)) {
+        Text(label, Modifier.width(96.dp), style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        Text(value, style = MaterialTheme.typography.bodyMedium, modifier = Modifier.weight(1f))
+    }
+}
+
+// --- Coach AI (Pro / bring-your-own key) + Intervals, unchanged from before -
 
 @Composable
 private fun StepKey(vm: OnboardingViewModel) {
@@ -382,14 +990,11 @@ private fun StepConnect(vm: OnboardingViewModel) {
         status?.let { Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.primary) }
         Text("Tip: you can also sync HRV/sleep from your phone via Health Connect in Settings.",
             style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-    }
-}
-
-@OptIn(ExperimentalLayoutApi::class)
-@Composable
-private fun Chips(label: String, options: List<String>, selected: String?, onSelect: (String) -> Unit) {
-    Text(label, style = MaterialTheme.typography.labelLarge)
-    FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-        options.forEach { o -> FilterChip(selected = selected == o, onClick = { onSelect(o) }, label = { Text(o) }) }
+        Text(
+            "Later, when you generate an outdoor workout, the app may ask for coarse location once, " +
+                "only to factor in today's weather (heat, rain, wind). It's optional and everything " +
+                "works without it.",
+            style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
     }
 }

@@ -122,6 +122,35 @@ class PlayBillingGateway @Inject constructor(
 
     override val tipsSupported = true
 
+    // One query for all three tips, so the Support section fills in with a
+    // single round trip. formattedPrice is already localized by Play.
+    override suspend fun tipPrices(): Map<String, String> {
+        if (!connect()) return emptyMap()
+        val params = QueryProductDetailsParams.newBuilder()
+            .setProductList(
+                TIP_PRODUCT_IDS.map {
+                    QueryProductDetailsParams.Product.newBuilder()
+                        .setProductId(it)
+                        .setProductType(BillingClient.ProductType.INAPP)
+                        .build()
+                },
+            )
+            .build()
+        return suspendCancellableCoroutine { cont ->
+            client.queryProductDetailsAsync(params) { result, details ->
+                if (!cont.isActive) return@queryProductDetailsAsync
+                if (result.responseCode != BillingClient.BillingResponseCode.OK) {
+                    AppLog.w("billing", "tip price query failed: ${result.debugMessage}")
+                }
+                cont.resume(
+                    details.mapNotNull { d ->
+                        d.oneTimePurchaseOfferDetails?.formattedPrice?.let { d.productId to it }
+                    }.toMap(),
+                )
+            }
+        }
+    }
+
     private suspend fun tipProductDetails(productId: String): ProductDetails? {
         val params = QueryProductDetailsParams.newBuilder()
             .setProductList(

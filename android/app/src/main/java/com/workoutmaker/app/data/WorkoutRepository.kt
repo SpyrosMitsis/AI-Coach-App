@@ -6,6 +6,7 @@ import io.github.jan.supabase.gotrue.providers.builtin.Email
 import io.github.jan.supabase.functions.functions
 import io.github.jan.supabase.postgrest.postgrest
 import io.github.jan.supabase.postgrest.query.Order
+import io.github.jan.supabase.postgrest.rpc
 import io.ktor.client.HttpClient
 import io.ktor.client.engine.okhttp.OkHttp
 import io.ktor.client.call.body
@@ -44,7 +45,16 @@ class WorkoutRepository @Inject constructor(
     private val json = Json { ignoreUnknownKeys = true; encodeDefaults = true }
 
     // Separate raw ktor client for SSE streaming (functions SDK buffers the body).
-    private val streamingHttp = HttpClient(OkHttp)
+    // Needs its own timeouts: a bare HttpClient(OkHttp) inherits OkHttp's 10s
+    // readTimeout, which killed coach turns mid-think. The server heartbeats the
+    // stream, so a quiet socket past this really is a dead one.
+    private val streamingHttp = HttpClient(OkHttp) {
+        install(io.ktor.client.plugins.HttpTimeout) {
+            requestTimeoutMillis = 150_000
+            socketTimeoutMillis = 150_000
+            connectTimeoutMillis = 15_000
+        }
+    }
 
     val auth get() = supabase.auth
 
@@ -504,7 +514,14 @@ class WorkoutRepository @Inject constructor(
     // Wide window so the diagnostics screen can total real 30-day spend; the UI
     // aggregates client-side. 500 recent rows is ample for one user.
     suspend fun generationLogs(limit: Long = 500): List<GenerationLogRow> =
-        supabase.postgrest.from("generation_logs").select {
+        supabase.postgrest.from("generation_logs").select(
+            // Explicit columns: the table also stores full prompts + raw model
+            // output — hundreds of KB the diagnostics screen never shows.
+            io.github.jan.supabase.postgrest.query.Columns.list(
+                "created_at", "feature", "provider", "model", "prompt_tokens",
+                "completion_tokens", "parsed_ok", "error", "estimated_cost_usd",
+            ),
+        ) {
             order("created_at", Order.DESCENDING)
             limit(limit)
         }.decodeList()
@@ -663,10 +680,22 @@ class WorkoutRepository @Inject constructor(
             mapOf(
                 "onboarding" to onboarding,
                 "onboarding_complete" to kotlinx.serialization.json.JsonPrimitive(true),
+                // Mirror the name to the top-level column the backend already reads.
+                "display_name" to (profile.display_name?.let { JsonPrimitive(it) }
+                    ?: kotlinx.serialization.json.JsonNull),
             ),
         ) { filter { eq("id", uid()) } }
         invalidateProfileCache()
     }
+
+    // Tells "no account yet" apart from "wrong password" after a failed sign-in.
+    // Backed by a SECURITY DEFINER RPC granted to anon; null when undeterminable.
+    suspend fun accountExists(email: String): Boolean? = runCatching {
+        supabase.postgrest.rpc(
+            "account_exists",
+            kotlinx.serialization.json.buildJsonObject { put("p_email", email.trim()) },
+        ).decodeAs<Boolean>()
+    }.logFailure("accountExists").getOrNull()
 
     // --- Coach knowledge (durable injuries/equipment/preferences) -----------
     suspend fun loadKnowledge(): String =
@@ -1098,11 +1127,12 @@ class WorkoutRepository @Inject constructor(
 
     // Edge-function failures throw with the JSON error body in the message —
     // pull out the human-readable part ({"error": "..."} / {"detail": "..."}).
-    private fun fnErrorMessage(t: Throwable): String {
-        val m = t.message ?: return "request failed"
-        return Regex("\"(?:error|detail|message)\"\\s*:\\s*\"([^\"]+)\"")
-            .find(m)?.groupValues?.get(1) ?: m.take(200)
-    }
+    // Keeps the truncated raw text as a fallback: this feeds a generation error
+    // record, where the transport detail is worth having.
+    private fun fnErrorMessage(t: Throwable): String =
+        com.workoutmaker.app.util.serverErrorText(t)
+            ?: t.message?.take(200)
+            ?: "request failed"
 
     private fun uid(): String = supabase.auth.currentUserOrNull()?.id ?: ""
 

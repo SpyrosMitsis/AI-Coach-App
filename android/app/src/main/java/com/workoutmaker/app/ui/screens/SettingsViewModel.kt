@@ -81,7 +81,9 @@ import com.workoutmaker.app.data.TestKeyResponse
 import com.workoutmaker.app.data.TrainingProfile
 import com.workoutmaker.app.data.WeightUnit
 import com.workoutmaker.app.data.WorkoutRepository
+import com.workoutmaker.app.data.deriveLegacyFields
 import com.workoutmaker.app.data.format
+import com.workoutmaker.app.data.hydrateRichFromLegacy
 import com.workoutmaker.app.ui.collectAsStateSafe
 import com.workoutmaker.app.ui.components.ScreenScaffold
 import com.workoutmaker.app.ui.components.SectionCard
@@ -92,18 +94,7 @@ import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import javax.inject.Inject
 
-internal val GOALS = listOf(
-    "5K pace", "10K pace", "Half Marathon", "Marathon pace",
-    "General fitness", "Muscle gain", "Body recomposition", "Hybrid athlete",
-)
-
-internal val EQUIPMENT = listOf("Bodyweight", "Dumbbells", "Full gym", "Barbell + rack")
-
 internal val DAYS = listOf("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun")
-
-internal val DURATIONS = listOf(30, 45, 60, 90)
-
-internal val DURATIONS_MAX = listOf(45, 60, 75, 90, 120)
 
 internal val LEVELS = listOf("Beginner", "Intermediate", "Advanced")
 
@@ -113,6 +104,84 @@ internal val SPLIT_STYLES = listOf("Auto", "Full body", "Upper / lower", "Push /
 internal val SPORTS = listOf("run", "ride", "swim", "strength")
 
 internal val BAR_WEIGHTS = listOf(20.0, 15.0, 10.0, 7.0)
+
+// --- Richer onboarding catalogs (shared by onboarding + Settings) ----------
+
+// Goals are asked per activity: pick an activity, then its goal(s) + level.
+internal val GOALS_BY_SPORT: Map<String, List<String>> = mapOf(
+    "run" to listOf("5K", "10K", "Half Marathon", "Marathon", "Run faster", "General fitness"),
+    "ride" to listOf("Build FTP / power", "Go longer", "Racing", "General fitness"),
+    "swim" to listOf("Faster times", "Swim further", "Technique", "General fitness"),
+    "strength" to listOf("Build muscle", "Get stronger", "Lose fat", "Body recomposition", "General fitness"),
+)
+
+// Goals that warrant a dated goal-race entry (drives the goal-race step).
+internal val RACE_GOALS = setOf("5K", "10K", "Half Marathon", "Marathon", "Racing", "Faster times")
+
+// Experience is tracked per activity, with sport-appropriate rungs.
+internal val EXPERIENCE_BY_SPORT: Map<String, List<String>> = mapOf(
+    "strength" to listOf("Beginner", "Novice", "Intermediate", "Advanced"),
+    "run" to listOf("Never ran", "Beginner", "Intermediate", "Experienced"),
+    "ride" to listOf("Beginner", "Intermediate", "Advanced"),
+    "swim" to listOf("Beginner", "Intermediate", "Advanced"),
+)
+
+// Multi-select equipment; only shown when the athlete lifts.
+internal val EQUIPMENT_ITEMS = listOf(
+    "Full gym", "Dumbbells", "Barbell", "Bench", "Squat rack",
+    "Resistance bands", "Pull-up bar", "Kettlebells", "Machines",
+)
+
+// Quick-add chips for the onboarding injuries step (appended to the free text).
+internal val INJURY_AREAS = listOf(
+    "Knee", "Lower back", "Shoulder", "Hamstring", "Achilles", "Wrist",
+)
+
+// --- Weekly availability, "few questions" model ----------------------------
+internal val DAYS_PER_WEEK = listOf(2, 3, 4, 5, 6)
+internal val TYPICAL_MINUTES = listOf(45, 60, 90)
+internal val LONG_MINUTES = listOf(90, 120, 180)
+
+// A sensible weekday spread for a chosen days-per-week count. The optional long
+// day is forced into whichever pattern applies (see buildAvailability).
+internal val DAY_PATTERNS: Map<Int, List<String>> = mapOf(
+    2 to listOf("Tue", "Sat"),
+    3 to listOf("Mon", "Wed", "Fri"),
+    4 to listOf("Mon", "Tue", "Thu", "Sat"),
+    5 to listOf("Mon", "Tue", "Wed", "Fri", "Sat"),
+    6 to listOf("Mon", "Tue", "Wed", "Thu", "Fri", "Sat"),
+)
+
+// Human labels for the canonical sport keys (onboarding-facing).
+internal fun sportLabel(key: String): String = when (key) {
+    "run" -> "Running"
+    "ride" -> "Cycling"
+    "swim" -> "Swimming"
+    "strength" -> "Gym"
+    else -> key.replaceFirstChar { it.uppercase() }
+}
+
+// Equipment step is only relevant when the athlete trains in the gym.
+internal fun sportNeedsEquipment(sports: List<String>): Boolean = sports.contains("strength")
+
+// The goal-race step appears when any activity has a race-shaped goal.
+internal fun shouldAskGoalRace(p: TrainingProfile): Boolean =
+    p.goals_by_sport.values.any { goals -> goals.any { it in RACE_GOALS } }
+
+// Best-effort migration: assign each legacy flat goal to the activity whose
+// catalog lists it, so an existing account pre-fills the per-activity editors.
+internal fun legacyGoalsBySport(p: TrainingProfile): Map<String, List<String>> {
+    val flat = p.goals.ifEmpty {
+        p.goal?.split(" + ")?.map { it.trim() }?.filter { it.isNotBlank() } ?: emptyList()
+    }
+    if (flat.isEmpty()) return emptyMap()
+    val out = mutableMapOf<String, MutableList<String>>()
+    flat.forEach { g ->
+        GOALS_BY_SPORT.entries.firstOrNull { (_, list) -> list.any { it.equals(g, ignoreCase = true) } }
+            ?.let { (sport, list) -> out.getOrPut(sport) { mutableListOf() }.add(list.first { it.equals(g, ignoreCase = true) }) }
+    }
+    return out.mapValues { it.value.toList() }
+}
 
 @HiltViewModel
 class SettingsViewModel @Inject constructor(
@@ -165,6 +234,15 @@ class SettingsViewModel @Inject constructor(
     val tipsSupported: Boolean get() = billing.tipsSupported
     val tipBusy = MutableStateFlow(false)
     val tipStatus = MutableStateFlow<String?>(null)
+
+    // Play's real localized prices, filled in once Play answers. Starts empty so
+    // the UI shows TIP_FALLBACK_PRICES rather than a blank button.
+    val tipPrices = MutableStateFlow<Map<String, String>>(emptyMap())
+
+    fun loadTipPrices() = viewModelScope.launch {
+        if (!billing.tipsSupported || tipPrices.value.isNotEmpty()) return@launch
+        tipPrices.value = runCatching { billing.tipPrices() }.getOrDefault(emptyMap())
+    }
 
     fun sendTip(activity: android.app.Activity, productId: String) = viewModelScope.launch {
         tipBusy.value = true
@@ -283,6 +361,10 @@ class SettingsViewModel @Inject constructor(
 
     val autoPlan = MutableStateFlow(false)
     val logs = MutableStateFlow<List<com.workoutmaker.app.data.GenerationLogRow>>(emptyList())
+    fun reloadLogs() = viewModelScope.launch {
+        runCatching { repo.generationLogs() }.onSuccess { logs.value = it }
+            .onFailure { com.workoutmaker.app.util.AppLog.w("settings", "generationLogs failed", it) }
+    }
 
     // Durable coaching knowledge (injuries, equipment, preferences).
     val knowledge = MutableStateFlow("")
@@ -308,7 +390,12 @@ class SettingsViewModel @Inject constructor(
     val customPrice = MutableStateFlow<Pair<Double?, Double?>>(null to null)
 
     fun load() = viewModelScope.launch {
-        repo.loadProfile()?.let { profile.value = it }
+        // Pre-populate the richer editors from an existing account's single-value profile.
+        repo.loadProfile()?.let { p ->
+            val hydrated = p.hydrateRichFromLegacy()
+            profile.value = if (hydrated.goals_by_sport.isEmpty())
+                hydrated.copy(goals_by_sport = legacyGoalsBySport(hydrated)) else hydrated
+        }
         runCatching { repo.planStatus() }.onSuccess { planStatus.value = it }
         proAvailable.value = billing.supported && repo.serverHostedAi()
         autoPlan.value = repo.autoPlanEnabled()
@@ -317,6 +404,7 @@ class SettingsViewModel @Inject constructor(
         runCatching { repo.loadMemory() }.onSuccess { memory.value = it }
         runCatching { repo.loadSoul() }.onSuccess { soul.value = it }
         runCatching { repo.generationLogs() }.onSuccess { logs.value = it }
+            .onFailure { com.workoutmaker.app.util.AppLog.w("settings", "generationLogs failed", it) }
         runCatching { repo.races() }.onSuccess { races.value = it }
         runCatching { repo.thresholdTests() }.onSuccess { thresholdTests.value = it }
         runCatching { repo.intervalsConnection() }.onSuccess { intervalsSaved.value = it }
@@ -423,7 +511,8 @@ class SettingsViewModel @Inject constructor(
 
     fun saveProfile() = viewModelScope.launch {
         busy.value = true
-        runCatching { repo.saveProfile(profile.value) }
+        // Derive the single-value fields the live backend reads from the rich ones.
+        runCatching { repo.saveProfile(profile.value.deriveLegacyFields()) }
             .onSuccess { saveStatus.value = "✓ Saved" }
             .onFailure { saveStatus.value = it.message }
         busy.value = false

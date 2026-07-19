@@ -15,6 +15,10 @@ private object NoBilling : BillingGateway {
     override suspend fun purchase(activity: Activity, obfuscatedUserId: String): String? = null
     override suspend fun currentPurchaseToken(): String? = null
     override suspend fun tip(activity: Activity, productId: String): Boolean = false
+
+    // No Play to ask; this flavor's Support section takes the Ko-fi branch and
+    // never reads these anyway.
+    override suspend fun tipPrices(): Map<String, String> = emptyMap()
 }
 
 @Module

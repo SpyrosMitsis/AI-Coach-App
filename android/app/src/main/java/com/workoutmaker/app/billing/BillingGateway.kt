@@ -27,6 +27,13 @@ interface BillingGateway {
     // tip can be bought again. Returns true when the purchase completed.
     // A tip grants nothing, so there is no server verification.
     suspend fun tip(activity: Activity, productId: String): Boolean
+
+    // Play's own price per tip product id, already formatted and localized
+    // ("$2.99", "2,79 €"). Empty on the foss flavor or when Play can't be
+    // reached; callers fall back to TIP_FALLBACK_PRICES. Play Console is the
+    // source of truth for what is actually charged, so a label built from this
+    // can never disagree with the checkout sheet.
+    suspend fun tipPrices(): Map<String, String>
 }
 
 // The single subscription product; must match the Play Console product id.
@@ -34,3 +41,11 @@ const val PRO_PRODUCT_ID = "pro"
 
 // One-time tip products (Support the developer); must match Play Console.
 val TIP_PRODUCT_IDS = listOf("tip_small", "tip_medium", "tip_large")
+
+// Shown only until Play answers with the real localized prices (and on a build
+// that can't ask it). Keep in step with the Play Console prices.
+val TIP_FALLBACK_PRICES = mapOf(
+    "tip_small" to "$2.99",
+    "tip_medium" to "$9.99",
+    "tip_large" to "$19.99",
+)

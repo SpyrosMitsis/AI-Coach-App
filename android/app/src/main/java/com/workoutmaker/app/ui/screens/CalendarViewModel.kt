@@ -88,8 +88,27 @@ class CalendarViewModel @Inject constructor(
     private val repo: WorkoutRepository,
     private val strength: com.workoutmaker.app.strength.StrengthRepository,
     private val strengthHandoff: com.workoutmaker.app.strength.StrengthHandoff,
+    private val planChanges: com.workoutmaker.app.data.PlanChangeBus,
 ) : ViewModel() {
+    // A date another screen asked the calendar to open on (chat's "view this
+    // workout"). The screen consumes it once and clears it.
+    val pendingFocusDate: MutableStateFlow<String?> get() = planChanges.focusDate
+    fun consumeFocus() { planChanges.focusDate.value = null }
+
+    // This VM outlives tab switches (saveState/restoreState), so without this
+    // a coach-made plan change stayed invisible until a manual refresh.
+    init {
+        viewModelScope.launch {
+            planChanges.changes.collect {
+                load()
+                lastWeekStart?.let { start -> loadWeekPlan(start) }
+            }
+        }
+    }
+    private var lastWeekStart: LocalDate? = null
     val workouts = MutableStateFlow<List<PlannedWorkout>>(emptyList())
+    // For the phase strip on the week card (goal_date drives the phase bands).
+    val profile = MutableStateFlow<com.workoutmaker.app.data.TrainingProfile?>(null)
     val templates = MutableStateFlow<List<WorkoutTemplate>>(emptyList())
     val banner = MutableStateFlow<String?>(null)
     val loading = MutableStateFlow(false)
@@ -112,11 +131,13 @@ class CalendarViewModel @Inject constructor(
     }
 
     fun loadWeekPlan(start: LocalDate) = viewModelScope.launch {
+        lastWeekStart = start
         weekPlan.value = repo.weekPlan(start.toString())
     }
 
     fun load() = viewModelScope.launch {
         loading.value = true
+        if (profile.value == null) runCatching { repo.loadProfile() }.onSuccess { profile.value = it }
         val from = LocalDate.now().minusMonths(2).toString()
         runCatching { repo.plannedWorkouts(from) }
             .onSuccess { workouts.value = it }

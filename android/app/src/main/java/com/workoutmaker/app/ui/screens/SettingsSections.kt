@@ -108,62 +108,31 @@ internal fun ProfileSection(vm: SettingsViewModel) {
     val busy by vm.busy.collectAsStateSafe()
     val haptics = LocalHapticFeedback.current
     SectionCard {
-        ChipGroup("Goal", GOALS, profile.goal) { g -> vm.updateProfile { it.copy(goal = g) } }
-        ChipGroup("Experience", LEVELS, profile.experience) { e -> vm.updateProfile { it.copy(experience = e) } }
-        Text("Available days", style = MaterialTheme.typography.labelLarge)
-        FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-            DAYS.forEach { d ->
-                FilterChip(
-                    selected = profile.days.contains(d),
-                    onClick = { vm.updateProfile { it.copy(days = if (it.days.contains(d)) it.days - d else it.days + d) } },
-                    label = { Text(d) },
-                )
-            }
+        SportSelector(profile.sports) { s -> vm.updateProfile { it.copy(sports = it.sports.toggled(s)) } }
+        // Activity-first: each selected sport gets its own goal(s) + level (+ split for gym).
+        SPORTS.filter { profile.sports.contains(it) }.forEach { sport ->
+            SportGoalsLevel(
+                sport = sport,
+                goals = profile.goals_by_sport[sport].orEmpty(),
+                level = profile.experience_by_sport[sport],
+                splitStyle = profile.split_style,
+                onGoalToggle = { g -> vm.updateProfile { it.copy(goals_by_sport = it.goals_by_sport.toggleIn(sport, g)) } },
+                onLevel = { lvl -> vm.updateProfile { it.copy(experience_by_sport = it.experience_by_sport + (sport to lvl)) } },
+                onSplit = { s -> vm.updateProfile { it.copy(split_style = if (s == "Auto") null else s) } },
+            )
         }
-        Text("Typical session length", style = MaterialTheme.typography.labelLarge)
-        FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-            DURATIONS.forEach { d ->
-                FilterChip(selected = profile.session_duration == d, onClick = { vm.updateProfile { it.copy(session_duration = d) } }, label = { Text("${d}m") })
-            }
+        Text("Weekly availability", style = MaterialTheme.typography.labelLarge)
+        WeeklyAvailabilityEditor(profile.day_availability) { list -> vm.updateProfile { it.copy(day_availability = list) } }
+        if (sportNeedsEquipment(profile.sports)) {
+            EquipmentSelector(profile.equipment_list) { e -> vm.updateProfile { it.copy(equipment_list = it.equipment_list.toggled(e)) } }
         }
-        Text("Max session length (optional)", style = MaterialTheme.typography.labelLarge)
-        FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-            DURATIONS_MAX.forEach { d ->
-                FilterChip(
-                    selected = profile.session_duration_max == d,
-                    // Tap the selected chip again to clear the cap.
-                    onClick = { vm.updateProfile { it.copy(session_duration_max = if (it.session_duration_max == d) null else d) } },
-                    label = { Text("${d}m") },
-                )
-            }
-        }
-        Text(
-            "Sessions vary with their purpose, the typical length is a flexible budget, the max is a hard cap. The AI won't pad every workout to the same number.",
-            style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
+        // Periodization no longer rides inside the strength editor; everyone
+        // gets the control here, right after the availability that feeds it.
+        PeriodizationControl(
+            periodized = profile.periodized,
+            onChange = { p -> vm.updateProfile { it.copy(periodized = p) } },
+            weeklyTssTarget = profile.weekly_tss_target,
         )
-        ChipGroup("Equipment", EQUIPMENT, profile.equipment) { e -> vm.updateProfile { it.copy(equipment = e) } }
-        ChipGroup("Strength split", SPLIT_STYLES, profile.split_style ?: "Auto") { s ->
-            vm.updateProfile { it.copy(split_style = if (s == "Auto") null else s) }
-        }
-        Text("Sports you do", style = MaterialTheme.typography.labelLarge)
-        FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-            SPORTS.forEach { s ->
-                FilterChip(
-                    selected = profile.sports.contains(s),
-                    onClick = { vm.updateProfile { it.copy(sports = if (it.sports.contains(s)) it.sports - s else it.sports + s) } },
-                    label = { Text(s.replaceFirstChar { c -> c.uppercase() }) },
-                )
-            }
-        }
-        Text(
-            "Only the sports you pick get scheduled. Leave empty to let the coach infer from your goal.",
-            style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
-        )
-        ToggleRow(
-            "Periodize my weeks",
-            "Progressive build weeks with an automatic deload every ~4 weeks (applies when planning a week).",
-            profile.periodized,
-        ) { checked -> vm.updateProfile { it.copy(periodized = checked) } }
         ToggleRow(
             "Daily coach briefing",
             "A short, human note from your coach at the top of Home each day. Costs one AI call per day; turn off to avoid any automatic spend.",
@@ -186,6 +155,11 @@ internal fun ProfileSection(vm: SettingsViewModel) {
         Button(onClick = { haptics.performHapticFeedback(HapticFeedbackType.LongPress); vm.saveProfile() }, enabled = !busy, modifier = Modifier.fillMaxWidth()) { Text("Save profile") }
     }
     SectionCard(title = "About you") {
+        OutlinedTextField(
+            profile.display_name ?: "", { v -> vm.updateProfile { it.copy(display_name = v.ifBlank { null }) } },
+            label = { Text("Your name") }, placeholder = { Text("What the coach calls you") },
+            singleLine = true, modifier = Modifier.fillMaxWidth(),
+        )
         ChipGroup("Sex", listOf("Male", "Female"), profile.sex?.replaceFirstChar { c -> c.uppercase() }) { s ->
             // Tap the selected chip again to clear back to the Intervals value.
             vm.updateProfile { it.copy(sex = if (it.sex == s.lowercase()) null else s.lowercase()) }
@@ -249,6 +223,7 @@ internal fun WorkoutDefaultsSection(vm: SettingsViewModel) {
     }
 }
 
+@OptIn(androidx.compose.foundation.layout.ExperimentalLayoutApi::class)
 @Composable
 internal fun PlanningSection(vm: SettingsViewModel) {
     val autoPlan by vm.autoPlan.collectAsStateSafe()
@@ -258,7 +233,38 @@ internal fun PlanningSection(vm: SettingsViewModel) {
     SectionCard {
         ToggleRow("Auto-plan next week", "Every Sunday the AI lays out your week and (if connected) pushes it to your watch.", autoPlan) { vm.setAutoPlan(it) }
     }
+    SectionCard(title = "Challenge level") {
+        Text(
+            "A standing bias on how hard sessions feel. The coach still adapts to your daily readiness on top of this.",
+            style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+            listOf("Easier" to "easier", "Standard" to null, "Harder" to "harder").forEach { (label, value) ->
+                FilterChip(
+                    selected = profile.challenge == value,
+                    onClick = { vm.updateProfile { it.copy(challenge = value) } },
+                    label = { Text(label) },
+                )
+            }
+        }
+        Button(onClick = { vm.saveProfile() }, enabled = !busy, modifier = Modifier.fillMaxWidth()) { Text("Save") }
+    }
     SectionCard(title = "Weekly load target") {
+        // The same effort chips onboarding offers: fractions of the athlete's
+        // own availability ceiling, so the suggestion is always achievable.
+        val minutes = profile.day_availability.sumOf { it.max_minutes }
+        com.workoutmaker.app.data.Periodization.availabilityCeiling(minutes)?.let { ceiling ->
+            androidx.compose.foundation.layout.FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                com.workoutmaker.app.data.Periodization.Effort.entries.forEach { e ->
+                    val target = e.targetFor(ceiling)
+                    FilterChip(
+                        selected = profile.weekly_tss_target == target,
+                        onClick = { vm.updateProfile { it.copy(weekly_tss_target = target) } },
+                        label = { Text("${e.label} · ~$target") },
+                    )
+                }
+            }
+        }
         OutlinedTextField(
             (profile.weekly_tss_target?.toString() ?: ""), { v -> vm.updateProfile { it.copy(weekly_tss_target = v.toIntOrNull()) } },
             label = { Text("Target weekly TSS (optional)") }, singleLine = true,
@@ -403,15 +409,18 @@ internal fun SupportSection(vm: SettingsViewModel) {
         if (vm.tipsSupported) {
             val busy = vm.tipBusy.collectAsStateSafe().value
             val status = vm.tipStatus.collectAsStateSafe().value
+            val prices = vm.tipPrices.collectAsStateSafe().value
+            androidx.compose.runtime.LaunchedEffect(Unit) { vm.loadTipPrices() }
             Row(
                 Modifier.fillMaxWidth(),
                 horizontalArrangement = androidx.compose.foundation.layout.Arrangement.spacedBy(8.dp),
             ) {
-                listOf(
-                    "tip_small" to "2 €",
-                    "tip_medium" to "5 €",
-                    "tip_large" to "10 €",
-                ).forEach { (id, label) ->
+                com.workoutmaker.app.billing.TIP_PRODUCT_IDS.forEach { id ->
+                    // Play's price when it has answered, our own until then, so the
+                    // label can never contradict the checkout sheet.
+                    val label = prices[id]
+                        ?: com.workoutmaker.app.billing.TIP_FALLBACK_PRICES[id]
+                        ?: "Tip"
                     androidx.compose.material3.OutlinedButton(
                         onClick = { (context as? android.app.Activity)?.let { vm.sendTip(it, id) } },
                         enabled = !busy,
@@ -423,11 +432,32 @@ internal fun SupportSection(vm: SettingsViewModel) {
                 Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.primary)
             }
         } else {
+            // Ko-fi (browser) is the only rail that can take an arbitrary amount;
+            // Play Billing tips are fixed products. Validate: must be > 0.
             val uriHandler = androidx.compose.ui.platform.LocalUriHandler.current
-            Button(
-                onClick = { runCatching { uriHandler.openUri(KOFI_URL) } },
+            var custom by remember { mutableStateOf("") }
+            val amount = custom.toDoubleOrNull()
+            val valid = amount != null && amount > 0.0
+            OutlinedTextField(
+                value = custom,
+                // Digits + one decimal only, so a minus sign can't make it negative.
+                onValueChange = { custom = it.filter { c -> c.isDigit() || c == '.' } },
+                label = { Text("Custom amount (€)") },
+                singleLine = true,
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
                 modifier = Modifier.fillMaxWidth(),
-            ) { Text("Tip on Ko-fi") }
+            )
+            if (custom.isNotBlank() && !valid) {
+                Text(
+                    "Enter an amount greater than 0.",
+                    style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error,
+                )
+            }
+            Button(
+                onClick = { runCatching { uriHandler.openUri("$KOFI_URL?amount=$custom") } },
+                enabled = valid,
+                modifier = Modifier.fillMaxWidth(),
+            ) { Text(if (valid) "Tip €$custom on Ko-fi" else "Tip on Ko-fi") }
         }
     }
 }
@@ -614,15 +644,15 @@ internal fun DiagnosticsSection(vm: SettingsViewModel) {
     }.getOrDefault(99999L)
     fun money(v: Double) = "$${"%.3f".format(v)}"
     val within30 = logs.filter { daysAgo(it) <= 29 }
-    val spentToday = logs.filter { daysAgo(it) <= 0 }.sumOf { it.estimated_cost_usd }
-    val spent7 = logs.filter { daysAgo(it) <= 6 }.sumOf { it.estimated_cost_usd }
-    val spent30 = within30.sumOf { it.estimated_cost_usd }
+    val spentToday = logs.filter { daysAgo(it) <= 0 }.sumOf { it.estimated_cost_usd ?: 0.0 }
+    val spent7 = logs.filter { daysAgo(it) <= 6 }.sumOf { it.estimated_cost_usd ?: 0.0 }
+    val spent30 = within30.sumOf { it.estimated_cost_usd ?: 0.0 }
     val fails = within30.count { !it.parsed_ok }
     val byProvider = within30.groupBy { it.provider ?: "?" }
-        .mapValues { e -> e.value.sumOf { it.estimated_cost_usd } }
+        .mapValues { e -> e.value.sumOf { it.estimated_cost_usd ?: 0.0 } }
         .entries.sortedByDescending { it.value }
     val byFeature = within30.groupBy { it.feature ?: "?" }
-        .mapValues { e -> e.value.sumOf { it.estimated_cost_usd } }
+        .mapValues { e -> e.value.sumOf { it.estimated_cost_usd ?: 0.0 } }
         .entries.sortedByDescending { it.value }
 
     val appSettings by vm.appSettings.collectAsStateSafe()
@@ -671,7 +701,7 @@ internal fun DiagnosticsSection(vm: SettingsViewModel) {
             Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                 Text(if (l.parsed_ok) "✓" else "✗", color = if (l.parsed_ok) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.error)
                 Text(
-                    "  ${l.created_at?.take(16)?.replace('T', ' ') ?: ""} · ${l.feature ?: "?"} · ${l.provider ?: "?"} · ${money(l.estimated_cost_usd)}" +
+                    "  ${l.created_at?.take(16)?.replace('T', ' ') ?: ""} · ${l.feature ?: "?"} · ${l.provider ?: "?"} · ${money(l.estimated_cost_usd ?: 0.0)}" +
                         (if (!l.parsed_ok && l.error != null) ", ${l.error.take(50)}" else ""),
                     style = MaterialTheme.typography.bodySmall,
                 )
@@ -762,50 +792,15 @@ internal fun ExportCard(vm: SettingsViewModel) {
 @Composable
 internal fun AppearanceSection(vm: SettingsViewModel) {
     val s by vm.appSettings.collectAsStateSafe()
-    SectionCard(title = "Palette") {
-        Text("Re-skin the whole app. “Serene Vanguard” is the original sage look; the others are experiments you can switch any time.",
-            style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-        com.workoutmaker.app.data.ThemePalette.entries.forEach { p ->
-            Row(
-                Modifier.fillMaxWidth().clickable { vm.setThemePalette(p) }.padding(vertical = 10.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                androidx.compose.material3.RadioButton(selected = s.themePalette == p, onClick = { vm.setThemePalette(p) })
-                Text(p.label, Modifier.padding(start = 8.dp), style = MaterialTheme.typography.bodyLarge)
-                Box(Modifier.weight(1f))
-                PaletteSwatches(p)
-            }
-        }
-    }
-    SectionCard(title = "Light / Dark") {
-        Text("Choose how the app looks. “Follow system” matches your phone's light/dark setting.",
-            style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-        com.workoutmaker.app.data.ThemeMode.entries.forEach { mode ->
-            Row(
-                Modifier.fillMaxWidth().clickable { vm.setThemeMode(mode) }.padding(vertical = 10.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                androidx.compose.material3.RadioButton(selected = s.themeMode == mode, onClick = { vm.setThemeMode(mode) })
-                Text(mode.label, Modifier.padding(start = 8.dp), style = MaterialTheme.typography.bodyLarge)
-            }
-        }
-    }
-}
-
-// Three little dots previewing a palette's primary/secondary/background so the
-// choice is visible without selecting it. Uses the palette's dark scheme.
-@Composable
-private fun PaletteSwatches(p: com.workoutmaker.app.data.ThemePalette) {
-    val scheme = p.palette().dark
-    Row(horizontalArrangement = Arrangement.spacedBy(4.dp), verticalAlignment = Alignment.CenterVertically) {
-        listOf(scheme.primary, scheme.secondary, scheme.surface).forEach { c ->
-            Box(
-                Modifier.size(16.dp)
-                    .clip(androidx.compose.foundation.shape.CircleShape)
-                    .background(c)
-                    .border(1.dp, MaterialTheme.colorScheme.outlineVariant, androidx.compose.foundation.shape.CircleShape),
-            )
-        }
+    // Palette + light/dark now live in the shared AppearancePicker (ProfileEditors.kt)
+    // so onboarding and Settings render the exact same control.
+    SectionCard {
+        AppearancePicker(
+            themeMode = s.themeMode,
+            palette = s.themePalette,
+            onMode = { vm.setThemeMode(it) },
+            onPalette = { vm.setThemePalette(it) },
+        )
     }
 }
 

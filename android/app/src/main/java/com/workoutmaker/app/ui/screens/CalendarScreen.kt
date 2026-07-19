@@ -138,8 +138,23 @@ fun CalendarScreen(vm: CalendarViewModel = hiltViewModel(), onOpenStrength: () -
     var activityDetail by remember { mutableStateOf<com.workoutmaker.app.data.CompletedActivity?>(null) }
     var strengthDetail by remember { mutableStateOf<com.workoutmaker.app.strength.WorkoutEntity?>(null) }
     val strengthSets by vm.strengthSets.collectAsStateSafe()
+    val calProfile by vm.profile.collectAsStateSafe()
 
     LaunchedEffect(Unit) { vm.load() }
+
+    // Another screen (chat's workout cards) asked us to open on a date: select
+    // it, bring its month into view, consume the request. This VM/screen keep
+    // state across tab switches, so a nav argument would never arrive.
+    val pendingFocus by vm.pendingFocusDate.collectAsStateSafe()
+    LaunchedEffect(pendingFocus) {
+        pendingFocus?.let { iso ->
+            runCatching { LocalDate.parse(iso) }.onSuccess {
+                selectedDate = it
+                visibleMonth = YearMonth.from(it)
+            }
+            vm.consumeFocus()
+        }
+    }
 
     val byDate = remember(workouts) { workouts.groupBy { it.date } }
     val daySessions = primaryFirst(byDate[selectedDate.toString()].orEmpty())
@@ -237,7 +252,11 @@ fun CalendarScreen(vm: CalendarViewModel = hiltViewModel(), onOpenStrength: () -
                 }
             }
 
-            WeekSummaryCard(weekStart, workouts, planning, weekPlan) { vm.planWeek(weekStart) }
+            WeekSummaryCard(
+                weekStart, workouts, planning, weekPlan,
+                onPlan = { vm.planWeek(weekStart) },
+                goalDate = calProfile?.goal_date?.let { runCatching { LocalDate.parse(it) }.getOrNull() },
+            )
 
             // P2: plan a whole periodized block to the race in one go.
             GhostButton(

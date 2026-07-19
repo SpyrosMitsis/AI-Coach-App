@@ -5,6 +5,7 @@ import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.doublePreferencesKey
 import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.intPreferencesKey
+import androidx.datastore.preferences.core.longPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
 import dagger.hilt.android.qualifiers.ApplicationContext
@@ -98,7 +99,16 @@ class AppPreferences @Inject constructor(
         val spendCap = doublePreferencesKey("spend_cap_usd")
         val lastAccountUid = stringPreferencesKey("last_account_uid")
         val morningNotify = booleanPreferencesKey("morning_notify")
+        val setupNudgeDismissedAt = longPreferencesKey("setup_nudge_dismissed_at")
     }
+
+    // The Home "finish setting up your coach" card for onboarding skippers.
+    // Dismissal snoozes it 14 days (it re-appears only while the profile is
+    // still empty), so it nudges without nagging.
+    suspend fun setupNudgeDismissedAt(): Long? =
+        context.dataStore.data.firstOrNull()?.get(Keys.setupNudgeDismissedAt)
+
+    suspend fun dismissSetupNudge() = edit { it[Keys.setupNudgeDismissedAt] = System.currentTimeMillis() }
 
     // The user id that this device's local data (Room strength tables, caches,
     // onboarding flag) belongs to. Compared on every sign-in so a different

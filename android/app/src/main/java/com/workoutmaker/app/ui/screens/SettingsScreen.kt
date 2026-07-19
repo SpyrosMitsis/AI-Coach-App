@@ -93,24 +93,28 @@ import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import javax.inject.Inject
 
+// Grouped by how often a normal athlete touches things: the everyday knobs up
+// top, integrations and app chrome in the middle, and an Advanced group for
+// power-user surfaces (raw thresholds, coach memory docs, import/export,
+// generation logs) so the first screen stays calm.
 internal val SETTINGS_GROUPS = listOf(
     SettingsGroup("Training", listOf(
         SettingsItem("profile", Icons.Outlined.Person, "Profile & goal", "Goal, experience, days, equipment, pace"),
         SettingsItem("races", Icons.Outlined.Flag, "Goals & races", "Multi-sport goals, targets & countdown"),
-        SettingsItem("zones", Icons.Outlined.Favorite, "Training zones", "Thresholds, HR/pace/power zones & tests"),
+        SettingsItem("planning", Icons.Outlined.CalendarMonth, "Planning", "Auto-plan, weekly load & challenge level"),
         SettingsItem("defaults", Icons.Outlined.FitnessCenter, "Workout defaults", "Units, rest timer, barbell, screen"),
-        SettingsItem("planning", Icons.Outlined.CalendarMonth, "Planning", "Auto-plan & weekly load target"),
     )),
     SettingsGroup("Coaching & AI", listOf(
-        SettingsItem("knowledge", Icons.Outlined.Psychology, "Coach knowledge", "Injuries, equipment & preferences"),
         SettingsItem("ai", Icons.Outlined.AutoAwesome, "AI providers", "Active model & API keys"),
     )),
-    SettingsGroup("Integrations", listOf(
-        SettingsItem("connections", Icons.Outlined.Link, "Connections", "Intervals.icu & Health Connect"),
-    )),
     SettingsGroup("App", listOf(
+        SettingsItem("connections", Icons.Outlined.Link, "Connections", "Intervals.icu & Health Connect"),
         SettingsItem("appearance", Icons.Outlined.Palette, "Appearance", "Light / dark theme"),
         SettingsItem("notifications", Icons.Outlined.Notifications, "Notifications", "Rest-timer alerts & vibration"),
+    )),
+    SettingsGroup("Advanced", listOf(
+        SettingsItem("zones", Icons.Outlined.Favorite, "Training zones", "Thresholds, HR/pace/power zones & tests"),
+        SettingsItem("knowledge", Icons.Outlined.Psychology, "Coach knowledge", "Injuries, equipment & preferences"),
         SettingsItem("data", Icons.Outlined.Download, "Import & export", "Strong/Hevy import · CSV backup"),
         SettingsItem("diagnostics", Icons.Outlined.MonitorHeart, "Diagnostics", "AI generation log & cost"),
     )),
@@ -190,6 +194,9 @@ internal fun SettingsDetail(id: String, vm: SettingsViewModel, onBack: () -> Uni
             )
         },
     ) { padding ->
+        // Diagnostics shows live AI activity: refresh on open, or a coach chat
+        // from a minute ago is missing until Settings fully reloads.
+        LaunchedEffect(id) { if (id == "diagnostics") vm.reloadLogs() }
         Column(
             Modifier.padding(padding).fillMaxSize().verticalScroll(rememberScrollState()).padding(16.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp),

@@ -78,6 +78,12 @@ internal fun LoginScreen(vm: AuthViewModel) {
     val error by vm.error.collectAsStateSafe()
     val info by vm.info.collectAsStateSafe()
     val busy by vm.busy.collectAsStateSafe()
+    val promptCreate by vm.promptCreate.collectAsStateSafe()
+
+    // A failed sign-in against a non-existent account flips the form to Create.
+    LaunchedEffect(promptCreate) {
+        if (promptCreate) { mode = AuthMode.Create; vm.promptCreate.value = false }
+    }
 
     // One-shot entrance choreography.
     var entered by remember { mutableStateOf(false) }

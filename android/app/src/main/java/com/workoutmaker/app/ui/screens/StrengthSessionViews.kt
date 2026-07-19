@@ -743,6 +743,9 @@ internal fun SetRow(
     onEdit: () -> Unit = {},
 ) {
     var showNote by remember { mutableStateOf(s.note.isNotBlank()) }
+    // Set when the done-toggle catches an entry far outside the usual values;
+    // holds the toggle until the athlete confirms it was not a typo.
+    var oddEntryQuestion by remember { mutableStateOf<String?>(null) }
     val haptics = LocalHapticFeedback.current
     // Opaque so the red delete background only shows while swiping.
     val rowBg = if (s.done) {
@@ -816,8 +819,8 @@ internal fun SetRow(
                 // Minutes live in the reps slot; no load to enter. Fills the row.
                 CompactField(s.reps, { s.reps = it; onEdit() }, Modifier.weight(1f), decimal = false, placeholder = s.suggestedReps)
             } else {
-                CompactField(s.weight, { s.weight = it; onEdit() }, Modifier.weight(1f), decimal = true, placeholder = s.suggestedWeight)
-                CompactField(s.reps, { s.reps = it; onEdit() }, Modifier.weight(1f), decimal = false, placeholder = s.suggestedReps)
+                CompactField(s.weight, { s.weight = it; s.confirmedOdd = false; onEdit() }, Modifier.weight(1f), decimal = true, placeholder = s.suggestedWeight)
+                CompactField(s.reps, { s.reps = it; s.confirmedOdd = false; onEdit() }, Modifier.weight(1f), decimal = false, placeholder = s.suggestedReps)
             }
             IconButton(onClick = { showNote = !showNote }, modifier = Modifier.size(36.dp)) {
                 Icon(Icons.AutoMirrored.Filled.NoteAdd, "Note",
@@ -827,8 +830,26 @@ internal fun SetRow(
             IconButton(
                 onClick = {
                     val becomingDone = !s.done
-                    onToggle()
-                    if (becomingDone) haptics.performHapticFeedback(HapticFeedbackType.LongPress)
+                    // Typo guard on the moment of commit: a wild weight/reps must
+                    // be confirmed before it can count (it would otherwise become
+                    // a fake PR and skew every later suggestion). Cardio logs
+                    // minutes in the reps slot, so it only gets the weight-free
+                    // absolute rep cap via baselines being null.
+                    val question = if (becomingDone && !s.confirmedOdd && !cardio) {
+                        com.workoutmaker.app.strength.SetSanity.check(
+                            weight = s.weight.toDoubleOrNull(),
+                            reps = s.reps.toIntOrNull(),
+                            baselineWeight = prev?.weightKg ?: s.suggestedWeight.toDoubleOrNull(),
+                            baselineReps = prev?.reps ?: s.suggestedReps.toIntOrNull(),
+                            warmup = s.warmup,
+                        )
+                    } else null
+                    if (question != null) {
+                        oddEntryQuestion = question
+                    } else {
+                        onToggle()
+                        if (becomingDone) haptics.performHapticFeedback(HapticFeedbackType.LongPress)
+                    }
                 },
                 modifier = Modifier.size(40.dp),
             ) {
@@ -840,6 +861,26 @@ internal fun SetRow(
             NoteField(s.note, { s.note = it; onEdit() })
         }
     }
+    }
+    // Neutral confirmation, not an error: the entry may well be real. Confirming
+    // marks the set so it is not re-asked; editing either field re-arms it.
+    oddEntryQuestion?.let { question ->
+        AlertDialog(
+            onDismissRequest = { oddEntryQuestion = null },
+            title = { Text("Double-check this set") },
+            text = { Text(question) },
+            confirmButton = {
+                TextButton(onClick = {
+                    s.confirmedOdd = true
+                    oddEntryQuestion = null
+                    onToggle()
+                    haptics.performHapticFeedback(HapticFeedbackType.LongPress)
+                }) { Text("Log it") }
+            },
+            dismissButton = {
+                TextButton(onClick = { oddEntryQuestion = null }) { Text("Fix it") }
+            },
+        )
     }
 }
 

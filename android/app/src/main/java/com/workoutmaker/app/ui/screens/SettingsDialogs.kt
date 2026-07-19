@@ -220,6 +220,33 @@ internal fun ZonesSection(vm: SettingsViewModel) {
 
     ZoneTables(profile.lthr, profile.threshold_pace_per_km, profile.ftp)
 
+    // The two "Your numbers" anchors onboarding now collects that existed
+    // nowhere in Settings: swim CSS and strength starting loads. Without these
+    // editors, everyone who onboarded before the step existed could never set them.
+    SectionCard(title = "Your numbers") {
+        if (profile.sports.isEmpty() || profile.sports.contains("swim")) {
+            OutlinedTextField(
+                profile.css_per_100m ?: "",
+                { v -> vm.updateProfile { it.copy(css_per_100m = v.ifBlank { null }) } },
+                label = { Text("Swim: comfortable 100m pace (m:ss)") }, singleLine = true,
+                modifier = Modifier.fillMaxWidth(),
+            )
+        }
+        if (profile.sports.isEmpty() || profile.sports.contains("strength")) {
+            Text(
+                "Top set per lift. Used to start progression when you have no logged history.",
+                style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            listOf("Back Squat", "Barbell Bench Press", "Deadlift").forEach { lift ->
+                StartingLiftRow(lift, profile) { t -> vm.updateProfile(t) }
+            }
+        }
+        Button(
+            onClick = { vm.saveProfile() },
+            enabled = !busy, modifier = Modifier.fillMaxWidth(),
+        ) { Text("Save") }
+    }
+
     SectionCard(title = "Threshold tests") {
         Text("Log a test result and your threshold (and zones) update automatically.",
             style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)

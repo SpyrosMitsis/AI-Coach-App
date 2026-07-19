@@ -83,6 +83,71 @@ import java.time.format.TextStyle
 import java.util.Locale
 import javax.inject.Inject
 
+// Where this week sits in the bigger arc: the four phases as a strip with a
+// marker at the athlete's position, plus the week's focus from the planner.
+// The bands mirror prompt.ts trainingPhase, so what's shown is what the AI
+// was actually told when it built the week.
+@Composable
+internal fun PhaseStrip(phase: com.workoutmaker.app.data.Periodization.Phase, focus: String?) {
+    val segments = listOf(
+        "Base" to MaterialTheme.colorScheme.primary,
+        "Build" to MaterialTheme.colorScheme.secondary,
+        "Peak" to com.workoutmaker.app.ui.theme.amberAccent(),
+        "Taper" to MaterialTheme.colorScheme.tertiary,
+    )
+    Column {
+        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+            Text(
+                phase.name + (phase.weeksToGoal?.let { " · $it wk${if (it == 1) "" else "s"} to race" } ?: ""),
+                style = MaterialTheme.typography.labelMedium,
+                fontWeight = androidx.compose.ui.text.font.FontWeight.SemiBold,
+            )
+            Spacer(Modifier.weight(1f))
+            focus?.takeIf { it.isNotBlank() }?.let {
+                val deload = it.contains("deload", ignoreCase = true) || it.contains("recovery", ignoreCase = true)
+                Text(
+                    it,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = if (deload) com.workoutmaker.app.ui.theme.amberAccent()
+                    else MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        }
+        if (phase.weeksToGoal != null) {
+            Box(Modifier.fillMaxWidth().padding(top = 4.dp)) {
+                Row(Modifier.fillMaxWidth().height(6.dp).clip(RoundedCornerShape(3.dp))) {
+                    segments.forEach { (name, color) ->
+                        Box(
+                            Modifier.weight(1f).fillMaxHeight()
+                                .background(if (name == phase.name) color else color.copy(alpha = 0.25f)),
+                        )
+                    }
+                }
+                // Position marker along the arc (0 = deep Base, 1 = race week).
+                androidx.compose.foundation.layout.BoxWithConstraints(Modifier.fillMaxWidth()) {
+                    Box(
+                        Modifier
+                            .padding(start = maxWidth * phase.progress - 4.dp)
+                            .size(10.dp)
+                            .clip(androidx.compose.foundation.shape.CircleShape)
+                            .background(MaterialTheme.colorScheme.onSurface),
+                    )
+                }
+            }
+            Row(Modifier.fillMaxWidth().padding(top = 2.dp), horizontalArrangement = Arrangement.SpaceBetween) {
+                segments.forEach { (name, _) ->
+                    Text(
+                        name,
+                        style = MaterialTheme.typography.labelSmall,
+                        color = if (name == phase.name) MaterialTheme.colorScheme.onSurface
+                        else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f),
+                    )
+                }
+            }
+        }
+    }
+}
+
 @Composable
 internal fun WeekSummaryCard(
     weekStart: LocalDate,
@@ -90,6 +155,7 @@ internal fun WeekSummaryCard(
     planning: Boolean,
     weekPlan: com.workoutmaker.app.data.WeekPlanRow?,
     onPlan: () -> Unit,
+    goalDate: LocalDate? = null,
 ) {
     val weekDates = (0..6).map { weekStart.plusDays(it.toLong()).toString() }.toSet()
     val week = workouts.filter { it.date in weekDates }
@@ -112,6 +178,10 @@ internal fun WeekSummaryCard(
     val adherencePct = if (sessions > 0) doneSessions * 100 / sessions else 0
 
     SectionCard(title = "This week · $weekStart → ${weekStart.plusDays(6)}") {
+        PhaseStrip(
+            phase = com.workoutmaker.app.data.Periodization.phaseFor(goalDate, weekStart),
+            focus = weekPlan?.focus,
+        )
         Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
             Row(Modifier.weight(1f), horizontalArrangement = Arrangement.SpaceBetween) {
                 WeekStat("Sessions", "$sessions")

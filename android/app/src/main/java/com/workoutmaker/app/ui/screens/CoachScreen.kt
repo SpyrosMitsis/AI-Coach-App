@@ -3,6 +3,7 @@ package com.workoutmaker.app.ui.screens
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.scrollBy
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -12,9 +13,11 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -55,6 +58,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
@@ -124,6 +128,7 @@ internal fun friendlyToolProgress(tool: String): String = when (tool) {
     "make_easier" -> "Making the session easier…"
     "set_goal_race" -> "Setting your goal race…"
     "remember" -> "Noting that down…"
+    "update_profile" -> "Saving your numbers…"
     else -> "Working…"
 }
 
@@ -131,6 +136,56 @@ internal fun friendlyToolProgress(tool: String): String = when (tool) {
 private val WRITE_TOOL_NAMES = setOf(
     "plan_week", "generate_workout", "move_workout", "set_goal_race", "set_rest_day", "make_easier",
 )
+
+// Contextual quick replies for the turn that just finished. Deterministic from
+// the write tools used: after a concrete action the athlete predictably wants
+// one of a few follow-ups; after a plain answer, chips would be noise (none).
+// Directive prompts, same philosophy as the starters: finish the job in one turn.
+internal fun followUpChips(toolsUsed: List<String>): List<CoachStarter> = when {
+    // Order matters: a week plan is the bigger action, its follow-ups win even
+    // when a single workout was also generated in the same turn.
+    "plan_week" in toolsUsed -> listOf(
+        CoachStarter(
+            "Explain the week",
+            "Walk me through the week you just planned, day by day, and why it's structured that way for my goal and current fitness.",
+        ),
+        CoachStarter(
+            "Make it easier",
+            "The planned week feels like too much. Reduce the overall load, keep the structure sensible, apply the changes, and summarize what moved.",
+        ),
+        CoachStarter(
+            "Swap two days",
+            "Swap the two days in this week's plan that would fit me better the other way around. Pick them yourself, apply the swap, and tell me which ones and why.",
+        ),
+    )
+    "generate_workout" in toolsUsed || "make_easier" in toolsUsed -> listOf(
+        CoachStarter(
+            "Make it easier",
+            "Make the workout you just created easier. Reduce the intensity or volume, apply the change, and tell me what you changed.",
+        ),
+        CoachStarter(
+            "Move it",
+            "Move the workout you just created to a better day this week. Look at my week, pick the day yourself, apply the move, and tell me why.",
+        ),
+        CoachStarter(
+            "Why this session?",
+            "Explain why the session you just created is the right one for me now, based on my fitness, fatigue and goal. Use the real numbers.",
+        ),
+    )
+    "set_goal_race" in toolsUsed -> listOf(
+        CoachStarter(
+            "Plan toward it",
+            "Now that my goal race is set, plan this week so it starts building toward it. Put the week on my calendar and summarize the focus.",
+        ),
+    )
+    "move_workout" in toolsUsed || "set_rest_day" in toolsUsed -> listOf(
+        CoachStarter(
+            "Rebalance the week",
+            "After that change, check this week's balance, hard-day spacing, load and recovery, and fix anything that no longer makes sense. Apply what you change.",
+        ),
+    )
+    else -> emptyList()
+}
 
 // Maps tool names the agentic coach used into a friendly "what I just did" note.
 private fun friendlyTools(tools: List<String>): String {
@@ -150,6 +205,7 @@ private fun friendlyTools(tools: List<String>): String {
             "make_easier" -> "made the session easier"
             "set_goal_race" -> "set your goal race"
             "remember" -> "noted that for next time"
+            "update_profile" -> "saved your numbers"
             else -> t
         }
     }
@@ -157,7 +213,10 @@ private fun friendlyTools(tools: List<String>): String {
 }
 
 @HiltViewModel
-class CoachViewModel @Inject constructor(private val repo: WorkoutRepository) : ViewModel() {
+class CoachViewModel @Inject constructor(
+    private val repo: WorkoutRepository,
+    private val planChanges: com.workoutmaker.app.data.PlanChangeBus,
+) : ViewModel() {
     val messages = MutableStateFlow(listOf(ChatMessage("assistant", GREETING)))
     val sending = MutableStateFlow(false)
     val banner = MutableStateFlow<String?>(null)
@@ -166,6 +225,19 @@ class CoachViewModel @Inject constructor(private val repo: WorkoutRepository) : 
     val draftRestore = MutableStateFlow<String?>(null)
     // Live tool-progress line while the agentic loop runs.
     val liveStatus = MutableStateFlow<String?>(null)
+    // The agentic turn as visible steps: each tool event appends a running row,
+    // and the next event checks the previous one off. Collapses to the banner
+    // summary when the turn ends. Write tools are accented in the UI.
+    data class ToolStep(val label: String, val write: Boolean, val done: Boolean)
+    val toolSteps = MutableStateFlow<List<ToolStep>>(emptyList())
+    private fun advanceTool(tool: String) {
+        liveStatus.value = null // the step list replaces the generic line
+        toolSteps.value = toolSteps.value.map { it.copy(done = true) } +
+            ToolStep(friendlyToolProgress(tool), tool in WRITE_TOOL_NAMES, done = false)
+    }
+    // Contextual quick replies after a coach turn (never after a plain answer).
+    val followUps = MutableStateFlow<List<CoachStarter>>(emptyList())
+    fun dismissFollowUps() { followUps.value = emptyList() }
     // After the coach changes the calendar: this week's sessions for the result card.
     val actionWeek = MutableStateFlow<List<com.workoutmaker.app.data.PlannedWorkout>?>(null)
     // Plain-language summary of the write actions the coach just took (card subtitle).
@@ -180,6 +252,96 @@ class CoachViewModel @Inject constructor(private val repo: WorkoutRepository) : 
         ),
     )
     private var conversationId: String? = null
+
+    // ---- typewriter reveal ---------------------------------------------------
+    // The server sends the whole reply as ONE token event (true LLM streaming
+    // would blind the hosted cost logging), so the "typing" feel is client-side:
+    // arriving text queues here and a job reveals it a few words at a time.
+    // The screen sets [animateReplies] from rememberAnimationsEnabled(), so the
+    // system remove-animations setting shows replies instantly.
+    val animateReplies = MutableStateFlow(true)
+    // True while the typewriter is still revealing text. The screen holds back
+    // everything that would otherwise pop in under the growing message (result
+    // card, banner, follow-up chips) until this settles, so the reply types
+    // into a stable layout instead of one that keeps reflowing.
+    val revealing = MutableStateFlow(false)
+    private var revealJob: kotlinx.coroutines.Job? = null
+    private val revealQueue = StringBuilder()
+
+    /** Append [text] to the trailing assistant message, creating it if needed. */
+    private fun appendVisible(text: String) {
+        val msgs = messages.value
+        val last = msgs.lastOrNull()
+        messages.value = if (last?.role == "assistant" && revealTarget) {
+            msgs.dropLast(1) + ChatMessage("assistant", last.content + text)
+        } else {
+            revealTarget = true
+            msgs + ChatMessage("assistant", text)
+        }
+    }
+
+    // True while the trailing assistant message is this turn's reply (so
+    // appendVisible knows to extend it rather than start a new bubble).
+    private var revealTarget = false
+
+    /** Drop anything queued without showing it (thread switch / new chat). */
+    private fun cancelReveal() {
+        revealJob?.cancel()
+        revealJob = null
+        revealQueue.setLength(0)
+        revealTarget = false
+        revealing.value = false
+    }
+
+    /** Show everything still queued at once (new send, screen exit, no-anim). */
+    private fun flushReveal() {
+        revealJob?.cancel()
+        revealJob = null
+        if (revealQueue.isNotEmpty()) {
+            appendVisible(revealQueue.toString())
+            revealQueue.setLength(0)
+        }
+        revealing.value = false
+    }
+
+    private fun queueReveal(tok: String) {
+        // JSON replies render as a card (WorkoutCard/DataCard) only once whole;
+        // typing them out would flash broken JSON as text first. Show at once.
+        val jsonStart = !revealTarget && revealQueue.isEmpty() && tok.trimStart().startsWith("{")
+        if (!animateReplies.value || jsonStart) {
+            flushReveal()
+            appendVisible(tok)
+            return
+        }
+        revealQueue.append(tok)
+        if (revealJob == null) {
+            revealing.value = true
+            revealJob = viewModelScope.launch {
+                while (revealQueue.isNotEmpty()) {
+                    // Reveal WHOLE LINES. MarkdownText renders one Text per line,
+                    // so a complete line styles once and never again — revealing
+                    // mid-line made bullets/bold flip styling on every tick,
+                    // which read as the whole message flickering. Only a final
+                    // unterminated line (no newline left) reveals by word chunks,
+                    // confining any style flip to that single line.
+                    val nl = revealQueue.indexOf('\n')
+                    val cut = if (nl >= 0) {
+                        nl + 1
+                    } else {
+                        var c = minOf(40, revealQueue.length)
+                        while (c < revealQueue.length && !revealQueue[c].isWhitespace()) c++
+                        c
+                    }
+                    val chunk = revealQueue.substring(0, cut)
+                    revealQueue.delete(0, cut)
+                    appendVisible(chunk)
+                    kotlinx.coroutines.delay(if (nl >= 0) 120 else 45)
+                }
+                revealJob = null
+                revealing.value = false
+            }
+        }
+    }
 
     init {
         viewModelScope.launch {
@@ -208,6 +370,11 @@ class CoachViewModel @Inject constructor(private val repo: WorkoutRepository) : 
         }
     }
 
+    /** Ask the Calendar tab to open on [date] (the nav itself is the screen's). */
+    fun focusCalendar(date: String) {
+        planChanges.focusDate.value = date
+    }
+
     fun dismissActionCard() {
         actionWeek.value = null
         lastAction.value = null
@@ -227,7 +394,13 @@ class CoachViewModel @Inject constructor(private val repo: WorkoutRepository) : 
                 lastAction.value = "re-planned your week"
                 banner.value = "✓ Re-planned your week"
                 loadActionWeek()
-            }.onFailure { banner.value = "Couldn't re-plan: ${it.message}" }
+                planChanges.emit("coach")
+            }.onFailure {
+                com.workoutmaker.app.util.AppLog.w("coach", "re-plan failed", it)
+                banner.value = com.workoutmaker.app.util.friendlyFnError(
+                    it, "Couldn't re-plan your week. Try again.",
+                )
+            }
             sending.value = false
             liveStatus.value = null
         }
@@ -238,9 +411,12 @@ class CoachViewModel @Inject constructor(private val repo: WorkoutRepository) : 
     // fresh pull of the real calendar for the result card.
     private fun onToolsUsed(tools: List<String>) {
         val writes = tools.filter { it in WRITE_TOOL_NAMES }
+        followUps.value = followUpChips(tools)
         if (writes.isNotEmpty()) {
             lastAction.value = friendlyTools(writes)
             showReplan.value = writes.contains("plan_week")
+            // Home and Calendar survive tab switches; tell them the plan moved.
+            planChanges.emit("coach")
         }
         if (tools.any { it == "plan_week" || it == "generate_workout" || it == "move_workout" }) {
             loadActionWeek()
@@ -294,6 +470,7 @@ class CoachViewModel @Inject constructor(private val repo: WorkoutRepository) : 
 
     /** Load a past conversation to read or continue it. */
     fun openConversation(c: com.workoutmaker.app.data.CoachConversation) {
+        cancelReveal() // never type a stale reply into the newly opened thread
         conversationId = c.id
         messages.value = listOf(ChatMessage("assistant", GREETING)) + c.messages
         banner.value = null
@@ -302,6 +479,7 @@ class CoachViewModel @Inject constructor(private val repo: WorkoutRepository) : 
 
     /** Start a fresh thread. */
     fun newChat() {
+        cancelReveal()
         conversationId = null
         messages.value = listOf(ChatMessage("assistant", GREETING))
         banner.value = null
@@ -309,12 +487,16 @@ class CoachViewModel @Inject constructor(private val repo: WorkoutRepository) : 
     }
 
     fun send(text: String) {
+        flushReveal() // never animate two replies at once
+        revealTarget = false
         val outgoing = messages.value + ChatMessage("user", text)
         messages.value = outgoing
         sending.value = true
         banner.value = null
         lastAction.value = null
         showReplan.value = false
+        followUps.value = emptyList()
+        toolSteps.value = emptyList()
         liveStatus.value = "Thinking…"
         val history = outgoing.drop(1) // drop the local greeting
 
@@ -324,19 +506,13 @@ class CoachViewModel @Inject constructor(private val repo: WorkoutRepository) : 
         viewModelScope.launch {
             var gotReply = false
             fun appendToken(tok: String) {
-                if (!gotReply) {
-                    gotReply = true
-                    messages.value = messages.value + ChatMessage("assistant", tok)
-                } else {
-                    val last = messages.value.last()
-                    messages.value = messages.value.dropLast(1) +
-                        ChatMessage(last.role, last.content + tok)
-                }
+                gotReply = true
+                queueReveal(tok)
             }
             val streamed = runCatching {
                 repo.coachAgenticStream(
                     history, conversationId,
-                    onTool = { liveStatus.value = friendlyToolProgress(it) },
+                    onTool = { advanceTool(it) },
                     onToken = { appendToken(it) },
                 )
             }
@@ -356,11 +532,14 @@ class CoachViewModel @Inject constructor(private val repo: WorkoutRepository) : 
                         )
                     }.onSuccess { reply ->
                         conversationId = reply.conversation_id ?: conversationId
-                        messages.value = messages.value + ChatMessage("assistant", reply.reply ?: "(no reply)")
+                        appendToken(reply.reply ?: "(no reply)")
                         if (reply.tools_used.isNotEmpty()) banner.value = "🔧 " + friendlyTools(reply.tools_used)
                         onToolsUsed(reply.tools_used)
                     }.onFailure { e2 ->
-                        banner.value = e2.message
+                        com.workoutmaker.app.util.AppLog.w("coach", "both transports failed", e2)
+                        banner.value = com.workoutmaker.app.util.friendlyFnError(
+                            e2, "The coach didn't answer. Tap send to try again.",
+                        )
                         // Both transports failed — revert the stranded user turn and
                         // hand the text back to the input box so retry is one tap.
                         if (messages.value.lastOrNull()?.role == "user") {
@@ -372,6 +551,9 @@ class CoachViewModel @Inject constructor(private val repo: WorkoutRepository) : 
             }
             sending.value = false
             liveStatus.value = null
+            // The step list collapses into the banner summary; the reveal job
+            // (if still typing) carries on, it owns only message text.
+            toolSteps.value = emptyList()
         }
     }
 
@@ -401,7 +583,12 @@ class CoachViewModel @Inject constructor(private val repo: WorkoutRepository) : 
                 banner.value = if (kind == "plan")
                     "✓ Saved a multi-week plan to your templates."
                 else "✓ Saved a workout template you can reuse."
-            }.onFailure { banner.value = "Couldn't finalize: ${it.message}" }
+            }.onFailure {
+                com.workoutmaker.app.util.AppLog.w("coach", "finalize failed", it)
+                banner.value = com.workoutmaker.app.util.friendlyFnError(
+                    it, "Couldn't save that. Try again.",
+                )
+            }
             sending.value = false
         }
     }
@@ -420,9 +607,32 @@ fun CoachScreen(vm: CoachViewModel = hiltViewModel(), onOpenCalendar: () -> Unit
     val suggestions by vm.suggestions.collectAsStateSafe()
     val showHistory by vm.showHistory.collectAsStateSafe()
     val conversations by vm.conversations.collectAsStateSafe()
+    val toolSteps by vm.toolSteps.collectAsStateSafe()
+    val followUps by vm.followUps.collectAsStateSafe()
+    // While the reply is typing out, hold back everything that would pop in
+    // beneath it (result card, banner, chips): each arrival reflowed the layout
+    // under the growing text and read as flicker.
+    val revealing by vm.revealing.collectAsStateSafe()
     // Saveable: a half-typed coach message must survive rotation.
     var input by rememberSaveable { mutableStateOf("") }
     val listState = rememberLazyListState()
+
+    // Respect the system remove-animations setting: replies appear at once.
+    val animationsOn = com.workoutmaker.app.ui.components.rememberAnimationsEnabled()
+    LaunchedEffect(animationsOn) { vm.animateReplies.value = animationsOn }
+
+    // A soft tick when the coach finishes answering, same language as the rest
+    // of the app (set-done, PRs). "Finished" = the turn is done AND the
+    // typewriter has settled, so the tick lands on the completed reply.
+    val haptics = androidx.compose.ui.platform.LocalHapticFeedback.current
+    val busy = sending || revealing
+    var wasBusy by remember { mutableStateOf(false) }
+    LaunchedEffect(busy) {
+        if (wasBusy && !busy && messages.lastOrNull()?.role == "assistant") {
+            haptics.performHapticFeedback(androidx.compose.ui.hapticfeedback.HapticFeedbackType.LongPress)
+        }
+        wasBusy = busy
+    }
 
     // A failed send parks its text here — pull it back into the box (unless the
     // athlete already started typing something new) so retry is one tap.
@@ -469,10 +679,32 @@ fun CoachScreen(vm: CoachViewModel = hiltViewModel(), onOpenCalendar: () -> Unit
         }
     }
 
-    // Follow both new messages AND streamed growth of the last one.
-    val lastContentLength = messages.lastOrNull()?.content?.length ?: 0
-    LaunchedEffect(messages.size, lastContentLength) {
+    // Whether the reader is pinned to the newest content (also drives the FAB).
+    val atBottom by remember {
+        derivedStateOf {
+            val info = listState.layoutInfo
+            val lastVisible = info.visibleItemsInfo.lastOrNull()
+            lastVisible == null || lastVisible.index >= info.totalItemsCount - 1
+        }
+    }
+
+    // Follow new messages with one animated scroll; follow the typewriter's
+    // growth with instant, non-animated pins. Restarting animateScrollToItem on
+    // every reveal tick fought its own animation and flickered the whole list.
+    LaunchedEffect(messages.size) {
         if (messages.isNotEmpty()) listState.animateScrollToItem(messages.size - 1)
+    }
+    val lastContentLength = messages.lastOrNull()?.content?.length ?: 0
+    LaunchedEffect(lastContentLength) {
+        // Never yank the reader back down if they scrolled up mid-reveal.
+        if (messages.isEmpty() || !atBottom) return@LaunchedEffect
+        // Pin the growing tail by scrolling EXACTLY the overflow: how far the
+        // last item's bottom now pokes past the viewport. (scrollToItem with a
+        // huge offset overshot the content: one blank frame per tick.)
+        val info = listState.layoutInfo
+        val last = info.visibleItemsInfo.lastOrNull() ?: return@LaunchedEffect
+        val overflow = last.offset + last.size - info.viewportEndOffset
+        if (overflow > 0) listState.scrollBy(overflow.toFloat())
     }
 
     Column(Modifier.fillMaxSize().padding(top = 8.dp)) {
@@ -502,8 +734,13 @@ fun CoachScreen(vm: CoachViewModel = hiltViewModel(), onOpenCalendar: () -> Unit
                 modifier = Modifier.fillMaxSize().padding(horizontal = 12.dp),
                 verticalArrangement = Arrangement.spacedBy(8.dp),
             ) {
-                items(messages) { msg ->
-                    Box(Modifier.animateItem()) { Bubble(msg) }
+                // Positional keys: only ever appended to (or the tail mutated),
+                // so the index is a stable identity. Without keys every list
+                // rebuild re-established item identity and the reveal flickered.
+                itemsIndexed(messages, key = { i, _ -> i }) { i, msg ->
+                    // Consecutive assistant messages group under one avatar.
+                    val prevRole = messages.getOrNull(i - 1)?.role
+                    Box(Modifier.animateItem()) { Bubble(msg, showAvatar = msg.role != prevRole) }
                 }
                 // A failed turn gets a one-tap retry directly under it.
                 val last = messages.lastOrNull()
@@ -512,13 +749,14 @@ fun CoachScreen(vm: CoachViewModel = hiltViewModel(), onOpenCalendar: () -> Unit
                         TextButton(onClick = { vm.retryLast() }) { Text("Try again") }
                     }
                 }
-                actionWeek?.let { week ->
+                if (!revealing) actionWeek?.let { week ->
                     item {
                         CalendarResultCard(
                             week,
                             changed = lastAction,
                             showReplan = showReplan,
                             onOpen = onOpenCalendar,
+                            onOpenDay = { date -> vm.focusCalendar(date); onOpenCalendar() },
                             onReplan = { vm.rePlanWeek() },
                             onDismiss = { vm.dismissActionCard() },
                         )
@@ -526,27 +764,30 @@ fun CoachScreen(vm: CoachViewModel = hiltViewModel(), onOpenCalendar: () -> Unit
                 }
                 if (sending) {
                     item {
-                        Row(Modifier.padding(8.dp), verticalAlignment = Alignment.CenterVertically) {
-                            TypingDots()
-                            Text(
-                                liveStatus ?: "Coach is thinking…",
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                modifier = Modifier.padding(start = 10.dp),
-                            )
+                        // The agentic turn made visible: each tool the coach uses
+                        // becomes a step that checks off, so a 30s plan feels like
+                        // work happening rather than a stuck spinner. Before the
+                        // first tool event, the plain typing indicator.
+                        Column(Modifier.padding(8.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                            if (toolSteps.isEmpty()) {
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    TypingDots()
+                                    Text(
+                                        liveStatus ?: "Coach is thinking…",
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        modifier = Modifier.padding(start = 10.dp),
+                                    )
+                                }
+                            } else {
+                                toolSteps.forEach { step -> ToolStepRow(step) }
+                            }
                         }
                     }
                 }
             }
 
             // Jump back down when the reader has scrolled up into history.
-            val atBottom by remember {
-                derivedStateOf {
-                    val info = listState.layoutInfo
-                    val lastVisible = info.visibleItemsInfo.lastOrNull()
-                    lastVisible == null || lastVisible.index >= info.totalItemsCount - 1
-                }
-            }
             val scope = rememberCoroutineScope()
             androidx.compose.animation.AnimatedVisibility(
                 visible = !atBottom,
@@ -569,22 +810,25 @@ fun CoachScreen(vm: CoachViewModel = hiltViewModel(), onOpenCalendar: () -> Unit
             }
         }
 
-        // Contextual conversation starters on a fresh thread.
-        if (messages.size <= 1 && !sending) {
+        // Quick-reply chips: starters on a fresh thread, contextual follow-ups
+        // after a coach action ("Explain the week", "Make it easier", ...). One
+        // row, one component; follow-ups clear on tap or when a new turn starts.
+        val chips = if (messages.size <= 1) suggestions else followUps
+        if (chips.isNotEmpty() && !sending && !revealing) {
             androidx.compose.foundation.lazy.LazyRow(
                 Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 4.dp),
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
             ) {
-                items(suggestions) { sgn ->
+                items(chips) { sgn ->
                     androidx.compose.material3.AssistChip(
-                        onClick = { vm.send(sgn.prompt) },
+                        onClick = { vm.dismissFollowUps(); vm.send(sgn.prompt) },
                         label = { Text(sgn.label) },
                     )
                 }
             }
         }
 
-        banner?.let {
+        if (!revealing) banner?.let {
             Text(
                 it,
                 style = MaterialTheme.typography.bodySmall,
@@ -599,7 +843,7 @@ fun CoachScreen(vm: CoachViewModel = hiltViewModel(), onOpenCalendar: () -> Unit
         // proposed sessions in prose without applying them — a manual escape hatch.
         // Saving a reusable template is tucked into the small "Save" menu.
         val lastAssistant = messages.lastOrNull { it.role == "assistant" }?.content ?: ""
-        if (messages.size > 2 && actionWeek == null && looksLikeWorkoutProposal(lastAssistant)) {
+        if (!revealing && messages.size > 2 && actionWeek == null && looksLikeWorkoutProposal(lastAssistant)) {
             Text(
                 "Coach proposed this but didn't apply it:",
                 style = MaterialTheme.typography.labelSmall,
@@ -642,23 +886,32 @@ fun CoachScreen(vm: CoachViewModel = hiltViewModel(), onOpenCalendar: () -> Unit
 
         androidx.compose.material3.HorizontalDivider(color = MaterialTheme.colorScheme.surfaceContainerHigh)
         Row(
-            Modifier.fillMaxWidth().padding(12.dp),
-            verticalAlignment = Alignment.CenterVertically,
+            Modifier.fillMaxWidth()
+                .background(MaterialTheme.colorScheme.surfaceContainerLow)
+                .padding(12.dp),
+            verticalAlignment = Alignment.Bottom,
             horizontalArrangement = Arrangement.spacedBy(8.dp),
         ) {
             OutlinedTextField(
                 value = input,
-                onValueChange = { input = it },
+                onValueChange = { input = it; if (it.isNotEmpty()) vm.dismissFollowUps() },
                 modifier = Modifier.weight(1f),
                 placeholder = { Text("Message your coach…") },
                 shape = RoundedCornerShape(24.dp),
+                // Long questions happen; grow with the text, cap before it eats
+                // the thread. The send button anchors to the bottom edge.
+                maxLines = 4,
             )
             val canSend = !sending && input.isNotBlank()
+            val sendBg by androidx.compose.animation.animateColorAsState(
+                if (canSend) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.surfaceVariant,
+                label = "sendBg",
+            )
             Box(
                 Modifier
                     .size(48.dp)
                     .clip(CircleShape)
-                    .background(if (canSend) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.surfaceVariant),
+                    .background(sendBg),
                 contentAlignment = Alignment.Center,
             ) {
                 IconButton(
@@ -760,6 +1013,7 @@ private fun CalendarResultCard(
     changed: String?,
     showReplan: Boolean,
     onOpen: () -> Unit,
+    onOpenDay: (String) -> Unit,
     onReplan: () -> Unit,
     onDismiss: () -> Unit,
 ) {
@@ -791,7 +1045,14 @@ private fun CalendarResultCard(
                 java.time.LocalDate.parse(w.date).dayOfWeek
                     .getDisplayName(java.time.format.TextStyle.SHORT, java.util.Locale.getDefault())
             }.getOrDefault(w.date)
-            Row(Modifier.fillMaxWidth().padding(vertical = 2.dp), verticalAlignment = Alignment.CenterVertically) {
+            // Each day is a jump straight to that date on the Calendar tab.
+            Row(
+                Modifier.fillMaxWidth()
+                    .clip(RoundedCornerShape(6.dp))
+                    .clickable { onOpenDay(w.date) }
+                    .padding(vertical = 4.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
                 Text(
                     day,
                     Modifier.widthIn(min = 44.dp),
@@ -829,6 +1090,40 @@ private fun CalendarResultCard(
     }
 }
 
+// One row of the live tool timeline: a pulsing dot while the tool runs, a ✓
+// once the next event arrives. Write tools (they change the calendar) carry the
+// amber accent so "about to modify your plan" is visually distinct from reads.
+@Composable
+private fun ToolStepRow(step: CoachViewModel.ToolStep) {
+    val accent = if (step.write) com.workoutmaker.app.ui.theme.amberAccent()
+    else MaterialTheme.colorScheme.onSurfaceVariant
+    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        if (step.done) {
+            Text("✓", style = MaterialTheme.typography.labelMedium, color = accent)
+        } else {
+            val pulse = androidx.compose.animation.core.rememberInfiniteTransition(label = "step")
+            val alpha by pulse.animateFloat(
+                initialValue = 0.3f,
+                targetValue = 1f,
+                animationSpec = androidx.compose.animation.core.infiniteRepeatable(
+                    animation = androidx.compose.animation.core.tween(600),
+                    repeatMode = androidx.compose.animation.core.RepeatMode.Reverse,
+                ),
+                label = "stepAlpha",
+            )
+            Box(
+                Modifier.size(7.dp).clip(CircleShape)
+                    .background(accent.copy(alpha = alpha)),
+            )
+        }
+        Text(
+            step.label,
+            style = MaterialTheme.typography.bodySmall,
+            color = if (step.done) MaterialTheme.colorScheme.onSurfaceVariant else MaterialTheme.colorScheme.onSurface,
+        )
+    }
+}
+
 // Soft three-dot "coach is typing" indicator.
 @Composable
 internal fun TypingDots() {
@@ -855,9 +1150,8 @@ internal fun TypingDots() {
     }
 }
 
-@OptIn(androidx.compose.foundation.ExperimentalFoundationApi::class)
 @Composable
-private fun Bubble(msg: ChatMessage) {
+private fun Bubble(msg: ChatMessage, showAvatar: Boolean = true) {
     val isUser = msg.role == "user"
 
     // Some agentic replies leak raw JSON — either the protocol envelope
@@ -866,103 +1160,62 @@ private fun Bubble(msg: ChatMessage) {
         val obj = runCatching { coachJson.parseToJsonElement(msg.content) }.getOrNull() as? JsonObject
         val unwrapped = (obj?.get("message") as? JsonPrimitive)?.contentOrNull
         when {
-            unwrapped != null -> AssistantText(unwrapped)
+            unwrapped != null -> AssistantProse(unwrapped, showAvatar)
             obj != null && isWorkoutShape(obj) -> WorkoutCard(obj)
             else -> DataCard(msg.content)
         }
         return
     }
 
-    val isError = !isUser && msg.content.startsWith("⚠️")
-    val shape = if (isUser)
-        RoundedCornerShape(18.dp, 18.dp, 4.dp, 18.dp)
-    else
-        RoundedCornerShape(18.dp, 18.dp, 18.dp, 4.dp)
+    if (!isUser && msg.content.startsWith("⚠️")) {
+        ErrorTurn(msg.content.removePrefix("⚠️").trim())
+        return
+    }
 
-    // Long-press any assistant bubble to copy its text.
-    val clipboard = androidx.compose.ui.platform.LocalClipboardManager.current
-    val haptics = androidx.compose.ui.platform.LocalHapticFeedback.current
-    val snackbar = com.workoutmaker.app.ui.components.LocalAppSnackbar.current
+    if (!isUser) {
+        AssistantProse(msg.content, showAvatar)
+        return
+    }
 
-    Row(
-        Modifier.fillMaxWidth(),
-        horizontalArrangement = if (isUser) Arrangement.End else Arrangement.Start,
-        verticalAlignment = Alignment.Bottom,
-    ) {
-        if (!isUser) {
-            com.workoutmaker.app.ui.components.LogoMark(
-                modifier = Modifier.padding(end = 6.dp, bottom = 2.dp),
-                size = 20.dp,
-                animate = false,
-            )
-        }
+    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
         Box(
             Modifier
-                .widthIn(max = 320.dp)
-                .clip(shape)
-                .then(
-                    when {
-                        isUser -> Modifier.background(MaterialTheme.colorScheme.primary)
-                        isError -> Modifier.background(MaterialTheme.colorScheme.errorContainer)
-                        else -> Modifier
-                            .background(MaterialTheme.colorScheme.surfaceContainerHigh)
-                            .border(1.dp, MaterialTheme.colorScheme.outlineVariant, shape)
-                    },
-                )
-                .then(
-                    if (!isUser) Modifier.combinedClickable(
-                        onClick = {},
-                        onLongClick = {
-                            clipboard.setText(androidx.compose.ui.text.AnnotatedString(msg.content))
-                            haptics.performHapticFeedback(androidx.compose.ui.hapticfeedback.HapticFeedbackType.LongPress)
-                            snackbar?.show("Copied")
-                        },
-                    ) else Modifier,
-                )
-                .padding(horizontal = 16.dp, vertical = 12.dp),
+                .widthIn(max = 300.dp)
+                .clip(RoundedCornerShape(18.dp, 18.dp, 4.dp, 18.dp))
+                .background(MaterialTheme.colorScheme.primaryContainer)
+                .padding(horizontal = 16.dp, vertical = 10.dp),
         ) {
-            when {
-                isUser -> Text(
-                    msg.content,
-                    color = MaterialTheme.colorScheme.onPrimary,
-                    style = MaterialTheme.typography.bodyMedium,
-                )
-                isError -> Text(
-                    msg.content,
-                    color = MaterialTheme.colorScheme.onErrorContainer,
-                    style = MaterialTheme.typography.bodyMedium,
-                )
-                else ->
-                    // The model writes markdown (bold, lists, headers) — render it.
-                    com.workoutmaker.app.ui.components.MarkdownText(
-                        msg.content,
-                        color = MaterialTheme.colorScheme.onSurface,
-                        style = MaterialTheme.typography.bodyMedium,
-                    )
-            }
+            Text(
+                msg.content,
+                color = MaterialTheme.colorScheme.onPrimaryContainer,
+                style = MaterialTheme.typography.bodyMedium,
+            )
         }
     }
 }
 
+// The coach speaks as the app, not from a box: avatar + flat prose on the
+// background, full reading width. Consecutive assistant messages group — the
+// avatar appears only on the first, follow-ons indent to the same text column.
 @OptIn(androidx.compose.foundation.ExperimentalFoundationApi::class)
 @Composable
-private fun AssistantText(text: String) {
-    val shape = RoundedCornerShape(18.dp, 18.dp, 18.dp, 4.dp)
+private fun AssistantProse(text: String, showAvatar: Boolean = true) {
     val clipboard = androidx.compose.ui.platform.LocalClipboardManager.current
     val haptics = androidx.compose.ui.platform.LocalHapticFeedback.current
     val snackbar = com.workoutmaker.app.ui.components.LocalAppSnackbar.current
-    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.Start, verticalAlignment = Alignment.Bottom) {
-        com.workoutmaker.app.ui.components.LogoMark(
-            modifier = Modifier.padding(end = 6.dp, bottom = 2.dp),
-            size = 20.dp,
-            animate = false,
-        )
+    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.Top) {
+        if (showAvatar) {
+            com.workoutmaker.app.ui.components.LogoMark(
+                modifier = Modifier.padding(end = 8.dp, top = 3.dp),
+                size = 20.dp,
+                animate = false,
+            )
+        } else {
+            Spacer(Modifier.width(28.dp))
+        }
         Box(
             Modifier
-                .widthIn(max = 320.dp)
-                .clip(shape)
-                .background(MaterialTheme.colorScheme.surfaceContainerHigh)
-                .border(1.dp, MaterialTheme.colorScheme.outlineVariant, shape)
+                .weight(1f)
                 .combinedClickable(
                     onClick = {},
                     onLongClick = {
@@ -971,12 +1224,34 @@ private fun AssistantText(text: String) {
                         snackbar?.show("Copied")
                     },
                 )
-                .padding(horizontal = 16.dp, vertical = 12.dp),
+                .padding(vertical = 2.dp),
         ) {
             com.workoutmaker.app.ui.components.MarkdownText(
                 text,
                 color = MaterialTheme.colorScheme.onSurface,
-                style = MaterialTheme.typography.bodyMedium,
+                style = MaterialTheme.typography.bodyMedium.copy(lineHeight = 22.sp),
+            )
+        }
+    }
+}
+
+// A failed turn: compact, clearly an error, never styled like coach advice.
+@Composable
+private fun ErrorTurn(text: String) {
+    Row(
+        Modifier.fillMaxWidth().padding(start = 28.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Box(
+            Modifier
+                .clip(RoundedCornerShape(12.dp))
+                .background(MaterialTheme.colorScheme.errorContainer)
+                .padding(horizontal = 12.dp, vertical = 8.dp),
+        ) {
+            Text(
+                text,
+                color = MaterialTheme.colorScheme.onErrorContainer,
+                style = MaterialTheme.typography.bodySmall,
             )
         }
     }
