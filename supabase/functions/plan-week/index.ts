@@ -12,6 +12,9 @@ import { errorStatus, handleOptions, json } from "../_shared/cors.ts";
 import { adminClient, getUserId } from "../_shared/supabase.ts";
 import { llmAccess } from "../_shared/llm_keys.ts";
 import { customPriceFromProfile, estimateCostUsd, extractJson, llmGenerateWithFallback } from "../_shared/llm.ts";
+import { logGeneration, logLlmResult } from "../_shared/generation_log.ts";
+import { availabilityTssCeiling, DELOAD_AFTER_WEEKS, plannedWeeklyTarget } from "../_shared/plan_checks.ts";
+import { defaultHrZones } from "../_shared/zones.ts";
 import {
   buildWeekPrompt,
   trainingPhase,
@@ -22,6 +25,16 @@ import { createEvent, deleteEvent, latestFitness } from "../_shared/intervals.ts
 import { applyFallbackFitness } from "../_shared/load.ts";
 import { renderIntervalsWorkout } from "../_shared/intervals_workout.ts";
 import { adherenceBlock, executionBlock, goalBlock, intervalsPhysiology } from "../_shared/context.ts";
+import {
+  availabilityBlock,
+  challengeBlock,
+  experienceBlock,
+  goalsText,
+  profileFactsBlock,
+  splitBlock,
+  sportsBlock,
+  weeklyAvailableMinutes,
+} from "../_shared/profile.ts";
 import { memoryDocsBlock, memoryFromProfile } from "../_shared/agent_memory.ts";
 import { exerciseCatalogBlock, registerUnknownExercises } from "../_shared/exercise_catalog.ts";
 import { isHardSession, type MainLift, muscleOf, reviewWorkout } from "../_shared/workout_review.ts";
@@ -107,11 +120,8 @@ async function planForUser(admin: SupabaseClient, userId: string, start: string,
   const availableDays: string[] = Array.isArray(onboarding.days) ? onboarding.days : [];
 
   const phys = await intervalsPhysiology(admin, profile, onboarding);
-  const hrZones = phys.hrZones ?? onboarding.hr_zones ?? [
-    { zone: "Z1", min: 95, max: 130 }, { zone: "Z2", min: 131, max: 145 },
-    { zone: "Z3", min: 146, max: 160 }, { zone: "Z4", min: 161, max: 172 },
-    { zone: "Z5", min: 173, max: 190 },
-  ];
+  // Measured zones win; otherwise per-athlete defaults from LTHR/age (zones.ts).
+  const hrZones = phys.hrZones ?? onboarding.hr_zones ?? defaultHrZones(onboarding);
 
   // Athlete-locked fixed sessions in this week (social runs, gym with a friend…).
   // The planner must work around them, not over them.
@@ -127,16 +137,16 @@ async function planForUser(admin: SupabaseClient, userId: string, start: string,
   // Athlete's modalities + strength split → constrain and shape the week.
   const sportsList: string[] = Array.isArray(onboarding.sports) ? onboarding.sports as string[] : [];
   const splitStyle = (onboarding.split_style as string | undefined) ?? "";
-  const sportsBlock = sportsList.length
-    ? `\n\nSPORTS THE ATHLETE DOES: ${sportsList.join(", ")}. ONLY schedule these modalities (plus rest days). Do NOT introduce a sport they did not list.`
-    : "";
-  const splitBlock = splitStyle && !/^auto$/i.test(splitStyle)
-    ? `\n\nSTRENGTH SPLIT: the athlete follows a ${splitStyle} split, sequence the week's strength days to follow that rotation (e.g. push/pull/legs across three days, or alternating upper/lower), each session built around that day's focus and spaced for ≥48h muscle recovery.`
-    : "";
+
+  // The most load the athlete's declared day budgets can hold; clamps both the
+  // weekly target below and the periodization ramp target, so no part of the
+  // prompt can ask for more than the availability the same prompt hands out.
+  const availCeiling = availabilityTssCeiling(weeklyAvailableMinutes(onboarding));
 
   // Opt-in periodization: track build weeks via week_plans.focus history and
   // schedule an automatic deload. Off → no block, exactly today's behavior.
   let periodizationBlock = "";
+  let deloadDue = false;
   if (onboarding.periodized === true) {
     const { data: recentWeeks } = await admin
       .from("week_plans").select("start_date, focus")
@@ -147,28 +157,40 @@ async function planForUser(admin: SupabaseClient, userId: string, start: string,
       if (/deload|recovery/i.test((w.focus ?? "") as string)) break;
       buildWeeks++;
     }
-    const DELOAD_AFTER = 4;
     const lastWeekStart = addDays(start, -7);
     const lastWeekTss = Math.round(
       acts28.filter((a) => (a.date ?? "") >= lastWeekStart && (a.date ?? "") < start)
         .reduce((s, a) => s + (a.tss ?? 0), 0),
     );
-    if (buildWeeks >= DELOAD_AFTER) {
+    deloadDue = buildWeeks >= DELOAD_AFTER_WEEKS;
+    if (deloadDue) {
       periodizationBlock =
         `\n\nPERIODIZATION. DELOAD WEEK: ${buildWeeks} build weeks since the last deload. Make THIS a recovery/deload week, cut total volume ~40% (fewer sets / shorter sessions), keep a little intensity to stay sharp, and set "week_focus" to "Recovery/Deload".`;
     } else {
-      const targetTss = lastWeekTss > 0 ? Math.round(lastWeekTss * 1.08) : Math.round(weeklyTssTarget);
+      const rampTss = lastWeekTss > 0 ? Math.round(lastWeekTss * 1.08) : Math.round(weeklyTssTarget);
+      const targetTss = availCeiling !== null ? Math.min(rampTss, availCeiling) : rampTss;
       periodizationBlock =
-        `\n\nPERIODIZATION. BUILD WEEK ${buildWeeks + 1} of ~${DELOAD_AFTER}: progress gently on last week (~${lastWeekTss} TSS), aim for ~${targetTss} TSS via small volume/intensity increases, not a jump. Keep 80/20 and recovery spacing; a deload is due after ${DELOAD_AFTER} build weeks.`;
+        `\n\nPERIODIZATION. BUILD WEEK ${buildWeeks + 1} of ~${DELOAD_AFTER_WEEKS}: progress gently on last week (~${lastWeekTss} TSS), aim for ~${targetTss} TSS via small volume/intensity increases, not a jump. Keep 80/20 and recovery spacing; a deload is due after ${DELOAD_AFTER_WEEKS} build weeks.`;
     }
   }
 
+  // The athlete's weekly_tss_target is a BASE for a normal build week. Two
+  // reconciliations before it becomes the number the prompt asks for, so the
+  // prompt never demands two incompatible things at once:
+  //  1. availability: the target can't exceed what the athlete's own day
+  //     budgets can hold at a properly polarized mix (availabilityTssCeiling);
+  //  2. phase: a taper/deload week is a lower target, not a broken one.
+  const reachableTarget = availCeiling !== null ? Math.min(weeklyTssTarget, availCeiling) : weeklyTssTarget;
+  const phaseTssTarget = plannedWeeklyTarget(reachableTarget, phase, deloadDue);
+
   const contextBlocks =
+    profileFactsBlock(onboarding, profile.display_name as string | undefined) +
     memoryDocsBlock(memoryFromProfile(profile)) + phys.block +
     await adherenceBlock(admin, userId, since14, start, acts28) +
     await executionBlock(admin, userId, since14) +
     goalBlock(onboarding, weeksToGoal, phase, acts28) + lockedBlock +
-    sportsBlock + splitBlock + periodizationBlock +
+    sportsBlock(sportsList) + splitBlock(splitStyle) + periodizationBlock +
+    availabilityBlock(onboarding) + experienceBlock(onboarding) + challengeBlock(onboarding) +
     await exerciseCatalogBlock(admin, userId);
 
   const dayList = dates.map((d) => ({
@@ -178,10 +200,10 @@ async function planForUser(admin: SupabaseClient, userId: string, start: string,
 
   const userPrompt = buildWeekPrompt({
     startDate: start, dayList,
-    goal: onboarding.goal ?? "General fitness",
+    goal: goalsText(onboarding),
     experience: onboarding.experience ?? "Intermediate",
     phase, tsb: fitness.tsb, ctl: fitness.ctl, atl: fitness.atl, acwr,
-    wellness3d, weeklyKm, weeklyTssTarget, hrZones, contextBlocks,
+    wellness3d, weeklyKm, weeklyTssTarget: phaseTssTarget, hrZones, contextBlocks,
   });
 
   const { chain, resolveKey, resolveModel, resolveBaseUrl, hosted } = await llmAccess(admin, userId, profile);
@@ -189,16 +211,15 @@ async function planForUser(admin: SupabaseClient, userId: string, start: string,
 
   // Failures are logged to generation_logs (like generate-workout does) so a
   // "re-plan failed" in the app is diagnosable from the logs table.
-  const logFailure = async (provider: string | null, raw: string | null, error: string) => {
-    await admin.from("generation_logs").insert({
-      user_id: userId, feature: "plan", hosted, provider, system_prompt: WEEK_SYSTEM_PROMPT,
-      user_prompt: userPrompt, raw_response: raw, parsed_ok: false, error,
-    }).then(() => {}, () => {});
-  };
+  const logFailure = (provider: string | null, raw: string | null, error: string) =>
+    logGeneration(admin, userId, {
+      feature: "plan", hosted, provider, systemPrompt: WEEK_SYSTEM_PROMPT,
+      userPrompt, rawResponse: raw, parsedOk: false, error,
+    });
 
   let outcome;
   try {
-    outcome = await llmGenerateWithFallback(chain, { prompt: userPrompt, systemPrompt: WEEK_SYSTEM_PROMPT }, resolveKey, resolveModel, resolveBaseUrl);
+    outcome = await llmGenerateWithFallback(chain, { prompt: userPrompt, systemPrompt: WEEK_SYSTEM_PROMPT, hosted, feature: "plan" }, resolveKey, resolveModel, resolveBaseUrl);
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
     await logFailure(chain[0] ?? null, null, msg);
@@ -208,7 +229,7 @@ async function planForUser(admin: SupabaseClient, userId: string, start: string,
   if (!v.ok) {
     const retry = await llmGenerateWithFallback(
       chain,
-      { prompt: `${userPrompt}\n\nYOUR PREVIOUS RESPONSE was invalid (${v.error}). Return ONLY corrected JSON.`, systemPrompt: WEEK_SYSTEM_PROMPT },
+      { prompt: `${userPrompt}\n\nYOUR PREVIOUS RESPONSE was invalid (${v.error}). Return ONLY corrected JSON.`, systemPrompt: WEEK_SYSTEM_PROMPT, hosted, feature: "plan" },
       resolveKey,
       resolveModel,
       resolveBaseUrl,
@@ -379,12 +400,12 @@ async function planForUser(admin: SupabaseClient, userId: string, start: string,
     }
   }
 
+  // Still computed locally: the response reports it back to the caller.
   const cost = estimateCostUsd(outcome.provider, outcome.promptTokens, outcome.completionTokens, customPriceFromProfile(outcome.provider, profile), outcome.model);
-  await admin.from("generation_logs").insert({
-    user_id: userId, feature: "plan", hosted, provider: outcome.provider, model: outcome.model,
-    prompt_tokens: outcome.promptTokens, completion_tokens: outcome.completionTokens,
-    estimated_cost_usd: cost, system_prompt: WEEK_SYSTEM_PROMPT, user_prompt: userPrompt,
-    raw_response: outcome.text, parsed_ok: true,
+  await logLlmResult(admin, userId, "plan", hosted, outcome, profile, {
+    systemPrompt: WEEK_SYSTEM_PROMPT,
+    userPrompt,
+    rawResponse: outcome.text,
     error: weekViolations.length ? JSON.stringify(weekViolations) : null,
   });
 

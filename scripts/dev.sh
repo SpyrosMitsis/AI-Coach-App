@@ -199,6 +199,102 @@ cmd_db_push() {
   ( cd "$ROOT/supabase" && supabase db push )
 }
 
+# ============================================================================
+# LLM evaluation
+# ============================================================================
+# eval:run [--tier smoke|full] [--models a,b] [--repeats N] [--no-judge]
+#
+# Drives the REAL prompts through the models in scripts/eval/models.ts and scores
+# the output with the engine's own checkers. Offline: no Supabase, no edge
+# functions, no DB, so it cannot touch a real training plan.
+#
+# Needs provider keys in scripts/dev.local.sh (untracked), e.g.
+#   export GROQ_API_KEY=...  /  export DEEPSEEK_API_KEY=...
+# A model with no key is skipped, not fatal.
+cmd_eval_run() {
+  need deno
+  say "eval: real prompts -> models -> the engine's own checkers (offline)"
+  # Slow reasoning models (mimo-v2.5-pro) need >60s for a week plan; production
+  # keeps the 60s default, only the offline eval waits longer.
+  ( cd "$ROOT" && WM_LLM_TIMEOUT_MS="${WM_LLM_TIMEOUT_MS:-180000}" deno run -A scripts/eval/run.ts "$@" )
+}
+
+# eval:notebook — open the analysis notebook on the latest run.
+cmd_eval_notebook() {
+  need jupyter
+  local latest
+  latest="$(ls -1t "$ROOT"/eval_runs/*.jsonl 2>/dev/null | head -1 || true)"
+  [[ -n "$latest" ]] || warn "no eval_runs/*.jsonl yet — run 'scripts/dev.sh eval:run' first"
+  [[ -n "$latest" ]] && say "latest run: $latest"
+  ( cd "$ROOT" && jupyter lab notebooks/llm_eval.ipynb )
+}
+
+# ============================================================================
+# LLM cost
+# ============================================================================
+# llm:cost [days] [--recent [n]]
+#
+# Where the AI money goes. Reads generation_logs (which every LLM call writes
+# via _shared/generation_log.ts) and rolls it up by feature+model. `hosted` rows
+# are the ones on YOUR key — the spend hosted_spend()/quota.ts meters. See
+# docs/LLM_COSTS.md.
+cmd_llm_cost() {
+  need psql
+  [[ -n "${WM_DB_URL:-}" ]] || die "WM_DB_URL is unset — put your Supabase Postgres connection string in scripts/dev.local.sh (Dashboard > Project Settings > Database > Connection string > URI). It stays untracked."
+
+  local days="7" recent="" n="20"
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --recent) recent=1; [[ "${2:-}" =~ ^[0-9]+$ ]] && { n="$2"; shift; } ;;
+      *) [[ "$1" =~ ^[0-9]+$ ]] && days="$1" || die "usage: llm:cost [days] [--recent [n]]" ;;
+    esac
+    shift
+  done
+
+  if [[ -n "$recent" ]]; then
+    say "last $n requests"
+    psql "$WM_DB_URL" -P pager=off -c "
+      select created_at::timestamp(0) as when, feature,
+             case when hosted then 'hosted' else 'byo' end as key,
+             coalesce(model, provider, '?') as model,
+             prompt_tokens as in_tok, completion_tokens as out_tok,
+             to_char(coalesce(estimated_cost_usd, 0), 'FM\$990.000000') as usd,
+             case when parsed_ok then '' else 'FAIL' end as note
+      from generation_logs
+      order by created_at desc
+      limit $n;"
+    return
+  fi
+
+  say "last $days days by feature + model"
+  psql "$WM_DB_URL" -P pager=off -c "
+    select feature,
+           case when hosted then 'hosted' else 'byo' end as key,
+           coalesce(model, provider, '?') as model,
+           count(*) as calls,
+           count(*) filter (where not parsed_ok) as failed,
+           sum(prompt_tokens) as in_tok,
+           sum(completion_tokens) as out_tok,
+           to_char(sum(coalesce(estimated_cost_usd, 0)), 'FM\$990.000000') as usd
+    from generation_logs
+    where created_at > now() - interval '$days days'
+    group by 1, 2, 3
+    order by sum(coalesce(estimated_cost_usd, 0)) desc;"
+
+  say "totals (hosted = your spend, the part quota.ts caps)"
+  psql "$WM_DB_URL" -P pager=off -c "
+    select case when hosted then 'hosted (you pay)' else 'byo (user pays)' end as key,
+           count(*) as calls,
+           count(distinct user_id) as users,
+           sum(prompt_tokens) as in_tok,
+           sum(completion_tokens) as out_tok,
+           to_char(sum(coalesce(estimated_cost_usd, 0)), 'FM\$990.000000') as usd
+    from generation_logs
+    where created_at > now() - interval '$days days'
+    group by 1
+    order by 1;"
+}
+
 cmd_web_dev()   { ( cd "$ROOT/web" && npm run dev ); }
 cmd_web_build() { ( cd "$ROOT/web" && npm run build ); }
 
@@ -230,10 +326,23 @@ ${c_green}Database & web${c_off}
   db:push                 run pending migrations (asks first)
   web:dev / web:build     Next.js dev server / production build
 
+${c_green}Evaluation${c_off}
+  eval:run [opts]         score the real prompts across models, offline
+                          ${c_dim}--tier smoke|full  --models a,b  --repeats N  --no-judge
+                          models live in scripts/eval/models.ts; keys in dev.local.sh${c_off}
+  eval:notebook           open the analysis notebook on the latest run
+
+${c_green}Cost${c_off}
+  llm:cost [days]         AI spend by feature + model (default 7 days)
+  llm:cost --recent [n]   the last n individual requests, with per-call cost
+                          ${c_dim}needs WM_DB_URL in dev.local.sh; see docs/LLM_COSTS.md${c_off}
+
 ${c_dim}Examples:
   scripts/dev.sh android:install
   scripts/dev.sh android:log "WM|Exception"
   scripts/dev.sh fn:call daily-summary '{"date":"$(date +%F)"}'
+  scripts/dev.sh eval:run --tier smoke
+  scripts/dev.sh llm:cost 30
   WM_LOG=debug scripts/dev.sh fn:logs generate-workout${c_off}
 EOF
 }
@@ -253,6 +362,9 @@ main() {
     fn:logs)          cmd_fn_logs "$@" ;;
     fn:call)          cmd_fn_call "$@" ;;
     db:push)          cmd_db_push "$@" ;;
+    eval:run)         cmd_eval_run "$@" ;;
+    eval:notebook)    cmd_eval_notebook "$@" ;;
+    llm:cost)         cmd_llm_cost "$@" ;;
     web:dev)          cmd_web_dev "$@" ;;
     web:build)        cmd_web_build "$@" ;;
     help|-h|--help)   cmd_help ;;

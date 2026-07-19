@@ -16,9 +16,35 @@
 import type { SupabaseClient } from "jsr:@supabase/supabase-js@2";
 import type { LlmProvider } from "./types.ts";
 import { type ChatMessage, llmGenerateWithFallback } from "./llm.ts";
+import { logGeneration, type PricingProfile } from "./generation_log.ts";
 import { logger } from "./log.ts";
 
 const log = logger("agent_memory");
+
+// Every LLM call in this module goes through here. These run in the background
+// off a coach turn, on the same key the turn used, so leaving them unlogged made
+// them both invisible in the cost report and uncounted by the hosted quota.
+function logMemoryCall(
+  admin: SupabaseClient,
+  userId: string,
+  bundle: LlmBundle,
+  out: { provider: string; model: string; promptTokens: number; completionTokens: number },
+): void {
+  logGeneration(admin, userId, {
+    feature: "memory",
+    hosted: bundle.hosted,
+    provider: out.provider,
+    model: out.model,
+    promptTokens: out.promptTokens,
+    completionTokens: out.completionTokens,
+    profile: bundle.pricing,
+  });
+}
+
+// The args every call here shares: free-form prose, on the caller's access.
+function memoryArgs(bundle: LlmBundle, prompt: string, systemPrompt: string) {
+  return { prompt, systemPrompt, jsonMode: false, hosted: bundle.hosted, feature: "memory" };
+}
 
 // Provider access bundle — exactly the shape llmAccess() returns, so callers
 // can pass it straight through.
@@ -27,6 +53,14 @@ export interface LlmBundle {
   resolveKey: (p: LlmProvider) => Promise<string | null>;
   resolveModel?: (p: LlmProvider) => string | undefined;
   resolveBaseUrl?: (p: LlmProvider) => Promise<string | null>;
+  // True when these calls run on the operator's key. Every function in this
+  // module fires an LLM call on the SAME access the coach turn used, so it must
+  // be carried: it picks the hosted output-token ceiling and marks the row that
+  // hosted_spend() meters. This field is why the memory calls used to be free
+  // and invisible — the bundle simply didn't have it.
+  hosted: boolean;
+  // user_profiles pricing columns, so a BYO/OpenRouter call isn't logged at $0.
+  pricing?: PricingProfile | null;
 }
 
 export interface AgentMemory {
@@ -145,11 +179,12 @@ export async function updateUserDoc(
   try {
     const out = await llmGenerateWithFallback(
       bundle.chain,
-      { prompt, systemPrompt: "You extract and maintain durable athlete facts. Output only a bullet list.", jsonMode: false },
+      memoryArgs(bundle, prompt, "You extract and maintain durable athlete facts. Output only a bullet list."),
       bundle.resolveKey,
       bundle.resolveModel,
       bundle.resolveBaseUrl,
     );
+    logMemoryCall(admin, userId, bundle, out);
     const next = out.text.trim();
     // Relaxed gate: previously required a bullet char, which silently dropped a
     // valid single fact stated without a dash ("Only trains twice a week"). Now
@@ -190,11 +225,12 @@ export async function updateMemoryDoc(
   const prompt = `EXISTING NOTES:\n${existing || "(none yet)"}\n\n${evidence}\n\nReturn the updated notes only.`;
   const out = await llmGenerateWithFallback(
     bundle.chain,
-    { prompt, systemPrompt: MEMORY_SYSTEM, jsonMode: false },
+    memoryArgs(bundle, prompt, MEMORY_SYSTEM),
     bundle.resolveKey,
     bundle.resolveModel,
     bundle.resolveBaseUrl,
   );
+  logMemoryCall(admin, userId, bundle, out);
   const memory = out.text.trim().slice(0, 1200);
   await admin.from("user_profiles").update({ training_memory: memory }).eq("id", userId);
   return memory;
@@ -234,11 +270,12 @@ export async function updateSoulDoc(
   try {
     const out = await llmGenerateWithFallback(
       bundle.chain,
-      { prompt, systemPrompt: SOUL_SYSTEM, jsonMode: false },
+      memoryArgs(bundle, prompt, SOUL_SYSTEM),
       bundle.resolveKey,
       bundle.resolveModel,
       bundle.resolveBaseUrl,
     );
+    logMemoryCall(admin, userId, bundle, out);
     const next = out.text.trim().slice(0, 2000);
     if (next.length > 40) {
       await admin
@@ -290,6 +327,8 @@ export function compressThread(
 // `dropped` set each time (no double-counting), capped to the most recent turns
 // within a char budget. Returns null when there's too little to summarize.
 export async function summarizeDropped(
+  admin: SupabaseClient,
+  userId: string,
   dropped: ChatMessage[],
   bundle: LlmBundle,
   maxChars = 12_000,
@@ -311,11 +350,12 @@ export async function summarizeDropped(
   try {
     const out = await llmGenerateWithFallback(
       bundle.chain,
-      { prompt, systemPrompt: "You compress a coaching conversation into a durable running summary.", jsonMode: false },
+      memoryArgs(bundle, prompt, "You compress a coaching conversation into a durable running summary."),
       bundle.resolveKey,
       bundle.resolveModel,
       bundle.resolveBaseUrl,
     );
+    logMemoryCall(admin, userId, bundle, out);
     const t = out.text.trim();
     return t ? t.slice(0, 1500) : null;
   } catch (_e) {

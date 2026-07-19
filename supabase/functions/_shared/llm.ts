@@ -27,12 +27,85 @@ export interface ProviderSpec {
 // Per-request deadline for a (non-streaming) provider call. Without it a hung
 // provider runs to the platform wall-clock, and the agentic coach loop compounds
 // that across up to ~12 sequential calls. AbortSignal.timeout auto-cleans.
-const LLM_TIMEOUT_MS = 60_000;
+// Env-overridable because the offline eval legitimately waits on slow reasoning
+// models (mimo-v2.5-pro needs >60s for a week plan); production leaves it alone.
+const LLM_TIMEOUT_MS = envInt("WM_LLM_TIMEOUT_MS", 60_000);
 
-// COST-SAFETY INVARIANT: every adapter below hardcodes 2,500 max output tokens
-// (and llm_native_tools.ts does the same). The hosted-AI quota math in
-// _shared/quota.ts assumes this ceiling; do not raise it without re-running
-// the per-call cost estimates in docs/PLAY_RELEASE.md.
+// COST-SAFETY INVARIANT. Output tokens are the expensive half of every bill, so
+// nothing here may write max_tokens directly: every adapter (and
+// llm_native_tools.ts) resolves it through maxTokensOf() below.
+//
+// Every FEATURE gets a budget sized to its job. One flat number used to serve
+// them all, and it could not: a coach brief is two sentences, a week plan is
+// seven complete workout objects. At a flat 2,500 the brief wasted nothing and
+// the week plan was guillotined mid-JSON. Measured on three consecutive real
+// runs: 2144 / 2216 / 2500 output tokens, i.e. 86% / 89% / 100% of the cap, and
+// the third truncated inside a string with all 7 days still open.
+//
+// The cap was also costing what it meant to save: plan-week retries a failed
+// parse (plan-week/index.ts) with the same ceiling, so a truncation burnt 2,500
+// + 2,500 on a doomed retry for zero output.
+//
+// max_tokens is a CEILING, not a target, so a bigger budget costs nothing on the
+// calls that don't need it. What a budget bounds is the WORST case, which is why
+// chat stays tight (up to MAX_LLM_CALLS_PER_TURN of them per turn) while plan,
+// which runs once or twice, can afford room.
+//
+// Operators can pull any of this down with WM_MAX_OUTPUT_TOKENS (BYO, the user's
+// money) or WM_HOSTED_MAX_OUTPUT_TOKENS (hosted, YOURS). Nothing may ever exceed
+// ABSOLUTE_MAX_OUTPUT_TOKENS. _shared/quota.ts prices its caps against this
+// table: change a budget and re-run the per-call estimates in docs/LLM_COSTS.md.
+export const OUTPUT_BUDGETS: Record<string, number> = {
+  brief: 500, // 1-2 sentences (prompt.ts BRIEF_SYSTEM)
+  week_review: 700, // a short recap
+  memory: 900, // agent_memory docs are capped at ~200 words anyway
+  analyze: 1500, // 3-5 sentences of feedback
+  chat: 2500, // the cost driver: up to 12 of these per turn
+  workout: 2500, // one workout object
+  finalize: 3000, // a workout or plan template
+  plan: 6000, // 7 x full workout JSON; measured need ~2.5k, so 2x headroom
+};
+
+/** Budget for a call that names no feature. */
+const DEFAULT_MAX_OUTPUT_TOKENS = 2500;
+
+/** Hard bound. No feature, env override or caller may exceed this. */
+const ABSOLUTE_MAX_OUTPUT_TOKENS = 8000;
+
+function envInt(name: string, fallback: number): number {
+  // Test-safe: _shared tests run without --allow-env.
+  const raw = (() => {
+    try {
+      return (globalThis as { Deno?: { env: { get(k: string): string | undefined } } })
+        .Deno?.env.get(name);
+    } catch {
+      return undefined;
+    }
+  })();
+  const n = Number(raw);
+  return Number.isFinite(n) && n > 0 ? Math.floor(n) : fallback;
+}
+
+/**
+ * The output-token budget for one call.
+ *
+ * Precedence: an explicit `maxTokens` → the feature's budget → the default. The
+ * result is then clamped by the operator's env override (hosted vs BYO) and by
+ * the absolute bound, so a caller can never talk its way past either.
+ */
+export function maxTokensOf(
+  args: { feature?: string; maxTokens?: number; hosted?: boolean },
+): number {
+  const budget = args.maxTokens ??
+    (args.feature ? OUTPUT_BUDGETS[args.feature] : undefined) ??
+    DEFAULT_MAX_OUTPUT_TOKENS;
+  // The env vars are an emergency brake, not the normal path: unset means the
+  // table governs. Hosted spends the operator's money, so it has its own.
+  const ceiling = args.hosted
+    ? envInt("WM_HOSTED_MAX_OUTPUT_TOKENS", ABSOLUTE_MAX_OUTPUT_TOKENS)
+    : envInt("WM_MAX_OUTPUT_TOKENS", ABSOLUTE_MAX_OUTPUT_TOKENS);
+  return Math.max(1, Math.min(budget, ceiling, ABSOLUTE_MAX_OUTPUT_TOKENS));
+}
 
 export const PROVIDERS: Record<LlmProvider, ProviderSpec> = {
   anthropic: {
@@ -185,6 +258,17 @@ interface GenArgs {
   // a fixed `seed` where the provider supports it (OpenAI-compatible).
   deterministic?: boolean;
   seed?: number;
+  // Which feature this call serves, e.g. "plan" / "chat". Selects the output
+  // budget in OUTPUT_BUDGETS and should match the `feature` the same call site
+  // passes to logGeneration, so cost rows and budgets agree.
+  feature?: string;
+  // Explicit output ceiling, overriding the feature budget. Still clamped by the
+  // env override and ABSOLUTE_MAX. Use it when a caller needs a short answer.
+  maxTokens?: number;
+  // True when this runs on the operator's hosted key. Must be passed through
+  // from the llmAccess() bundle: it selects the hosted (spend-bounded) ceiling
+  // and is what quota.ts's cost model assumes.
+  hosted?: boolean;
 }
 
 // Resolve the effective temperature for a call (deterministic → 0, else 0.6).
@@ -232,10 +316,10 @@ async function openAiCompatible(
     ],
   };
   if (openAiModernParams(provider, model)) {
-    body.max_completion_tokens = 2500;
+    body.max_completion_tokens = maxTokensOf(args);
   } else {
     body.temperature = tempOf(args);
-    body.max_tokens = 2500;
+    body.max_tokens = maxTokensOf(args);
   }
   // Reproducible sampling where supported (OpenAI/DeepSeek/Groq honor `seed`).
   if (args.deterministic && typeof args.seed === "number") body.seed = args.seed;
@@ -280,7 +364,7 @@ async function anthropic(args: GenArgs): Promise<LlmResult> {
   const model = args.model ?? PROVIDERS.anthropic.model;
   const body: Record<string, unknown> = {
     model,
-    max_tokens: 2500,
+    max_tokens: maxTokensOf(args),
     system: args.systemPrompt,
     messages: turns(args),
   };
@@ -320,7 +404,7 @@ async function gemini(args: GenArgs): Promise<LlmResult> {
     `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${args.apiKey}`;
   const generationConfig: Record<string, unknown> = {
     temperature: tempOf(args),
-    maxOutputTokens: 2500,
+    maxOutputTokens: maxTokensOf(args),
   };
   if (args.jsonMode !== false) generationConfig.responseMimeType = "application/json";
   const res = await fetch(url, {
@@ -393,10 +477,10 @@ export async function llmStream(
       stream: true,
     };
     if (openAiModernParams(provider, model)) {
-      body.max_completion_tokens = 2500;
+      body.max_completion_tokens = maxTokensOf(args);
     } else {
       body.temperature = 0.6;
-      body.max_tokens = 2500;
+      body.max_tokens = maxTokensOf(args);
     }
     const res = await fetch(`${base}/chat/completions`, {
       method: "POST",
@@ -416,7 +500,7 @@ export async function llmStream(
 
   if (provider === "anthropic") {
     const streamBody: Record<string, unknown> = {
-      model, max_tokens: 2500, stream: true,
+      model, max_tokens: maxTokensOf(args), stream: true,
       system: args.systemPrompt, messages: turns(args),
     };
     if (anthropicAcceptsTemperature(model)) streamBody.temperature = 0.6;
@@ -447,7 +531,7 @@ export async function llmStream(
     body: JSON.stringify({
       systemInstruction: { parts: [{ text: args.systemPrompt }] },
       contents: turns(args).map((m) => ({ role: m.role === "assistant" ? "model" : "user", parts: [{ text: m.content }] })),
-      generationConfig: { temperature: 0.6, maxOutputTokens: 2500 },
+      generationConfig: { temperature: 0.6, maxOutputTokens: maxTokensOf(args) },
     }),
   });
   if (!res.ok) throw new Error(`gemini HTTP ${res.status}: ${await res.text()}`);

@@ -10,7 +10,7 @@
 // ============================================================================
 
 import type { LlmProvider } from "./types.ts";
-import { anthropicAcceptsTemperature, openAiModernParams, PROVIDERS } from "./llm.ts";
+import { anthropicAcceptsTemperature, maxTokensOf, openAiModernParams, PROVIDERS } from "./llm.ts";
 import type { ChatMessage } from "./llm.ts";
 
 // Per-step deadline — one hung tool-call step shouldn't run to the platform
@@ -32,6 +32,12 @@ export interface NativeLoopArgs {
   tools: NativeToolDef[];
   exec: (name: string, args: Record<string, unknown>) => Promise<string>;
   maxSteps?: number;
+  // Same contract as GenArgs in llm.ts: resolved through maxTokensOf(), so the
+  // feature budget and hosted ceiling apply here too. This loop is the coach's
+  // hot path, which is exactly why its budget stays tight.
+  feature?: string;
+  maxTokens?: number;
+  hosted?: boolean;
 }
 
 export interface NativeLoopResult {
@@ -41,6 +47,9 @@ export interface NativeLoopResult {
   promptTokens: number;
   completionTokens: number;
   model: string;
+  // How many provider calls this loop actually made. The caller spends these
+  // against a per-turn budget, so a turn's total LLM calls stays bounded.
+  steps: number;
 }
 
 export function supportsNativeTools(p: LlmProvider): boolean {
@@ -63,7 +72,9 @@ async function anthropicLoop(args: NativeLoopArgs): Promise<NativeLoopResult> {
   // deno-lint-ignore no-explicit-any
   const msgs: any[] = args.messages.map((m) => ({ role: m.role, content: m.content }));
 
+  let steps = 0;
   for (let step = 0; step < (args.maxSteps ?? 6); step++) {
+    steps++;
     const res = await fetch("https://api.anthropic.com/v1/messages", {
       method: "POST",
       headers: {
@@ -73,7 +84,7 @@ async function anthropicLoop(args: NativeLoopArgs): Promise<NativeLoopResult> {
       },
       body: JSON.stringify({
         model,
-        max_tokens: 2500,
+        max_tokens: maxTokensOf(args),
         ...(anthropicAcceptsTemperature(model) ? { temperature: 0.6 } : {}),
         system: args.systemPrompt,
         messages: msgs,
@@ -91,7 +102,7 @@ async function anthropicLoop(args: NativeLoopArgs): Promise<NativeLoopResult> {
 
     if (data.stop_reason !== "tool_use" || toolUses.length === 0) {
       const text = content.filter((b) => b.type === "text").map((b) => b.text).join("");
-      return { text, toolsUsed, promptTokens, completionTokens, model };
+      return { text, toolsUsed, promptTokens, completionTokens, model, steps };
     }
 
     msgs.push({ role: "assistant", content });
@@ -103,7 +114,7 @@ async function anthropicLoop(args: NativeLoopArgs): Promise<NativeLoopResult> {
     }
     msgs.push({ role: "user", content: results });
   }
-  return { text: "", toolsUsed, promptTokens, completionTokens, model };
+  return { text: "", toolsUsed, promptTokens, completionTokens, model, steps };
 }
 
 // ---------------------------------------------------------------------------
@@ -135,7 +146,9 @@ async function openAiCompatibleLoop(args: NativeLoopArgs): Promise<NativeLoopRes
     function: { name: t.name, description: t.description, parameters: t.input_schema },
   }));
 
+  let steps = 0;
   for (let step = 0; step < (args.maxSteps ?? 6); step++) {
+    steps++;
     const res = await fetch(`${base}/chat/completions`, {
       method: "POST",
       headers: {
@@ -150,8 +163,8 @@ async function openAiCompatibleLoop(args: NativeLoopArgs): Promise<NativeLoopRes
         messages: msgs,
         tools,
         ...(openAiModernParams(args.provider, model)
-          ? { max_completion_tokens: 2500 }
-          : { temperature: 0.6, max_tokens: 2500 }),
+          ? { max_completion_tokens: maxTokensOf(args) }
+          : { temperature: 0.6, max_tokens: maxTokensOf(args) }),
       }),
       signal: AbortSignal.timeout(STEP_TIMEOUT_MS),
     });
@@ -163,7 +176,7 @@ async function openAiCompatibleLoop(args: NativeLoopArgs): Promise<NativeLoopRes
     if (!msg) throw new Error(`${args.provider}: empty completion`);
 
     const calls = msg.tool_calls ?? [];
-    if (!calls.length) return { text: msg.content ?? "", toolsUsed, promptTokens, completionTokens, model };
+    if (!calls.length) return { text: msg.content ?? "", toolsUsed, promptTokens, completionTokens, model, steps };
 
     msgs.push(msg);
     for (const call of calls) {
@@ -175,5 +188,5 @@ async function openAiCompatibleLoop(args: NativeLoopArgs): Promise<NativeLoopRes
       msgs.push({ role: "tool", tool_call_id: call.id, content: obs });
     }
   }
-  return { text: "", toolsUsed, promptTokens, completionTokens, model };
+  return { text: "", toolsUsed, promptTokens, completionTokens, model, steps };
 }

@@ -17,7 +17,6 @@ export const WORKOUT_JSON_SCHEMA = `{
   "type": "run | ride | swim | strength | rest",
   "title": "string",
   "duration_minutes": number,
-  "tss_estimate": number,
   "rpe_target": number,
   "sections": [
     {
@@ -41,7 +40,9 @@ export const WORKOUT_JSON_SCHEMA = `{
 }`;
 
 // Shared coaching knowledge injected into every system prompt.
-const COACHING_PRINCIPLES = `TRAINING SCIENCE YOU MUST APPLY:
+// Exported so the eval's LLM judge can grade generated training against the
+// app's OWN rules rather than the judge model's private opinion.
+export const COACHING_PRINCIPLES = `TRAINING SCIENCE YOU MUST APPLY:
 
 Endurance / running:
 - Intensity distribution: keep ~80% of weekly running in Z1-Z2 (easy/aerobic) and
@@ -141,7 +142,8 @@ Rules:
   strength set sets/reps/weight_kg/rest_seconds and include the target RIR in
   notes (pace_zone/hr_zone null).
 - For a rest day return type "rest" with recovery guidance in coach_note.
-- tss_estimate and rpe_target (1-10) must be realistic for the prescription.
+- rpe_target (1-10) must be realistic for the prescription. Training load (TSS)
+  is computed by the engine from your zones and durations; do not include it.
 - Respect the athlete's session-length guidance, but let duration VARY with the
   session's purpose (a recovery jog is short, a long run uses the full window).
   Never pad a session just to hit the same number every day.

@@ -31,41 +31,21 @@ import {
   RawStreams,
   scoreLabel,
 } from "./analysis.ts";
-import { customPriceFromProfile, estimateCostUsd, llmGenerateWithFallback } from "./llm.ts";
+import { llmGenerateWithFallback } from "./llm.ts";
+import { logLlmResult } from "./generation_log.ts";
 import { llmAccess } from "./llm_keys.ts";
 import type { LlmResult } from "./types.ts";
 
-// Best-effort cost row so analysis feedback shows up in spend diagnostics —
-// and, for Pro users on the hosted key, gets metered by the quota RPC.
-async function logFeedbackCost(
+// Cost row so analysis feedback shows up in spend diagnostics — and, for Pro
+// users on the hosted key, gets metered by the quota RPC.
+function logFeedbackCost(
   admin: SupabaseClient,
   userId: string,
   profile: Record<string, unknown> | null | undefined,
   out: LlmResult,
   hosted: boolean,
 ): Promise<void> {
-  try {
-    const cost = estimateCostUsd(
-      out.provider,
-      out.promptTokens,
-      out.completionTokens,
-      customPriceFromProfile(out.provider, profile),
-      out.model,
-    );
-    await admin.from("generation_logs").insert({
-      user_id: userId,
-      feature: "analyze",
-      hosted,
-      provider: out.provider,
-      model: out.model,
-      prompt_tokens: out.promptTokens,
-      completion_tokens: out.completionTokens,
-      estimated_cost_usd: cost,
-      parsed_ok: true,
-    });
-  } catch {
-    // best effort
-  }
+  return logLlmResult(admin, userId, "analyze", hosted, out, profile);
 }
 import { customExercises, muscleForName } from "./exercise_catalog.ts";
 import type { Workout } from "./types.ts";
@@ -244,6 +224,8 @@ Write 3-5 sentences of specific coach feedback: what was executed well, where pa
         chain,
         {
           prompt,
+          hosted,
+          feature: "analyze",
           systemPrompt:
             "You are an expert endurance coach reviewing a completed workout. Be specific, concise, encouraging but honest.",
           jsonMode: false,
@@ -560,6 +542,8 @@ Write 3-5 sentences of specific coach feedback: completion vs the plan, load sel
         chain,
         {
           prompt,
+          hosted,
+          feature: "analyze",
           systemPrompt:
             "You are an expert strength coach reviewing a completed lifting session. Be specific, concise, encouraging but honest.",
           jsonMode: false,

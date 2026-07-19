@@ -11,7 +11,8 @@
 import { errorStatus, handleOptions, json } from "../_shared/cors.ts";
 import { adminClient, getUserId } from "../_shared/supabase.ts";
 import { llmAccess } from "../_shared/llm_keys.ts";
-import { customPriceFromProfile, estimateCostUsd, llmGenerateWithFallback } from "../_shared/llm.ts";
+import { llmGenerateWithFallback } from "../_shared/llm.ts";
+import { logLlmResult } from "../_shared/generation_log.ts";
 import { buildWeekReviewPrompt, trainingPhase, WEEK_REVIEW_SYSTEM } from "../_shared/prompt.ts";
 import { memoryDocsBlock, memoryFromProfile } from "../_shared/agent_memory.ts";
 
@@ -126,29 +127,14 @@ Deno.serve(async (req) => {
 
     const outcome = await llmGenerateWithFallback(
       chain,
-      { prompt: userPrompt, systemPrompt, jsonMode: false },
+      { prompt: userPrompt, systemPrompt, jsonMode: false, hosted, feature: "week_review" },
       resolveKey,
       resolveModel,
       resolveBaseUrl,
     );
     const review = outcome.text.trim().replace(/^["']|["']$/g, "").slice(0, 600);
 
-    const cost = estimateCostUsd(outcome.provider, outcome.promptTokens, outcome.completionTokens, customPriceFromProfile(outcome.provider, profile));
-    waitUntil((async () => {
-      try {
-        await admin.from("generation_logs").insert({
-          user_id: userId,
-          feature: "week_review",
-          hosted,
-          provider: outcome.provider,
-          model: outcome.model,
-          prompt_tokens: outcome.promptTokens,
-          completion_tokens: outcome.completionTokens,
-          estimated_cost_usd: cost,
-          parsed_ok: true,
-        });
-      } catch { /* best effort */ }
-    })());
+    waitUntil(logLlmResult(admin, userId, "week_review", hosted, outcome, profile));
 
     return json({ review, week_start: weekStart, provider: outcome.provider });
   } catch (e) {

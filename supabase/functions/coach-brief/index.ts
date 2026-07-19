@@ -12,10 +12,12 @@
 import { errorStatus, handleOptions, json } from "../_shared/cors.ts";
 import { adminClient, getUserId } from "../_shared/supabase.ts";
 import { llmAccess } from "../_shared/llm_keys.ts";
-import { customPriceFromProfile, estimateCostUsd, llmGenerateWithFallback } from "../_shared/llm.ts";
+import { llmGenerateWithFallback } from "../_shared/llm.ts";
+import { logLlmResult } from "../_shared/generation_log.ts";
 import { computeRecovery } from "../_shared/recovery.ts";
 import { BRIEF_SYSTEM, buildBriefPrompt, trainingPhase } from "../_shared/prompt.ts";
 import { memoryDocsBlock, memoryFromProfile } from "../_shared/agent_memory.ts";
+import { profileFactsBlock } from "../_shared/profile.ts";
 import { applyFallbackFitness } from "../_shared/load.ts";
 
 const DAY = 86_400_000;
@@ -128,36 +130,23 @@ Deno.serve(async (req) => {
     });
     // Lead with the coach's soul/voice + durable knowledge so the note sounds
     // like a continuation of this relationship, not a generic tip.
-    const systemPrompt = BRIEF_SYSTEM + memoryDocsBlock(memoryFromProfile(profile));
+    const systemPrompt = BRIEF_SYSTEM +
+      profileFactsBlock(onboarding, profile?.display_name as string | undefined) +
+      memoryDocsBlock(memoryFromProfile(profile));
 
     const { chain, resolveKey, resolveModel, resolveBaseUrl, hosted } = await llmAccess(admin, userId, profile);
     if (chain.length === 0) return json({ brief: null, date: today });
 
     const outcome = await llmGenerateWithFallback(
       chain,
-      { prompt: userPrompt, systemPrompt, jsonMode: false },
+      { prompt: userPrompt, systemPrompt, jsonMode: false, hosted, feature: "brief" },
       resolveKey,
       resolveModel,
       resolveBaseUrl,
     );
     const brief = outcome.text.trim().replace(/^["']|["']$/g, "").slice(0, 400);
 
-    const cost = estimateCostUsd(outcome.provider, outcome.promptTokens, outcome.completionTokens, customPriceFromProfile(outcome.provider, profile));
-    waitUntil((async () => {
-      try {
-        await admin.from("generation_logs").insert({
-          user_id: userId,
-          feature: "brief",
-          hosted,
-          provider: outcome.provider,
-          model: outcome.model,
-          prompt_tokens: outcome.promptTokens,
-          completion_tokens: outcome.completionTokens,
-          estimated_cost_usd: cost,
-          parsed_ok: true,
-        });
-      } catch { /* best effort */ }
-    })());
+    waitUntil(logLlmResult(admin, userId, "brief", hosted, outcome, profile));
 
     return json({ brief, date: today, provider: outcome.provider });
   } catch (e) {

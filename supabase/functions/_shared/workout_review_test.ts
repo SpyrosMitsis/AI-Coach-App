@@ -130,8 +130,12 @@ Deno.test("back-to-back hard days are flagged", () => {
   assert(r.violations.some((v) => v.includes("back-to-back")));
 });
 
-// --- TSS cross-check --------------------------------------------------------
-Deno.test("a wildly wrong tss_estimate is replaced with the computed value", () => {
+// --- TSS is engine-owned -----------------------------------------------------
+Deno.test("endurance TSS is always the computed value, silently", () => {
+  // The prompt no longer asks for tss_estimate (models can't count it); the
+  // engine fills it. A wildly wrong legacy self-report is still recorded in
+  // tssReplaced for observability, but it is NOT a violation — the old flag
+  // burnt a repair call to fix a number we were about to overwrite anyway.
   const w = mk({
     type: "run",
     tss_estimate: 300, // absurd for 30 min easy
@@ -143,9 +147,42 @@ Deno.test("a wildly wrong tss_estimate is replaced with the computed value", () 
     }],
   });
   const r = reviewWorkout(w, EMPTY_CTX);
-  assert(r.tssReplaced, "expected a TSS replacement");
+  assert(r.tssReplaced, "expected the disagreement to be recorded");
   assertEquals(r.corrected.tss_estimate, computeTss(w));
   assert(r.corrected.tss_estimate < 60);
+  assert(!r.violations.some((v) => /tss_estimate/.test(v)), "must not trigger a repair pass");
+});
+
+Deno.test("a missing tss_estimate is filled from the computation", () => {
+  // What every generation looks like now: the field arrives absent (schema
+  // defaults it to 0) and the engine owns the number end to end.
+  const w = mk({
+    type: "run",
+    tss_estimate: 0,
+    rpe_target: 3,
+    sections: [{
+      name: "Main Set",
+      duration_minutes: 40,
+      exercises: [{ name: "Easy jog", sets: 1, reps: "40 min", hr_zone: "Z2", notes: "" }],
+    }],
+  });
+  const r = reviewWorkout(w, EMPTY_CTX);
+  assertEquals(r.corrected.tss_estimate, 32); // 40 min x Z2 0.8
+  assertEquals(r.tssReplaced, undefined, "filling an empty field is not a disagreement");
+  assertEquals(r.violations, []);
+});
+
+Deno.test("a strength session with no estimate gets the sets heuristic", () => {
+  const w = mk({
+    tss_estimate: 0,
+    rpe_target: 7,
+    sections: [strengthSection([
+      { name: "Back Squat", sets: 4, reps: "5", weight_kg: 100, muscle: "Quads", notes: "" },
+      { name: "Romanian Deadlift", sets: 3, reps: "8", weight_kg: 80, muscle: "Hamstrings", notes: "" },
+    ])],
+  });
+  const r = reviewWorkout(w, EMPTY_CTX);
+  assertEquals(r.corrected.tss_estimate, Math.round(7 * 3.3)); // 7 working sets
 });
 
 Deno.test("computeTss: ~60 min Z2 lands in a sane endurance range", () => {
@@ -257,4 +294,124 @@ Deno.test("hard endurance session on a wrecked athlete is capped to easy", () =>
   const zones = r.corrected.sections.flatMap((s) => s.exercises.map((e) => e.pace_zone));
   assert(zones.every((z) => z !== "Z5" && z !== "Z4"), "hard zones should be downgraded");
   assert(r.violations.some((v) => /readiness|TSB/i.test(v)));
+});
+
+// --- recovery bands: the promises recoveryBlock makes, enforced --------------
+// context.ts recoveryBlock tells the model "red → cap RPE 4" and "amber → cap
+// RPE 6, no intervals/threshold". These used to be prompt-only (formerly
+// KNOWN_CONTRADICTIONS "recovery-cap"); the caps below hold them at the same
+// band thresholds recovery.ts computes (red <34, amber <67).
+
+const hardRun = () =>
+  validateWorkout({
+    // tss_estimate 51 = the zone-priced value (30 min Z4), so the unrelated
+    // TSS cross-check stays quiet and these tests isolate the recovery caps.
+    type: "run", title: "Tempo", duration_minutes: 45, tss_estimate: 51, rpe_target: 8,
+    coach_note: "", sections: [
+      { name: "Main Set", duration_minutes: 30, exercises: [{ name: "Tempo", sets: 1, reps: "30min", pace_zone: "Z4" }] },
+    ],
+  }).workout!;
+
+Deno.test("red recovery (<34) caps a hard session at RPE 4", () => {
+  const r = reviewWorkout(hardRun(), { ...EMPTY_CTX, tsb: 0, readiness: 30 });
+  assert(r.corrected.rpe_target <= 4, `rpe ${r.corrected.rpe_target} should be ≤4 on red`);
+  assert(r.violations.some((v) => /capped to easy aerobic/.test(v)));
+});
+
+Deno.test("amber recovery (34-66) caps a hard session at RPE 6 and kills the intervals", () => {
+  // THE REGRESSION: amber used to pass entirely — the prompt promised a cap no
+  // code enforced, and run/int/fatigued-amber existed to measure the gap.
+  const r = reviewWorkout(hardRun(), { ...EMPTY_CTX, tsb: -10, readiness: 50 });
+  assert(r.corrected.rpe_target <= 6, `rpe ${r.corrected.rpe_target} should be ≤6 on amber`);
+  const zones = r.corrected.sections.flatMap((s) => s.exercises.map((e) => e.pace_zone));
+  assert(zones.every((z) => z !== "Z4" && z !== "Z5"), "threshold work must be downgraded on amber");
+  assert(r.violations.some((v) => /amber/.test(v)));
+});
+
+Deno.test("green recovery leaves a hard session alone", () => {
+  const r = reviewWorkout(hardRun(), { ...EMPTY_CTX, tsb: 0, readiness: 80 });
+  assertEquals(r.corrected.rpe_target, 8);
+  assert(r.violations.length === 0, `unexpected: ${r.violations.join("; ")}`);
+});
+
+Deno.test("deep TSB keeps its own RPE 5 cap independent of the recovery band", () => {
+  // prompt.ts's "TSB ≤ -20 → recovery week" rule is load-driven, not
+  // recovery-score-driven, so it fires even when today's readiness reads fine.
+  const r = reviewWorkout(hardRun(), { ...EMPTY_CTX, tsb: -25, readiness: 80 });
+  assert(r.corrected.rpe_target <= 5, `rpe ${r.corrected.rpe_target} should be ≤5 on deep TSB`);
+});
+
+// --- weekly set landmark is experience-tiered --------------------------------
+Deno.test("the weekly set landmark follows the athlete's tier (12/18/22)", () => {
+  // THE REGRESSION (formerly KNOWN_CONTRADICTIONS "weekly-sets"): a flat 22
+  // meant a Beginner prescribed 20 sets broke prompt.ts's ~8-12 tier and passed.
+  const w = mk({
+    sections: [strengthSection([
+      { name: "Back Squat", sets: 14, reps: "8", weight_kg: 60, muscle: "Quads", notes: "" },
+    ])],
+  });
+  const beginner = reviewWorkout(w, { ...EMPTY_CTX, experience: "Beginner" });
+  assert(beginner.violations.some((v) => /~12-set landmark/.test(v)), "14 sets breaks the Beginner tier");
+  const intermediate = reviewWorkout(w, { ...EMPTY_CTX, experience: "Intermediate" });
+  assert(intermediate.violations.length === 0, "14 sets is inside the Intermediate tier");
+  const advanced = reviewWorkout(w, { ...EMPTY_CTX, experience: "Advanced" });
+  assert(advanced.violations.length === 0, "14 sets is inside the Advanced tier");
+});
+
+// --- swim is endurance -------------------------------------------------------
+Deno.test("a hard CSS swim is a hard session and is priced by its zones", () => {
+  // THE REGRESSION (formerly KNOWN_CONTRADICTIONS "swim"): a Z4 swim was
+  // invisible to hard-day spacing and priced as strength working sets.
+  const w = validateWorkout({
+    type: "swim", title: "CSS Intervals", duration_minutes: 45, tss_estimate: 60, rpe_target: 6,
+    coach_note: "", sections: [
+      { name: "Main Set", duration_minutes: 40, exercises: [{ name: "10x100m CSS", sets: 10, reps: "100m", pace_zone: "Z4" }] },
+    ],
+  }).workout!;
+  assert(isHardSession(w), "a Z4 swim must register as hard");
+  assertEquals(computeTss(w), Math.round(40 * 1.7), "priced as 40 min of Z4, not as working sets");
+});
+
+// --- quality overload: one session, one quality focus -------------------------
+Deno.test("stacking a full threshold block and a full VO2 block flags", () => {
+  // The judge's blind-spot find: 20 min tempo + 3x4 min VO2 passed every check,
+  // yet each block alone is a full quality session (prompt.ts:57-59).
+  const w = validateWorkout({
+    type: "run", title: "Combo", duration_minutes: 60, tss_estimate: 60, rpe_target: 8,
+    coach_note: "", sections: [
+      { name: "Tempo", duration_minutes: 20, exercises: [{ name: "Tempo", sets: 1, reps: "20min", pace_zone: "Z4" }] },
+      { name: "VO2", duration_minutes: 12, exercises: [{ name: "4min reps", sets: 3, reps: "4min", pace_zone: "Z5" }] },
+    ],
+  }).workout!;
+  const r = reviewWorkout(w, EMPTY_CTX);
+  assert(r.violations.some((v) => /one quality focus per day/.test(v)), r.violations.join("; "));
+});
+
+Deno.test("a tempo with strides stays legal", () => {
+  // 6-10 x ~20s of strides is ~3 min of Z5: appending them must not read as a
+  // second quality block, or every classic tempo+strides day would flag.
+  const w = validateWorkout({
+    type: "run", title: "Tempo + strides", duration_minutes: 50, tss_estimate: 55, rpe_target: 7,
+    coach_note: "", sections: [
+      { name: "Tempo", duration_minutes: 25, exercises: [{ name: "Tempo", sets: 1, reps: "25min", pace_zone: "Z4" }] },
+      { name: "Strides", duration_minutes: 3, exercises: [{ name: "8x20s", sets: 8, reps: "20s", pace_zone: "Z5" }] },
+    ],
+  }).workout!;
+  const r = reviewWorkout(w, EMPTY_CTX);
+  assert(!r.violations.some((v) => /quality/.test(v)), r.violations.join("; "));
+});
+
+Deno.test("a run past the 40-min quality ceiling flags; a ride does not", () => {
+  const session = (type: string) =>
+    validateWorkout({
+      type, title: "Big quality", duration_minutes: 75, tss_estimate: 78, rpe_target: 8,
+      coach_note: "", sections: [
+        { name: "Main Set", duration_minutes: 46, exercises: [{ name: "2x23min", sets: 2, reps: "23min", pace_zone: "Z3" }] },
+      ],
+    }).workout!;
+  const run = reviewWorkout(session("run"), EMPTY_CTX);
+  assert(run.violations.some((v) => /40-min quality ceiling/.test(v)), run.violations.join("; "));
+  // 2x20+ sweet spot is normal cycling; the ceiling is a RUNNING rule.
+  const ride = reviewWorkout(session("ride"), EMPTY_CTX);
+  assert(!ride.violations.some((v) => /quality ceiling/.test(v)), ride.violations.join("; "));
 });

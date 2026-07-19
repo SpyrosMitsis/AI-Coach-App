@@ -18,6 +18,7 @@ import {
   llmGenerateWithFallback,
   PROVIDERS,
 } from "../_shared/llm.ts";
+import { logGeneration, logLlmResult } from "../_shared/generation_log.ts";
 import {
   buildRunPrompt,
   buildStrengthPrompt,
@@ -50,6 +51,8 @@ import {
 } from "../_shared/exercise_catalog.ts";
 import { type MainLift, reviewWorkout } from "../_shared/workout_review.ts";
 import { nextTarget } from "../_shared/progression.ts";
+import { defaultHrZones } from "../_shared/zones.ts";
+import { challengeBlock, experienceForSport, goalsText, minutesForDate, profileFactsBlock } from "../_shared/profile.ts";
 
 const DAY = 86_400_000;
 const daysBetween = (a: string, b: Date) => Math.floor((b.getTime() - new Date(a).getTime()) / DAY);
@@ -84,11 +87,15 @@ Deno.serve(async (req) => {
     // Session length is guidance, not a fixed number: an explicit request wins,
     // otherwise the profile preference (+ optional max) becomes a flexible
     // budget so sessions vary with their purpose.
+    // Per-day availability (marathon long-run case): the time budget for THIS
+    // date's weekday beats the single default, so a Saturday long run gets its
+    // hours while weekdays stay short.
+    const availMinutes: number | null = minutesForDate(onboarding, date);
     const prefDuration: number | null = typeof body.duration === "number"
       ? body.duration
-      : (typeof onboarding.session_duration === "number" ? onboarding.session_duration : null);
-    const maxDuration: number | null =
-      typeof onboarding.session_duration_max === "number" ? onboarding.session_duration_max : null;
+      : availMinutes ?? (typeof onboarding.session_duration === "number" ? onboarding.session_duration : null);
+    const maxDuration: number | null = availMinutes ??
+      (typeof onboarding.session_duration_max === "number" ? onboarding.session_duration_max : null);
     const durationNote = typeof body.duration === "number"
       ? `${body.duration} min requested for this session (honor within ±10 min)`
       : durationGuidance(prefDuration, maxDuration);
@@ -193,7 +200,7 @@ Deno.serve(async (req) => {
       ? around.map((w) => `${w.date} ${w.type}${titleOf(w) ? ` (${titleOf(w)})` : ""}`).join(" | ")
       : "nothing else planned this week";
 
-    const goal: string = onboarding.goal ?? "General fitness";
+    const goal: string = goalsText(onboarding);
 
     // Training phase from weeks until the goal race (onboarding.goal_date).
     let weeksToGoal: number | null = null;
@@ -211,7 +218,7 @@ Deno.serve(async (req) => {
     let type = requestedType;
     if (type === "auto") {
       const sports: string[] = Array.isArray(onboarding.sports) ? onboarding.sports as string[] : [];
-      const isStrengthGoal = /muscle|recomp|hybrid|strength/i.test(goal);
+      const isStrengthGoal = /muscle|recomp|hybrid|strength|hypertroph/i.test(goal);
       if (lowReadiness || veryFatigued) {
         type = "rest";
       } else if (isStrengthGoal && daysSinceLastRun < 2 && (sports.length === 0 || sports.includes("strength"))) {
@@ -311,11 +318,42 @@ Deno.serve(async (req) => {
           };
         });
 
+      // Onboarding seed: a brand-new lifter has no strength_logs, so every
+      // first session read "no recent logs (conservative)". starting_lifts
+      // (the optional "Your numbers" step) gives the progression engine a
+      // floor from day one; real logs take over the moment one exists.
+      if (mainLifts.length === 0 && Array.isArray(onboarding.starting_lifts)) {
+        mainLifts = (onboarding.starting_lifts as { exercise?: string; weight_kg?: number; reps?: number }[])
+          .filter((l) => typeof l?.exercise === "string" && l.exercise.trim() &&
+            typeof l.weight_kg === "number" && l.weight_kg > 0 && l.weight_kg <= 400)
+          .slice(0, 5)
+          .map((l) => {
+            const reps = typeof l.reps === "number" && l.reps > 0 && l.reps <= 30 ? l.reps : 5;
+            const seedSets = [{ reps, weight_kg: l.weight_kg! }];
+            return {
+              exercise: l.exercise!.trim(),
+              // Epley: 1RM = w x (1 + reps/30). A self-reported top set is the
+              // same signal a logged one carries, just older.
+              estimated1rm: Math.round(l.weight_kg! * (1 + reps / 30) * 10) / 10,
+              lastWeight: l.weight_kg!,
+              lastReps: reps,
+              lastSets: 1,
+              target: nextTarget(seedSets, compoundForName(l.exercise!.trim(), strengthCustom)),
+            };
+          });
+      }
+
+      // The 4-tier label gates safety filtering; the detail list tells the
+      // model what it can actually program with ("bands" ≠ bodyweight-only).
+      const equipmentList = Array.isArray(onboarding.equipment_list)
+        ? (onboarding.equipment_list as string[]).filter((e) => typeof e === "string" && e.trim())
+        : [];
       userPrompt = buildStrengthPrompt({
         muscleGroupsLast48h,
         weeklySetsByMuscle,
-        equipment: onboarding.equipment ?? "Full gym",
-        experience: onboarding.experience ?? "Intermediate",
+        equipment: (onboarding.equipment ?? "Full gym") +
+          (equipmentList.length ? ` (available: ${equipmentList.join(", ")})` : ""),
+        experience: experienceForSport(onboarding, "strength"),
         goal,
         phase,
         soreness: Math.round(wellness3d.soreness),
@@ -331,13 +369,9 @@ Deno.serve(async (req) => {
       const weeklyKm = runs
         .filter((r) => r.date >= since7)
         .reduce((s, r) => s + (r.distance_m ?? 0) / 1000, 0);
-      const hrZones = ivHrZones ?? onboarding.hr_zones ?? [
-        { zone: "Z1", min: 95, max: 130 },
-        { zone: "Z2", min: 131, max: 145 },
-        { zone: "Z3", min: 146, max: 160 },
-        { zone: "Z4", min: 161, max: 172 },
-        { zone: "Z5", min: 173, max: 190 },
-      ];
+      // Measured zones win; otherwise derive per-athlete defaults from LTHR or
+      // age (zones.ts) instead of one flat table for every human.
+      const hrZones = ivHrZones ?? onboarding.hr_zones ?? defaultHrZones(onboarding);
       userPrompt = buildRunPrompt({
         hrZones,
         tsb: fitness.tsb,
@@ -348,11 +382,17 @@ Deno.serve(async (req) => {
         wellness3d,
         weeklyKm,
         goal,
-        targetPace: onboarding.target_pace,
+        // Swim gets its CSS anchor (onboarding "Your numbers") in the same
+        // slot the run race pace uses; without it swim paces were guesses.
+        targetPace: type === "swim"
+          ? (typeof onboarding.css_per_100m === "string" && onboarding.css_per_100m.trim()
+            ? `${onboarding.css_per_100m.trim()}/100m (CSS)`
+            : undefined)
+          : onboarding.target_pace,
         daysSinceLastRun,
         daysSinceLastHard,
         durationNote,
-        experience: onboarding.experience ?? "Intermediate",
+        experience: experienceForSport(onboarding, type),
         sport: type === "ride" ? "ride" : type === "swim" ? "swim" : "run",
         ftp: typeof onboarding.ftp === "number" ? onboarding.ftp : undefined,
       });
@@ -413,8 +453,10 @@ Deno.serve(async (req) => {
 
     // 6b-ext. shared context blocks (skipped for the adjust path) -----------
     if (!body.adjustment) {
+      userPrompt += profileFactsBlock(onboarding, profile.display_name as string | undefined);
       userPrompt += memoryDocsBlock(memoryFromProfile(profile));
       userPrompt += recoveryBlock(recovery);
+      userPrompt += challengeBlock(onboarding);
       userPrompt += physiologyBlock;
       userPrompt += await adherenceBlock(admin, userId, since14, date, acts28);
       userPrompt += await executionBlock(admin, userId, since14);
@@ -460,20 +502,19 @@ Return the revised workout as JSON only, same schema.`;
     try {
       outcome = await llmGenerateWithFallback(
         chain,
-        { prompt: userPrompt, systemPrompt: SYSTEM_PROMPT, temperature: 0.4 },
+        { prompt: userPrompt, systemPrompt: SYSTEM_PROMPT, temperature: 0.4, hosted, feature: "workout" },
         resolveKey,
         resolveModel,
         resolveBaseUrl,
       );
     } catch (e) {
-      await admin.from("generation_logs").insert({
-        user_id: userId,
+      await logGeneration(admin, userId, {
         feature: "workout",
         hosted,
         provider: chain[0] ?? null,
-        system_prompt: SYSTEM_PROMPT,
-        user_prompt: userPrompt,
-        parsed_ok: false,
+        systemPrompt: SYSTEM_PROMPT,
+        userPrompt,
+        parsedOk: false,
         error: e instanceof Error ? e.message : String(e),
       });
       return json({ error: "generation failed", detail: String(e) }, 502);
@@ -499,7 +540,7 @@ Return the revised workout as JSON only, same schema.`;
         const repairPrompt =
           `${userPrompt}\n\nYOUR PREVIOUS RESPONSE could not be parsed/validated (${parseError}). ` +
           `Return ONLY a corrected JSON object that exactly matches the schema, no prose, no code fences.`;
-        const retry = await llmGenerateWithFallback(chain, { prompt: repairPrompt, systemPrompt: SYSTEM_PROMPT, temperature: 0.4 }, resolveKey, resolveModel, resolveBaseUrl);
+        const retry = await llmGenerateWithFallback(chain, { prompt: repairPrompt, systemPrompt: SYSTEM_PROMPT, temperature: 0.4, hosted, feature: "workout" }, resolveKey, resolveModel, resolveBaseUrl);
         const v2 = validateWorkout(extractJson(retry.text));
         if (v2.ok && v2.workout) {
           validated = v2.workout;
@@ -512,22 +553,12 @@ Return the revised workout as JSON only, same schema.`;
       }
     }
 
-    const cost = estimateCostUsd(outcome.provider, outcome.promptTokens, outcome.completionTokens, customPriceFromProfile(outcome.provider, profile), outcome.model);
-
     if (!parsedOk || !validated) {
-      await admin.from("generation_logs").insert({
-        user_id: userId,
-        feature: "workout",
-        hosted,
-        provider: outcome.provider,
-        model: outcome.model,
-        prompt_tokens: outcome.promptTokens,
-        completion_tokens: outcome.completionTokens,
-        estimated_cost_usd: cost,
-        system_prompt: SYSTEM_PROMPT,
-        user_prompt: userPrompt,
-        raw_response: outcome.text,
-        parsed_ok: false,
+      await logLlmResult(admin, userId, "workout", hosted, outcome, profile, {
+        systemPrompt: SYSTEM_PROMPT,
+        userPrompt,
+        rawResponse: outcome.text,
+        parsedOk: false,
         error: parseError,
       });
       return json({ error: "could not parse workout", detail: parseError, raw: outcome.text }, 422);
@@ -550,7 +581,7 @@ Return the revised workout as JSON only, same schema.`;
       muscleGroupsLast48h,
       tsb: fitness.tsb,
       daysSinceLastHard,
-      experience: onboarding.experience ?? "Intermediate",
+      experience: experienceForSport(onboarding, type),
       // Structured safety: injuries on file + durable coach constraints.
       injuries: [onboarding.injury_history, profile.coach_knowledge].filter(Boolean).join("; "),
       // Deterministic intensity ceiling + equipment hard-filter.
@@ -566,7 +597,7 @@ Return the revised workout as JSON only, same schema.`;
           `return ONLY corrected JSON matching the schema:\n- ${review.violations.join("\n- ")}`;
         const retry = await llmGenerateWithFallback(
           chain,
-          { prompt: fixPrompt, systemPrompt: SYSTEM_PROMPT, temperature: 0.4 },
+          { prompt: fixPrompt, systemPrompt: SYSTEM_PROMPT, temperature: 0.4, hosted, feature: "workout" },
           resolveKey,
           resolveModel,
           resolveBaseUrl,
@@ -649,22 +680,14 @@ Return the revised workout as JSON only, same schema.`;
     // entry (with the AI's metadata) so the loggers recognise it by name.
     await registerUnknownExercises(admin, userId, validated);
 
-    await admin.from("generation_logs").insert({
-      user_id: userId,
-      feature: "workout",
-      hosted,
-      provider: outcome.provider,
-      model: outcome.model,
-      prompt_tokens: outcome.promptTokens,
-      completion_tokens: outcome.completionTokens,
-      estimated_cost_usd: finalCost,
-      system_prompt: SYSTEM_PROMPT,
-      user_prompt: userPrompt,
-      raw_response: outcome.text,
-      parsed_ok: true,
+    // Same inputs as finalCost above, so the logged cost matches what we return.
+    await logLlmResult(admin, userId, "workout", hosted, outcome, profile, {
+      systemPrompt: SYSTEM_PROMPT,
+      userPrompt,
+      rawResponse: outcome.text,
       // Record any content-review findings (post-correction) for auditing.
       error: review.violations.length ? JSON.stringify(review.violations) : null,
-      workout_id: planned.id,
+      workoutId: planned.id,
     });
 
     // 10. push to Intervals.icu calendar -----------------------------------

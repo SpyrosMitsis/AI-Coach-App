@@ -1,5 +1,5 @@
 import { assert, assertEquals, assertRejects } from "jsr:@std/assert@1";
-import { extractJson, llmGenerateWithFallback } from "./llm.ts";
+import { extractJson, llmGenerateWithFallback, maxTokensOf, OUTPUT_BUDGETS } from "./llm.ts";
 import type { LlmProvider } from "./types.ts";
 
 // ---------------------------------------------------------------------------
@@ -123,5 +123,124 @@ Deno.test("openrouter: routes to its endpoint with attribution headers", async (
     assert(!!seenHeaders?.get("HTTP-Referer"));
   } finally {
     globalThis.fetch = orig;
+  }
+});
+
+// ---------------------------------------------------------------------------
+// maxTokensOf — the cost-safety invariant
+//
+// Output tokens are the expensive half of the bill and hosted calls spend the
+// OPERATOR's money, so quota.ts prices its caps against these budgets. These
+// tests are what stop the table and its clamps from silently rotting.
+// ---------------------------------------------------------------------------
+
+// Both knobs are read per call, so each test owns its own env.
+function withEnv(vars: Record<string, string | null>, run: () => void) {
+  const prev = new Map<string, string | undefined>();
+  for (const k of Object.keys(vars)) prev.set(k, Deno.env.get(k));
+  try {
+    for (const [k, v] of Object.entries(vars)) {
+      if (v === null) Deno.env.delete(k);
+      else Deno.env.set(k, v);
+    }
+    run();
+  } finally {
+    for (const [k, v] of prev) {
+      if (v === undefined) Deno.env.delete(k);
+      else Deno.env.set(k, v);
+    }
+  }
+}
+
+const noEnv = { WM_MAX_OUTPUT_TOKENS: null, WM_HOSTED_MAX_OUTPUT_TOKENS: null };
+
+Deno.test("maxTokensOf: a call naming no feature gets the default", () => {
+  withEnv(noEnv, () => {
+    assertEquals(maxTokensOf({}), 2500);
+    assertEquals(maxTokensOf({ hosted: true }), 2500);
+    assertEquals(maxTokensOf({ feature: "not-a-feature" }), 2500);
+  });
+});
+
+Deno.test("maxTokensOf: each feature gets its own budget", () => {
+  withEnv(noEnv, () => {
+    for (const [feature, budget] of Object.entries(OUTPUT_BUDGETS)) {
+      assertEquals(maxTokensOf({ feature }), budget, `${feature} budget`);
+      assertEquals(maxTokensOf({ feature, hosted: true }), budget, `${feature} hosted budget`);
+    }
+  });
+});
+
+Deno.test("maxTokensOf: a week plan gets room for a week plan", () => {
+  // THE REGRESSION TEST. A real deepseek week plan truncated mid-JSON at 2,482
+  // output tokens (measured: eval_runs/2026-07-15T15-56-58-385Z, week/peak-4wk,
+  // ended inside `"notes": "Chest`). plan-week then retried into the same wall.
+  // If this number ever drops back under that, week planning breaks again.
+  const TRUNCATED_AT = 2482;
+  withEnv(noEnv, () => {
+    const budget = maxTokensOf({ feature: "plan" });
+    assert(
+      budget > TRUNCATED_AT * 1.5,
+      `plan budget ${budget} leaves no headroom over the ${TRUNCATED_AT} that truncated`,
+    );
+  });
+});
+
+Deno.test("maxTokensOf: chat stays tight, because chat is the cost driver", () => {
+  // A turn can make MAX_LLM_CALLS_PER_TURN (12) of these; plan makes 1-2. The
+  // budgets must reflect that asymmetry or the daily cap math is wrong.
+  withEnv(noEnv, () => {
+    assert(maxTokensOf({ feature: "chat" }) <= 2500);
+    assert(maxTokensOf({ feature: "plan" }) > maxTokensOf({ feature: "chat" }));
+    assert(maxTokensOf({ feature: "brief" }) < maxTokensOf({ feature: "chat" }));
+  });
+});
+
+Deno.test("maxTokensOf: an explicit maxTokens overrides the feature budget", () => {
+  withEnv(noEnv, () => {
+    assertEquals(maxTokensOf({ feature: "plan", maxTokens: 400 }), 400);
+    assertEquals(maxTokensOf({ maxTokens: 400, hosted: true }), 400);
+  });
+});
+
+Deno.test("maxTokensOf: nothing may exceed the absolute bound", () => {
+  // Not a caller, not the env, not both together.
+  withEnv({ WM_MAX_OUTPUT_TOKENS: "999999", WM_HOSTED_MAX_OUTPUT_TOKENS: "999999" }, () => {
+    assertEquals(maxTokensOf({ maxTokens: 999_999 }), 8000);
+    assertEquals(maxTokensOf({ maxTokens: 999_999, hosted: true }), 8000);
+  });
+});
+
+Deno.test("maxTokensOf: WM_HOSTED_MAX_OUTPUT_TOKENS pulls hosted spend down", () => {
+  // The operator's emergency brake on their OWN money: it must beat the feature
+  // budget, including for the biggest feature.
+  withEnv({ WM_MAX_OUTPUT_TOKENS: null, WM_HOSTED_MAX_OUTPUT_TOKENS: "1000" }, () => {
+    assertEquals(maxTokensOf({ feature: "plan", hosted: true }), 1000);
+    assertEquals(maxTokensOf({ feature: "chat", hosted: true }), 1000);
+    // BYO is the user's own key and own bill, so the hosted brake must not touch it.
+    assertEquals(maxTokensOf({ feature: "plan" }), OUTPUT_BUDGETS.plan);
+  });
+});
+
+Deno.test("maxTokensOf: WM_MAX_OUTPUT_TOKENS pulls BYO down without touching hosted", () => {
+  withEnv({ WM_MAX_OUTPUT_TOKENS: "800", WM_HOSTED_MAX_OUTPUT_TOKENS: null }, () => {
+    assertEquals(maxTokensOf({ feature: "plan" }), 800);
+    assertEquals(maxTokensOf({ feature: "plan", hosted: true }), OUTPUT_BUDGETS.plan);
+  });
+});
+
+Deno.test("maxTokensOf: junk env falls back rather than zeroing the budget", () => {
+  // A NaN ceiling that clamped to 0 would make every call emit nothing.
+  withEnv({ WM_MAX_OUTPUT_TOKENS: "not-a-number", WM_HOSTED_MAX_OUTPUT_TOKENS: "-5" }, () => {
+    assertEquals(maxTokensOf({ feature: "plan" }), OUTPUT_BUDGETS.plan);
+    assertEquals(maxTokensOf({ feature: "plan", hosted: true }), OUTPUT_BUDGETS.plan);
+    assert(maxTokensOf({}) > 0);
+  });
+});
+
+Deno.test("maxTokensOf: every budget is sane", () => {
+  for (const [feature, budget] of Object.entries(OUTPUT_BUDGETS)) {
+    assert(Number.isInteger(budget) && budget > 0, `${feature} budget is not a positive integer`);
+    assert(budget <= 8000, `${feature} budget exceeds the absolute bound`);
   }
 });

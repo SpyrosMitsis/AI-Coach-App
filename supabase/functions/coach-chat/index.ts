@@ -23,6 +23,7 @@ import {
   extractJson,
   llmGenerateWithFallback,
 } from "../_shared/llm.ts";
+import { logGeneration, logLlmResult } from "../_shared/generation_log.ts";
 import { computeRecovery } from "../_shared/recovery.ts";
 import { applyFallbackFitness } from "../_shared/load.ts";
 import {
@@ -33,6 +34,7 @@ import {
   updateUserDoc,
 } from "../_shared/agent_memory.ts";
 import { corsHeaders } from "../_shared/cors.ts";
+import { profileFactsBlock } from "../_shared/profile.ts";
 import { COACH_SYSTEM_PROMPT, finalizeInstruction, freshnessWord, recoveryWord, trainingPhase } from "../_shared/prompt.ts";
 import type { LlmProvider } from "../_shared/types.ts";
 import { executeTool, nativeToolDefs, toolCatalogPrompt } from "../_shared/coach_tools.ts";
@@ -76,6 +78,30 @@ ${TOOL_RULES}`;
 
 const DAY = 86_400_000;
 
+// How often the SSE stream emits a keepalive comment while the agentic loop is
+// still thinking. Well under any client read timeout or proxy idle timeout.
+const HEARTBEAT_MS = 10_000;
+
+// One coach turn can fan out across three legs: the native tool loop, the
+// JSON-protocol fallback when that yields no text, and one anti-stall retry that
+// replays BOTH. Left to themselves those stack to ~24 sequential provider calls,
+// double the ~12 that docs/LLM_COSTS.md prices the hosted caps against. The
+// budget below is per TURN and shared by every leg, so the documented worst case
+// is the real one.
+const NATIVE_MAX_STEPS = 6;
+const PROTOCOL_MAX_STEPS = 6;
+const MAX_LLM_CALLS_PER_TURN = 12;
+
+function callBudget(max: number) {
+  let used = 0;
+  return {
+    spend(n = 1) { used += n; },
+    exhausted() { return used >= max; },
+    remaining() { return Math.max(0, max - used); },
+    used() { return used; },
+  };
+}
+
 // The JSON tool protocol occasionally leaks its envelope into the final reply
 // (fenced JSON, or {"action":"final","message":...} as raw text). Scrub it
 // server-side so leaked protocol never reaches the client or the saved thread.
@@ -102,6 +128,10 @@ const WRITE_TOOLS = new Set([
   "set_goal_race",
   "set_rest_day",
   "make_easier",
+  // Mutates the profile, not the calendar: counts as "acted" for the
+  // anti-stall guard and write-dedup, but the CLIENT's write set deliberately
+  // excludes it (no calendar result card for saving an FTP).
+  "update_profile",
 ]);
 
 // The stall heuristic ("promised a plan change instead of calling the tool")
@@ -289,6 +319,7 @@ Deno.serve(async (req) => {
 - Today's plan: ${todayLine}
 - Last completed sessions (newest first): ${recentLines.join(" | ") || "none recorded in the last 28 days"}
 - ~${weeklyKm.toFixed(0)} km/week recently; training phase: ${trainingPhase(weeksToGoal)}` +
+      profileFactsBlock(onboarding, profile?.display_name as string | undefined) +
       memoryDocsBlock(agentMemory) +
       summaryBlock;
 
@@ -319,6 +350,8 @@ Deno.serve(async (req) => {
         let promptTokens = 0;
         let completionTokens = 0;
         let model = "";
+        // Shared by every leg of this turn, including the anti-stall replay.
+        const spendGuard = callBudget(MAX_LLM_CALLS_PER_TURN);
         // State-changing tools are made idempotent within a turn: the native
         // loop can fire a write tool and then exhaust maxSteps (returning empty
         // text), which makes generateOnce replay the JSON protocol from the
@@ -353,7 +386,7 @@ Deno.serve(async (req) => {
         // to the JSON protocol. Tool side effects accumulate into toolsUsed.
         const generateOnce = async (thread: ChatMessage[]): Promise<string> => {
           let replyText = "";
-          if (keyedProvider && keyedKey && supportsNativeTools(keyedProvider)) {
+          if (keyedProvider && keyedKey && supportsNativeTools(keyedProvider) && !spendGuard.exhausted()) {
             try {
               const out = await runNativeToolLoop({
                 provider: keyedProvider,
@@ -363,8 +396,12 @@ Deno.serve(async (req) => {
                 messages: trimThread(thread),
                 tools: nativeToolDefs(),
                 exec,
-                maxSteps: 6,
+                // Never let this leg alone outspend what's left of the turn.
+                maxSteps: Math.min(NATIVE_MAX_STEPS, spendGuard.remaining()),
+                hosted,
+                feature: "chat",
               });
+              spendGuard.spend(out.steps);
               provider = keyedProvider;
               replyText = out.text;
               promptTokens += out.promptTokens;
@@ -382,10 +419,12 @@ Deno.serve(async (req) => {
 
           const chatSystem = `${COACH_SYSTEM_PROMPT}\n\n${context}${TOOL_PROTOCOL}`;
           const work: ChatMessage[] = trimThread(thread);
-          for (let step = 0; !replyText.trim() && step < 6; step++) {
+          for (let step = 0; !replyText.trim() && step < PROTOCOL_MAX_STEPS; step++) {
+            if (spendGuard.exhausted()) break;
             const step_out = await llmGenerateWithFallback(
-              chain, { messages: work, systemPrompt: chatSystem, jsonMode: true }, resolveKey, resolveModel, resolveBaseUrl,
+              chain, { messages: work, systemPrompt: chatSystem, jsonMode: true, hosted, feature: "chat" }, resolveKey, resolveModel, resolveBaseUrl,
             );
+            spendGuard.spend();
             provider = step_out.provider;
             promptTokens += step_out.promptTokens;
             completionTokens += step_out.completionTokens;
@@ -420,7 +459,10 @@ Deno.serve(async (req) => {
         // ONE corrective turn to act now or finalize cleanly. Capped at a single
         // retry and gated on no write-tool having run, so it can't loop or pile
         // onto rate limits.
-        if (!toolsUsed.some((t) => WRITE_TOOLS.has(t)) && looksLikeStall(replyText)) {
+        if (
+          !toolsUsed.some((t) => WRITE_TOOLS.has(t)) && looksLikeStall(replyText) &&
+          !spendGuard.exhausted()
+        ) {
           const corrected: ChatMessage[] = [
             ...messages,
             { role: "assistant", content: replyText },
@@ -435,27 +477,24 @@ Deno.serve(async (req) => {
 
         // Log this turn's LLM spend (feature=chat) — the agentic loop's calls were
         // previously invisible in the diagnostics. Background; never blocks the reply.
+        log.info("turn_done", {
+          llmCalls: spendGuard.used(),
+          budget: MAX_LLM_CALLS_PER_TURN,
+          tools: toolsUsed.length,
+          promptTokens,
+          completionTokens,
+        });
         if (promptTokens + completionTokens > 0) {
-          const cost = estimateCostUsd(
-            provider as LlmProvider, promptTokens, completionTokens,
-            customPriceFromProfile(provider, profile), model,
-          );
-          waitUntil((async () => {
-            try {
-              await admin.from("generation_logs").insert({
-                user_id: userId,
-                feature: "chat",
-                hosted,
-                provider,
-                model,
-                prompt_tokens: promptTokens,
-                completion_tokens: completionTokens,
-                estimated_cost_usd: cost,
-                tools_used: toolsUsed.length ? toolsUsed : null,
-                parsed_ok: true,
-              });
-            } catch { /* best effort */ }
-          })());
+          waitUntil(logGeneration(admin, userId, {
+            feature: "chat",
+            hosted,
+            provider,
+            model,
+            promptTokens,
+            completionTokens,
+            profile,
+            toolsUsed,
+          }));
         }
         return { replyText, toolsUsed, provider };
       };
@@ -474,7 +513,9 @@ Deno.serve(async (req) => {
             convId = conv?.id ?? null;
           }
         } catch { /* best effort */ }
-        const bundle = { chain, resolveKey, resolveModel, resolveBaseUrl };
+        // hosted + pricing must ride along: these fire real LLM calls on the
+        // same key this turn used, and hosted_spend() meters what they cost.
+        const bundle = { chain, resolveKey, resolveModel, resolveBaseUrl, hosted, pricing: profile };
         const lastUser = [...messages].reverse().find((m) => m.role === "user")?.content ?? "";
         const userTurns = (fullThread as ChatMessage[]).filter((m) => m.role === "user").length;
         if (shouldUpdateKnowledge(lastUser, userTurns)) {
@@ -486,7 +527,7 @@ Deno.serve(async (req) => {
         const { dropped } = compressThread(fullThread as ChatMessage[]);
         if (dropped.length && convId) {
           waitUntil((async () => {
-            const s = await summarizeDropped(dropped, bundle);
+            const s = await summarizeDropped(admin, userId, dropped, bundle);
             if (s) await admin.from("coach_conversations").update({ summary: s }).eq("id", convId).eq("user_id", userId);
           })());
         }
@@ -500,6 +541,14 @@ Deno.serve(async (req) => {
             const send = (obj: unknown) => {
               try { controller.enqueue(encoder.encode(`data: ${JSON.stringify(obj)}\n\n`)); } catch { /* disconnected */ }
             };
+            // The agentic loop can think for a long time before it has anything
+            // to say, and to a socket "quiet" is indistinguishable from "dead" —
+            // that silence is what tripped the client's read timeout. An SSE
+            // comment keeps the connection warm and costs nothing: clients skip
+            // every line that isn't "data:", so old builds ignore it too.
+            const ping = setInterval(() => {
+              try { controller.enqueue(encoder.encode(": ping\n\n")); } catch { /* disconnected */ }
+            }, HEARTBEAT_MS);
             try {
               const { replyText, toolsUsed, provider } = await runAgentic((name) => send({ tool: name }));
               send({ token: replyText });
@@ -513,6 +562,8 @@ Deno.serve(async (req) => {
             } catch (e) {
               send({ error: String(e instanceof Error ? e.message : e) });
               try { controller.close(); } catch { /* already closed */ }
+            } finally {
+              clearInterval(ping);
             }
           },
         });
@@ -528,27 +579,17 @@ Deno.serve(async (req) => {
 
     const outcome = await llmGenerateWithFallback(
       chain,
-      { messages: turns, systemPrompt, jsonMode: mode === "finalize" },
+      { messages: turns, systemPrompt, jsonMode: mode === "finalize", hosted, feature: mode === "finalize" ? "finalize" : "chat" },
       resolveKey,
       resolveModel,
       resolveBaseUrl,
     );
-    const cost = estimateCostUsd(outcome.provider, outcome.promptTokens, outcome.completionTokens, customPriceFromProfile(outcome.provider, profile), outcome.model);
-    waitUntil((async () => {
-      try {
-        await admin.from("generation_logs").insert({
-          user_id: userId,
-          feature: mode === "finalize" ? "finalize" : "chat",
-          hosted,
-          provider: outcome.provider,
-          model: outcome.model,
-          prompt_tokens: outcome.promptTokens,
-          completion_tokens: outcome.completionTokens,
-          estimated_cost_usd: cost,
-          parsed_ok: true,
-        });
-      } catch { /* best effort */ }
-    })());
+    // Logged by the helper; also recomputed here because the response reports it.
+    const cost = estimateCostUsd(
+      outcome.provider, outcome.promptTokens, outcome.completionTokens,
+      customPriceFromProfile(outcome.provider, profile), outcome.model,
+    );
+    waitUntil(logLlmResult(admin, userId, mode === "finalize" ? "finalize" : "chat", hosted, outcome, profile));
 
     // --- persist the conversation thread -----------------------------------
     const fullThread = [...messages, { role: "assistant", content: outcome.text }];
@@ -575,7 +616,7 @@ Deno.serve(async (req) => {
       const userTurns = (fullThread as ChatMessage[]).filter((m) => m.role === "user").length;
       if (shouldUpdateKnowledge(lastUser, userTurns)) {
         // Slow secondary LLM call — don't block the reply on it.
-        waitUntil(updateUserDoc(admin, userId, existingKnowledge, fullThread as ChatMessage[], { chain, resolveKey, resolveModel, resolveBaseUrl }));
+        waitUntil(updateUserDoc(admin, userId, existingKnowledge, fullThread as ChatMessage[], { chain, resolveKey, resolveModel, resolveBaseUrl, hosted, pricing: profile }));
       }
       return json({ reply: outcome.text, conversation_id: conversationId, provider: outcome.provider, estimated_cost_usd: cost });
     }

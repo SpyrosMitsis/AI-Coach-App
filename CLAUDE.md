@@ -50,6 +50,17 @@ scripts/dev.sh db:push                 # run pending migrations (asks first)
   `AppLog.time(area, label){…}` logs latency. Wired into the LLM/generate/coach hot paths in
   `WorkoutRepository.kt`. Read it live with `scripts/dev.sh android:log` (filters to the app's
   pid; `WM` tag groups all app chatter).
+- **LLM quality** — `scripts/dev.sh eval:run` drives the REAL prompts through the models
+  in `scripts/eval/models.ts` (edit that file to add one) and scores the output with the
+  engine's own checkers (`reviewWorkout`, `_shared/plan_checks.ts`). Offline: no supabase,
+  no DB, nothing destructive. Writes `eval_runs/*.jsonl`; `notebooks/llm_eval.ipynb`
+  turns it into charts + a prompt-vs-data-vs-model verdict. Keys go in `dev.local.sh`.
+  Week-level rules (80/20, deload, ramp, taper, hard spacing) live in `plan_checks.ts`,
+  where every threshold cites the `prompt.ts` line it mirrors — keep them in step.
+- **LLM cost** — every LLM call writes a `generation_logs` row via
+  `_shared/generation_log.ts` (the only place that row is built). `scripts/dev.sh
+  llm:cost [days]` rolls it up by feature/model, `--recent` lists individual calls.
+  Needs `WM_DB_URL` in `dev.local.sh`. Caps, env vars and the maths: `docs/LLM_COSTS.md`.
 - **Edge functions** — `_shared/log.ts`: `logger(fn)` emits one JSON line per event
   (`{t,lvl,fn,msg,…}`) — greppable in `fn:logs`. Wired into `generate-workout`, `coach-chat`,
   and `_shared/llm.ts` (provider/model/latency/usage/errors). Default level is `info`; set

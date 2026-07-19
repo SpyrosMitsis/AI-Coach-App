@@ -128,6 +128,25 @@ export const TOOL_CATALOG: ToolDef[] = [
     schema: { type: "object", properties: { fact: { type: "string" } }, required: ["fact"] },
     description: "Save a durable fact/preference/constraint about the athlete (e.g. 'dislikes burpees', 'left knee niggle').",
   },
+  {
+    name: "update_profile",
+    kind: "act",
+    args: "{ ftp?: number, lthr?: number, threshold_pace_per_km?: 'm:ss', css_per_100m?: 'm:ss', weekly_tss_target?: number }",
+    schema: {
+      type: "object",
+      properties: {
+        ftp: { type: "number", description: "Cycling FTP in watts (50-600)" },
+        lthr: { type: "number", description: "Lactate threshold heart rate in bpm (120-210)" },
+        threshold_pace_per_km: { type: "string", description: "Run threshold pace per km, like 4:45" },
+        css_per_100m: { type: "string", description: "Swim critical pace per 100m, like 1:55" },
+        weekly_tss_target: { type: "number", description: "Weekly training load target in TSS (100-1000)" },
+      },
+    },
+    description:
+      "Save the athlete's performance numbers when they mention them in conversation (a new FTP test, " +
+      "a threshold pace, a swim CSS, a weekly load target). Better numbers make every generated workout " +
+      "more accurate, so save them whenever the athlete states one. Only include fields the athlete gave.",
+  },
 ];
 
 /** Tool definitions in the shape native tool-calling APIs expect. */
@@ -243,6 +262,9 @@ export async function executeTool(
           days: o.days, session_min: o.session_duration, equipment: o.equipment,
           injuries: o.injury_history, lthr: o.lthr, ftp: o.ftp, threshold_pace: o.threshold_pace_per_km,
           target_pace: o.target_pace, goals: races ?? [], known: p?.coach_knowledge ?? "",
+          // Richer onboarding: per-activity goals + experience, per-day availability.
+          training_goals: o.goals, goals_by_sport: o.goals_by_sport,
+          experience_by_sport: o.experience_by_sport, availability: o.day_availability,
         });
       }
       case "get_readiness": {
@@ -350,6 +372,47 @@ export async function executeTool(
           onboarding: { ...o, goal: args.name, goal_date: args.date, ...(pace ? { target_pace: pace } : {}) },
         }).eq("id", userId);
         return JSON.stringify({ ok: true, goal: args.name, goal_date: args.date, target_pace: pace ?? null });
+      }
+      case "update_profile": {
+        // Bounded per field: a misheard "FTP 9000" must not become the zones
+        // every future workout is built on. Out-of-range values are rejected
+        // per-field with a reason the model can relay.
+        const paceRe = /^\d{1,2}:\d{2}$/;
+        const updates: Record<string, unknown> = {};
+        const rejected: string[] = [];
+        const num = (v: unknown) => typeof v === "number" && Number.isFinite(v) ? v : null;
+        const ftp = num(args.ftp);
+        if (args.ftp !== undefined) {
+          if (ftp !== null && ftp >= 50 && ftp <= 600) updates.ftp = Math.round(ftp);
+          else rejected.push("ftp must be 50-600 watts");
+        }
+        const lthr = num(args.lthr);
+        if (args.lthr !== undefined) {
+          if (lthr !== null && lthr >= 120 && lthr <= 210) updates.lthr = Math.round(lthr);
+          else rejected.push("lthr must be 120-210 bpm");
+        }
+        if (args.threshold_pace_per_km !== undefined) {
+          const p = String(args.threshold_pace_per_km).trim();
+          if (paceRe.test(p)) updates.threshold_pace_per_km = p;
+          else rejected.push("threshold_pace_per_km must look like 4:45");
+        }
+        if (args.css_per_100m !== undefined) {
+          const p = String(args.css_per_100m).trim();
+          if (paceRe.test(p)) updates.css_per_100m = p;
+          else rejected.push("css_per_100m must look like 1:55");
+        }
+        const tss = num(args.weekly_tss_target);
+        if (args.weekly_tss_target !== undefined) {
+          if (tss !== null && tss >= 100 && tss <= 1000) updates.weekly_tss_target = Math.round(tss);
+          else rejected.push("weekly_tss_target must be 100-1000");
+        }
+        if (Object.keys(updates).length === 0) {
+          return `error: nothing to save${rejected.length ? ` (${rejected.join("; ")})` : ""}`;
+        }
+        const { data: p } = await admin.from("user_profiles").select("onboarding").eq("id", userId).single();
+        const o = (p?.onboarding ?? {}) as Record<string, unknown>;
+        await admin.from("user_profiles").update({ onboarding: { ...o, ...updates } }).eq("id", userId);
+        return JSON.stringify({ ok: true, saved: updates, ...(rejected.length ? { rejected } : {}) });
       }
       case "remember": {
         const fact = String(args.fact ?? "").trim();
