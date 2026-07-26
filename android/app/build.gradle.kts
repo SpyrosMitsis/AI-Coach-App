@@ -38,6 +38,9 @@ android {
         // properties (see local.properties / CI secrets). These are public
         // anon-safe values, mirroring the web app's NEXT_PUBLIC_* vars.
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+        // Where Room writes the exported schema (see AppDatabase.exportSchema).
+        // The generated app/schemas/*.json is committed as the baseline.
+        ksp { arg("room.schemaLocation", "$projectDir/schemas") }
         buildConfigField("String", "SUPABASE_URL", "\"${secret("SUPABASE_URL")}\"")
         buildConfigField("String", "SUPABASE_ANON_KEY", "\"${secret("SUPABASE_ANON_KEY")}\"")
     }
