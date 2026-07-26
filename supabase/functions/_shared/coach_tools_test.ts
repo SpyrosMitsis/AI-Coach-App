@@ -268,3 +268,139 @@ Deno.test("resume_training: nulls both pause columns", async () => {
   assertEquals(obs.ok, true);
   assertEquals(updates[0], { training_paused_until: null, training_pause_reason: null });
 });
+
+// ---------------------------------------------------------------------------
+// set_goal_race + assess_goal.
+//
+// THE BUG: set_goal_race only ever wrote user_profiles.onboarding.goal, which
+// Home reads. Settings > Goals and races reads the `races` table, so a goal set
+// through chat showed on Home while the races table stayed empty. Adding a race
+// by hand does BOTH halves (addRace + setGoalRace); the coach now does too.
+// ---------------------------------------------------------------------------
+
+/** Stub that also records what was written, per table. */
+function writeStub(byTable: Record<string, unknown>) {
+  const writes: Array<{ table: string; op: string; row: Any }> = [];
+  const chainFor = (table: string, data: unknown): Any => {
+    const c: Any = {};
+    for (const m of ["select", "eq", "gte", "lte", "in", "not", "order", "limit"]) c[m] = () => c;
+    c.single = () => Promise.resolve({ data: Array.isArray(data) ? data[0] : data });
+    c.maybeSingle = () => Promise.resolve({ data: Array.isArray(data) ? (data[0] ?? null) : data });
+    c.insert = (row: Any) => { writes.push({ table, op: "insert", row }); return c; };
+    c.update = (row: Any) => { writes.push({ table, op: "update", row }); return c; };
+    c.then = (res: Any, rej: Any) => Promise.resolve({ data }).then(res, rej);
+    return c;
+  };
+  return {
+    admin: { from: (t: string) => chainFor(t, byTable[t] ?? []) } as Any,
+    writes,
+    of: (table: string) => writes.filter((w) => w.table === table),
+  };
+}
+
+const FIT_ATHLETE = {
+  user_profiles: [{ onboarding: { experience: "intermediate" } }],
+  completed_activities: Array.from({ length: 16 }, (_, i) => ({
+    date: `2026-07-${String(i + 1).padStart(2, "0")}`,
+    distance_m: 14_000,
+    duration_seconds: 4200,
+    ctl: 55,
+  })),
+  races: [],
+};
+
+Deno.test("set_goal_race writes the races row Settings reads, not just the profile", async () => {
+  const s = writeStub(FIT_ATHLETE);
+  const obs = JSON.parse(await executeTool(s.admin, "u1", "auth", "set_goal_race", {
+    name: "Athens Marathon", date: "2027-11-14", sport: "run",
+    distance: "Marathon", priority: "A", target: "sub 4:00",
+  }));
+
+  const race = s.of("races").find((w) => w.op === "insert");
+  assert(race, "the races table must be written, this is the reported bug");
+  assertEquals(race!.row.name, "Athens Marathon");
+  assertEquals(race!.row.date, "2027-11-14");
+  assertEquals(race!.row.sport, "run");
+  assertEquals(race!.row.distance, "Marathon");
+  assertEquals(race!.row.priority, "A");
+  assertEquals(race!.row.target, "sub 4:00");
+  assertEquals(race!.row.user_id, "u1");
+
+  // And the periodization anchor Home reads is still set.
+  const prof = s.of("user_profiles").find((w) => w.op === "update");
+  assert(prof, "an A goal must still anchor periodization");
+  assertEquals((prof!.row.onboarding as Any).goal, "Athens Marathon");
+  assertEquals((prof!.row.onboarding as Any).goal_date, "2027-11-14");
+
+  assertEquals(obs.saved_to_goals_and_races, true);
+  assertEquals(obs.anchors_periodization, true);
+});
+
+Deno.test("a B-priority tune-up is saved but does not steal the periodization anchor", async () => {
+  const s = writeStub(FIT_ATHLETE);
+  const obs = JSON.parse(await executeTool(s.admin, "u1", "auth", "set_goal_race", {
+    name: "Local 10K", date: "2026-09-05", distance: "10K", priority: "B",
+  }));
+  assert(s.of("races").some((w) => w.op === "insert"), "B races are still saved");
+  assertEquals(s.of("user_profiles").filter((w) => w.op === "update").length, 0);
+  assertEquals(obs.anchors_periodization, false);
+});
+
+Deno.test("re-saving the same event updates it instead of duplicating", async () => {
+  const s = writeStub({ ...FIT_ATHLETE, races: [{ id: "r1" }] });
+  await executeTool(s.admin, "u1", "auth", "set_goal_race", {
+    name: "Athens Marathon", date: "2027-11-14", distance: "Marathon", priority: "B",
+  });
+  assertEquals(s.of("races").filter((w) => w.op === "insert").length, 0);
+  assertEquals(s.of("races").filter((w) => w.op === "update").length, 1);
+});
+
+Deno.test("set_goal_race rejects a malformed date rather than writing junk", async () => {
+  const s = writeStub(FIT_ATHLETE);
+  const obs = await executeTool(s.admin, "u1", "auth", "set_goal_race", {
+    name: "Some race", date: "next November",
+  });
+  assert(obs.startsWith("error:"), obs);
+  assertEquals(s.writes.length, 0, "nothing should be written on a bad date");
+});
+
+Deno.test("saving a goal returns the feasibility verdict with it", async () => {
+  const s = writeStub({
+    user_profiles: [{ onboarding: {} }],
+    completed_activities: [{ date: "2026-07-20", distance_m: 5_000, duration_seconds: 1800, ctl: 8 }],
+    races: [],
+  });
+  // ~1.25km/week, longest 5km, and an Ironman six weeks out.
+  const obs = JSON.parse(await executeTool(s.admin, "u1", "auth", "set_goal_race", {
+    name: "Ironman Barcelona", date: iso6WeeksOut(), distance: "Ironman",
+  }));
+  assertEquals(obs.feasibility.verdict, "unrealistic");
+  assertEquals(obs.feasibility.push_back, true);
+  assert(obs.feasibility.suggestion, "must offer an alternative, not just refuse");
+  // The goal is still saved: the athlete asked for it, the coach argues in prose.
+  assertEquals(obs.saved_to_goals_and_races, true);
+});
+
+Deno.test("assess_goal judges without writing anything", async () => {
+  const s = writeStub(FIT_ATHLETE);
+  const obs = JSON.parse(await executeTool(s.admin, "u1", "auth", "assess_goal", {
+    goal: "marathon", date: iso6WeeksOut(),
+  }));
+  assertEquals(s.writes.length, 0, "assess_goal is a read tool");
+  assertEquals(obs.push_back, true);
+  assert(Array.isArray(obs.evidence) && obs.evidence.length > 0);
+});
+
+Deno.test("both goal tools are advertised to the model", () => {
+  const native = nativeToolDefs().map((t) => t.name);
+  assert(native.includes("assess_goal"));
+  assert(native.includes("set_goal_race"));
+  const setter = TOOL_CATALOG.find((t) => t.name === "set_goal_race")!;
+  // Distance drives the feasibility match, so the model must be told to send it.
+  assert(Object.keys((setter.schema as Any).properties).includes("distance"));
+  assert(/feasibility/i.test(setter.description));
+});
+
+function iso6WeeksOut(): string {
+  return new Date(Date.now() + 42 * 86400000).toISOString().slice(0, 10);
+}

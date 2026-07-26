@@ -57,7 +57,8 @@ internal fun friendlyToolProgress(tool: String): String = when (tool) {
     "move_workout" -> "Moving the session…"
     "set_rest_day" -> "Setting a rest day…"
     "make_easier" -> "Making the session easier…"
-    "set_goal_race" -> "Setting your goal race…"
+    "assess_goal" -> "Checking if that goal is realistic…"
+    "set_goal_race" -> "Saving your goal race…"
     "remember" -> "Noting that down…"
     "update_profile" -> "Updating your profile…"
     "update_app_settings" -> "Updating your app settings…"
@@ -104,10 +105,18 @@ internal fun followUpChips(toolsUsed: List<String>): List<CoachStarter> = when {
             "Explain why the session you just created is the right one for me now, based on my fitness, fatigue and goal. Use the real numbers.",
         ),
     )
-    "set_goal_race" in toolsUsed -> listOf(
+    // The coach may have SAVED the goal and then argued against the timeline
+    // (set_goal_race returns a feasibility verdict). So offer both paths: the
+    // build, and the honest question. A single "Plan toward it" chip would
+    // push the athlete straight past a warning it just gave them.
+    "set_goal_race" in toolsUsed || "assess_goal" in toolsUsed -> listOf(
         CoachStarter(
             "Plan toward it",
             "Now that my goal race is set, plan this week so it starts building toward it. Put the week on my calendar and summarize the focus.",
+        ),
+        CoachStarter(
+            "What would it take?",
+            "Be concrete about what reaching that goal actually requires from me: the weekly volume, the long session, and how many weeks of building. Tell me honestly whether my current numbers support it.",
         ),
     )
     "move_workout" in toolsUsed || "set_rest_day" in toolsUsed -> listOf(

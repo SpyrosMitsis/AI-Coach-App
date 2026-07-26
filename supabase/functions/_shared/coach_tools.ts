@@ -9,9 +9,49 @@ import { computeRecovery } from "./recovery.ts";
 import { freshnessWord, recoveryWord } from "./prompt.ts";
 import { applyFallbackFitness } from "./load.ts";
 import { injuriesText } from "./profile.ts";
+import { assessFeasibility, type FeasibilityInput } from "./feasibility.ts";
 
 const DAY = 86400000;
 const iso = (d: number) => new Date(d).toISOString().slice(0, 10);
+
+/**
+ * Gather the real numbers a feasibility verdict has to stand on: recent weekly
+ * volume, the longest single session, and chronic load. Shared by assess_goal
+ * and set_goal_race so a goal cannot be saved without the same judgement the
+ * coach would have got by asking.
+ */
+async function feasibilityInputs(
+  admin: SupabaseClient,
+  userId: string,
+  goal: string,
+  date: string,
+): Promise<FeasibilityInput> {
+  const since = iso(Date.now() - 28 * DAY);
+  const { data } = await admin.from("completed_activities")
+    .select("date, distance_m, duration_seconds, ctl")
+    .eq("user_id", userId).gte("date", since).order("date", { ascending: false });
+  const acts = data ?? [];
+
+  const totalKm = acts.reduce((s, r) => s + ((r.distance_m ?? 0) / 1000), 0);
+  const totalHours = acts.reduce((s, r) => s + ((r.duration_seconds ?? 0) / 3600), 0);
+  const longestKm = acts.reduce((m, r) => Math.max(m, (r.distance_m ?? 0) / 1000), 0);
+
+  const { data: prof } = await admin.from("user_profiles")
+    .select("onboarding").eq("id", userId).single();
+  const o = (prof?.onboarding ?? {}) as Record<string, unknown>;
+
+  const weeksAway = (new Date(date).getTime() - Date.now()) / (7 * DAY);
+  return {
+    goal,
+    weeksAway,
+    // Over 28 days, so a quarter of the total is the weekly rate.
+    currentWeeklyKm: totalKm > 0 ? totalKm / 4 : null,
+    currentWeeklyHours: totalHours > 0 ? totalHours / 4 : null,
+    longestRecentKm: longestKm > 0 ? longestKm : null,
+    ctl: acts.find((r) => r.ctl != null)?.ctl ?? null,
+    experience: (o.experience as string | undefined) ?? null,
+  };
+}
 
 function mondayOf(date = new Date()): string {
   const d = new Date(date);
@@ -128,17 +168,51 @@ export const TOOL_CATALOG: ToolDef[] = [
     description: "End an active training pause early. Use if the athlete says they're back / resuming sooner than the pause's original end date.",
   },
   {
-    name: "set_goal_race", kind: "act", args: "{ name: string, date: 'YYYY-MM-DD', target_pace?: string }",
+    name: "set_goal_race",
+    kind: "act",
+    args:
+      "{ name: string, date: 'YYYY-MM-DD', sport?: 'run'|'ride'|'swim'|'strength'|'other', distance?: string, priority?: 'A'|'B'|'C', target?: string, notes?: string }",
     schema: {
       type: "object",
       properties: {
-        name: { type: "string" },
+        name: { type: "string", description: "Event name, e.g. 'Athens Marathon'" },
         date: { type: "string", description: "YYYY-MM-DD" },
-        target_pace: { type: "string", description: "optional run target pace like 4:45/km" },
+        sport: {
+          type: "string",
+          enum: ["run", "ride", "swim", "strength", "other"],
+          description: "Defaults to run. Use 'other' for triathlon and hybrid events.",
+        },
+        distance: {
+          type: "string",
+          description: "Event distance, e.g. 'Marathon', '10K', '70.3', 'Ironman'. Drives the feasibility check.",
+        },
+        priority: {
+          type: "string",
+          enum: ["A", "B", "C"],
+          description: "A = the goal that anchors periodization (default). B/C are tune-ups.",
+        },
+        target: { type: "string", description: "Free-text target: '4:45/km', 'sub 3:30', 'FTP 260W'" },
+        notes: { type: "string" },
       },
       required: ["name", "date"],
     },
-    description: "Set the athlete's goal event; this anchors periodization and taper. For run goals you may also set the target pace.",
+    description:
+      "Save a goal event to the athlete's goals and races list. An A-priority goal also anchors periodization and taper. Returns a FEASIBILITY assessment from the athlete's real numbers: if it says push_back, do NOT plan a training block, talk to them about the verdict first.",
+  },
+  {
+    name: "assess_goal",
+    kind: "read",
+    args: "{ goal: string, date: 'YYYY-MM-DD' }",
+    schema: {
+      type: "object",
+      properties: {
+        goal: { type: "string", description: "The event, e.g. 'marathon', '70.3', 'Ironman'" },
+        date: { type: "string", description: "Target date, YYYY-MM-DD" },
+      },
+      required: ["goal", "date"],
+    },
+    description:
+      "Judge whether a goal is realistically achievable in the time available, from the athlete's actual volume, longest recent session and chronic load. Call this BEFORE agreeing to a goal or planning toward one, whenever the athlete names a race and a date.",
   },
   {
     name: "remember", kind: "act", args: "{ fact: string }",
@@ -510,15 +584,87 @@ export async function executeTool(
         const w = r.workout as { title?: string } | undefined;
         return JSON.stringify({ ok: !!r.workout_id, title: w?.title ?? null, date: args.date ?? "today", error: r.error ?? null });
       }
+      case "assess_goal": {
+        if (!args.goal || !args.date) return "error: goal and date are required";
+        const f = assessFeasibility(
+          await feasibilityInputs(admin, userId, String(args.goal), String(args.date)),
+        );
+        return JSON.stringify({
+          verdict: f.band,
+          headline: f.headline,
+          evidence: f.reasons,
+          suggestion: f.suggestion,
+          weeks_needed: f.weeksNeeded,
+          push_back: f.pushBack,
+        });
+      }
       case "set_goal_race": {
         if (!args.name || !args.date) return "error: name and date are required";
-        const { data: p } = await admin.from("user_profiles").select("onboarding").eq("id", userId).single();
-        const o = (p?.onboarding ?? {}) as Record<string, unknown>;
-        const pace = typeof args.target_pace === "string" && args.target_pace.trim() ? args.target_pace.trim() : undefined;
-        await admin.from("user_profiles").update({
-          onboarding: { ...o, goal: args.name, goal_date: args.date, ...(pace ? { target_pace: pace } : {}) },
-        }).eq("id", userId);
-        return JSON.stringify({ ok: true, goal: args.name, goal_date: args.date, target_pace: pace ?? null });
+        const name = String(args.name).trim().slice(0, 120);
+        const date = String(args.date).trim();
+        if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return "error: date must be YYYY-MM-DD";
+
+        const sportRaw = String(args.sport ?? "run").toLowerCase();
+        const sport = ["run", "ride", "swim", "strength", "other"].includes(sportRaw) ? sportRaw : "run";
+        const priorityRaw = String(args.priority ?? "A").toUpperCase();
+        const priority = ["A", "B", "C"].includes(priorityRaw) ? priorityRaw : "A";
+        const str = (v: unknown) => {
+          const s = typeof v === "string" ? v.trim() : "";
+          return s ? s.slice(0, 200) : null;
+        };
+        const distance = str(args.distance);
+        // target_pace is the pre-multisport name for the same field; accept it
+        // so an older prompt or model habit still lands somewhere sensible.
+        const target = str(args.target) ?? str(args.target_pace);
+        const notes = str(args.notes);
+
+        // THE BUG THIS FIXES: this tool only ever wrote onboarding.goal, which
+        // Home reads, so a goal set through chat appeared on Home while
+        // Settings > Goals and races (which reads the `races` table) stayed
+        // empty. The app does BOTH halves when you add a race by hand
+        // (addRace + setGoalRace); the coach now does too.
+        const { data: existing } = await admin.from("races")
+          .select("id").eq("user_id", userId).eq("name", name).eq("date", date).maybeSingle();
+        if (existing?.id) {
+          await admin.from("races").update({ priority, sport, distance, target, notes })
+            .eq("id", existing.id);
+        } else {
+          await admin.from("races").insert({
+            user_id: userId, name, date, priority, sport, distance, target, notes,
+          });
+        }
+
+        // Only an A goal anchors periodization, matching setGoalRace on device.
+        let anchored = false;
+        if (priority === "A") {
+          const { data: p } = await admin.from("user_profiles").select("onboarding").eq("id", userId).single();
+          const o = (p?.onboarding ?? {}) as Record<string, unknown>;
+          const pace = sport === "run" && target ? { target_pace: target } : {};
+          await admin.from("user_profiles").update({
+            onboarding: { ...o, goal: name, goal_date: date, ...pace },
+          }).eq("id", userId);
+          anchored = true;
+        }
+
+        // Return the verdict WITH the write, so the coach cannot save a goal
+        // and start planning without having seen whether it is achievable.
+        const f = assessFeasibility(
+          await feasibilityInputs(admin, userId, distance ?? name, date),
+        );
+        return JSON.stringify({
+          ok: true,
+          saved_to_goals_and_races: true,
+          anchors_periodization: anchored,
+          goal: { name, date, sport, distance, priority, target, notes },
+          feasibility: {
+            verdict: f.band,
+            headline: f.headline,
+            evidence: f.reasons,
+            suggestion: f.suggestion,
+            weeks_needed: f.weeksNeeded,
+            push_back: f.pushBack,
+          },
+        });
       }
       case "update_profile": {
         // Bounded per field: a misheard "FTP 9000" must not become the zones
