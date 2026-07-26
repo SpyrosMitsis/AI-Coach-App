@@ -53,6 +53,7 @@ import {
   validateAppSettings,
 } from "../_shared/coach_tools.ts";
 import { callBudget, cleanReply, looksLikeStall, shouldUpdateKnowledge } from "../_shared/coach_eval.ts";
+import { speculativeStream } from "../_shared/coach_stream.ts";
 import { runNativeToolLoop, supportsNativeTools } from "../_shared/llm_native_tools.ts";
 
 // Tool-use protocol appended to the coach system prompt for chat mode. The
@@ -326,7 +327,13 @@ Deno.serve(async (req) => {
     if (mode === "chat") {
       const auth = req.headers.get("Authorization") ?? "";
 
-      const runAgentic = async (onTool?: (name: string) => void) => {
+      const runAgentic = async (
+        onTool?: (name: string) => void,
+        // Present only on the streaming transport with a client new enough to
+        // understand resets (streamProtocol >= 2). Absent means today's
+        // behaviour: buffer the whole turn, emit one token event at the end.
+        stream?: { onDelta: (t: string) => void; onToolStart: () => void },
+      ) => {
         const toolsUsed: string[] = [];
         // A remember call is a stronger signal a durable fact just changed than
         // any regex on the user's message text — see rememberCalled below.
@@ -403,6 +410,9 @@ Deno.serve(async (req) => {
                 maxSteps: Math.min(NATIVE_MAX_STEPS, spendGuard.remaining()),
                 hosted,
                 feature: "chat",
+                stream: !!stream,
+                onDelta: stream?.onDelta,
+                onToolStart: stream?.onToolStart,
               });
               spendGuard.spend(out.steps);
               provider = keyedProvider;
@@ -563,8 +573,39 @@ Deno.serve(async (req) => {
               try { controller.enqueue(encoder.encode(": ping\n\n")); } catch { /* disconnected */ }
             }, HEARTBEAT_MS);
             try {
-              const { replyText, toolsUsed, provider, settingsChanges, rememberCalledThisTurn } = await runAgentic((name) => send({ tool: name }));
-              send({ token: replyText });
+              // Protocol 1 clients concatenate {token} events but silently
+              // ignore {reset}, which would leave a discarded preamble on
+              // screen forever. So speculative streaming is opt-in by version:
+              // an old APK keeps exactly today's buffer-then-one-token
+              // behaviour, and this function can deploy before the app ships.
+              const proto = Number(body.streamProtocol) || 1;
+              const spec = proto >= 2
+                ? speculativeStream((e) => send(e.reset ? { reset: true } : { token: e.text }))
+                : null;
+
+              const { replyText, toolsUsed, provider, settingsChanges, rememberCalledThisTurn } =
+                await runAgentic(
+                  (name) => send({ tool: name }),
+                  spec
+                    ? { onDelta: (t) => spec.onDelta(t), onToolStart: () => spec.onToolStart() }
+                    : undefined,
+                );
+
+              if (spec) {
+                spec.endMessage();
+                // INVARIANT: what the client displays must equal what gets
+                // persisted. replyText has been through cleanReply (fence
+                // stripping, JSON unwrapping, dash removal) and the empty-reply
+                // fallback, none of which the raw deltas went through, so the
+                // two can legitimately differ. Reconcile rather than hope.
+                if (spec.committed() !== replyText) {
+                  send({ reset: true });
+                  send({ token: replyText });
+                }
+                if (spec.resets() > 0) log.info("stream_resets", { count: spec.resets() });
+              } else {
+                send({ token: replyText });
+              }
               const saveAndFinish = (async () => {
                 const convId = await persistThread(replyText, rememberCalledThisTurn);
                 send({

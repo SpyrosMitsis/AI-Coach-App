@@ -87,13 +87,21 @@ class CoachViewModel @Inject constructor(
         newChat(keepIncognito = true)
     }
 
-    // ---- typewriter reveal ---------------------------------------------------
-    // The server sends the whole reply as ONE token event (true LLM streaming
-    // would blind the hosted cost logging), so the "typing" feel is client-side:
-    // arriving text queues here and a job reveals it a few words at a time.
+    // ---- reveal pacing -------------------------------------------------------
+    // The server now streams real token deltas (llmStream captures usage, so
+    // cost logging is no longer a reason to buffer the whole turn). Deltas are
+    // mid-line by definition, so this is a PACED DRAIN, not a typewriter: it
+    // smooths arrival jitter without ever falling behind the stream. The old
+    // whole-line rule existed to stop MarkdownText restyling a half-written
+    // line; that is now handled properly in the renderer's streaming mode.
     // The screen sets [animateReplies] from rememberAnimationsEnabled(), so the
     // system remove-animations setting shows replies instantly.
     val animateReplies = MutableStateFlow(true)
+    // True between send() and the stream closing. revealing must cover this too,
+    // or a network stall mid-reply would drain the queue, flip revealing false,
+    // and pop the result card / chips in underneath a message still being
+    // written.
+    private val streamOpen = MutableStateFlow(false)
     // True while the typewriter is still revealing text. The screen holds back
     // everything that would otherwise pop in under the growing message (result
     // card, banner, follow-up chips) until this settles, so the reply types
@@ -138,9 +146,23 @@ class CoachViewModel @Inject constructor(
         revealing.value = false
     }
 
+    /** Discard the in-flight reply: the coach narrated, then called a tool. */
+    private fun resetReveal() {
+        revealJob?.cancel()
+        revealJob = null
+        revealQueue.setLength(0)
+        if (revealTarget) {
+            // Drop the bubble we were growing; the real answer starts fresh.
+            messages.value = messages.value.dropLast(1)
+            revealTarget = false
+        }
+    }
+
     private fun queueReveal(tok: String) {
         // JSON replies render as a card (WorkoutCard/DataCard) only once whole;
         // typing them out would flash broken JSON as text first. Show at once.
+        // Only meaningful on the non-streaming path now: the streamed path is
+        // guaranteed prose, since the JSON-protocol leg never streams.
         val jsonStart = !revealTarget && revealQueue.isEmpty() && tok.trimStart().startsWith("{")
         if (!animateReplies.value || jsonStart) {
             flushReveal()
@@ -151,25 +173,20 @@ class CoachViewModel @Inject constructor(
         if (revealJob == null) {
             revealing.value = true
             revealJob = viewModelScope.launch {
-                while (revealQueue.isNotEmpty()) {
-                    // Reveal WHOLE LINES. MarkdownText renders one Text per line,
-                    // so a complete line styles once and never again — revealing
-                    // mid-line made bullets/bold flip styling on every tick,
-                    // which read as the whole message flickering. Only a final
-                    // unterminated line (no newline left) reveals by word chunks,
-                    // confining any style flip to that single line.
-                    val nl = revealQueue.indexOf('\n')
-                    val cut = if (nl >= 0) {
-                        nl + 1
-                    } else {
-                        var c = minOf(40, revealQueue.length)
-                        while (c < revealQueue.length && !revealQueue[c].isWhitespace()) c++
-                        c
+                // Drain until the queue is empty AND no more is coming. The old
+                // loop stopped the moment the queue drained, which was fine when
+                // the whole reply arrived at once but ends the reveal during any
+                // gap between deltas.
+                while (revealQueue.isNotEmpty() || streamOpen.value) {
+                    if (revealQueue.isEmpty()) {
+                        delay(RevealPacer.TICK_MS)
+                        continue
                     }
+                    val cut = RevealPacer.chunk(revealQueue)
                     val chunk = revealQueue.substring(0, cut)
                     revealQueue.delete(0, cut)
                     appendVisible(chunk)
-                    delay(if (nl >= 0) 120 else 45)
+                    delay(RevealPacer.TICK_MS)
                 }
                 revealJob = null
                 revealing.value = false
@@ -350,13 +367,20 @@ class CoachViewModel @Inject constructor(
                 val applied = repo.applyChatSettings(changes)
                 if (applied.isNotEmpty()) banner.value = "✓ Settings updated: " + applied.joinToString(", ")
             }
+            streamOpen.value = true
             val streamed = runCatching {
                 repo.coachAgenticStream(
                     history, conversationId, incognito.value,
                     onTool = { advanceTool(it) },
                     onToken = { appendToken(it) },
+                    // The coach narrated, then called a tool: what is on screen
+                    // was a preamble, not the answer. gotReply goes back to
+                    // false too, or a later failure would be swallowed as
+                    // "we already showed a reply".
+                    onReset = { gotReply = false; resetReveal() },
                 )
             }
+            streamOpen.value = false
             streamed.onSuccess { r ->
                 conversationId = r.conversationId ?: conversationId
                 r.error?.let { err ->
@@ -398,6 +422,12 @@ class CoachViewModel @Inject constructor(
             // The step list collapses into the banner summary; the reveal job
             // (if still typing) carries on, it owns only message text.
             toolSteps.value = emptyList()
+            // Settle the gate if nothing is left to reveal. Normally the drain
+            // loop clears this itself, but a turn that ended on a reset (coach
+            // narrated, then called a tool, then said nothing more) leaves no
+            // job running, and the screen would hold the result card back
+            // forever waiting for a reveal that will never finish.
+            if (revealJob == null && revealQueue.isEmpty()) revealing.value = false
         }
     }
 

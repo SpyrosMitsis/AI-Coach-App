@@ -123,6 +123,13 @@ data class CoachChatRequest(
     val purpose: String = "plan",
     val save: Boolean = false,
     val stream: Boolean = false,
+    // Streaming protocol this client understands.
+    //   1 = one {token} event carrying the whole reply (the original shape).
+    //   2 = live token deltas, plus {reset} when the coach discards a narrated
+    //       preamble and starts over.
+    // A v1 client would silently ignore {reset} and leave the discarded text on
+    // screen forever, so the server only streams speculatively when it sees 2.
+    val streamProtocol: Int = 2,
     // Incognito turn: the server answers with full context but persists nothing
     // (no conversation row, no knowledge/summary updates).
     val incognito: Boolean = false,

@@ -12,6 +12,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.ui.draw.clip
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.AnnotatedString
@@ -60,6 +61,54 @@ private fun AnnotatedString.Builder.appendInline(line: String) {
         idx = m.range.last + 1
     }
     if (idx < line.length) append(line.substring(idx))
+}
+
+/**
+ * Close an unterminated inline marker on the LAST line of a streaming reply.
+ *
+ * With real token streaming a line is rendered many times as it grows, so
+ * "**Key po" would draw literal asterisks and then snap to bold once the
+ * closing "**" arrives. Applying the style early instead means the completed
+ * prefix never changes appearance. An unterminated link renders as its label.
+ *
+ * Only ever applied to the final line, so a genuine lone asterisk earlier in
+ * the message is untouched.
+ */
+internal fun closeOpenMarkup(line: String): String {
+    // A bullet's own "-"/"*" is list syntax, not emphasis. Balancing the whole
+    // line would turn "* item" into "* item*" and print a stray asterisk, so
+    // hand only the body to the balancer and put the marker back.
+    val bullet = Regex("""^(\s*[-*•]\s+)(.*)$""").find(line)
+    if (bullet != null) {
+        return bullet.groupValues[1] + closeOpenMarkup(bullet.groupValues[2])
+    }
+    // A dangling link: [label](htt -> label
+    val link = Regex("""\[([^\]\n]*)\]\([^)\n]*$""").find(line)
+    if (link != null) return line.substring(0, link.range.first) + link.groupValues[1]
+    val openBracket = line.lastIndexOf('[')
+    if (openBracket >= 0 && !line.substring(openBracket).contains(']')) {
+        return line.substring(0, openBracket) + line.substring(openBracket + 1)
+    }
+    // Drop a trailing marker run FIRST, then balance what's left. Such a run is
+    // either an opener whose word hasn't arrived ("**") or a closer only half
+    // typed ("**Key point*"); in both cases the characters carry no meaning yet
+    // and counting them produces nonsense. Dropping first makes the two cases
+    // identical and keeps the completed prefix stable.
+    val body = line.trimEnd('*', '_', '`')
+    return body + markerClosers(body)
+}
+
+/** The markers needed to balance [s], longest first so "**" pairs before "*". */
+private fun markerClosers(s: String): String {
+    var out = s
+    var added = ""
+    for (m in listOf("**", "`", "*", "_")) {
+        if (Regex(Regex.escape(m)).findAll(out).count() % 2 == 1) {
+            out += m
+            added += m
+        }
+    }
+    return added
 }
 
 /** Parse one line's inline markdown (incl. tappable links) into a styled AnnotatedString. */
@@ -155,7 +204,17 @@ fun MarkdownText(
     streaming: Boolean = false,
 ) {
     val linkColor = MaterialTheme.colorScheme.primary
-    val all = text.trim().lines().map { it.trimEnd() }
+    // remember: a stream ticks this composable ~60x/second, and re-splitting
+    // plus re-parsing the whole message each frame is wasted work that grows
+    // with the reply.
+    val all = remember(text, streaming) {
+        val lines = text.trim().lines().map { it.trimEnd() }.toMutableList()
+        // Only the final line can be mid-token, so only it gets the fix-up.
+        if (streaming && lines.isNotEmpty()) {
+            lines[lines.lastIndex] = closeOpenMarkup(lines.last())
+        }
+        lines.toList()
+    }
     val limit = if (streaming) streamingHoldbackFrom(all) else all.size
 
     Column(modifier, verticalArrangement = Arrangement.spacedBy(2.dp)) {

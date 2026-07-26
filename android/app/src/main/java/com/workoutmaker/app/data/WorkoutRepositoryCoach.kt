@@ -104,6 +104,9 @@ suspend fun WorkoutRepository.coachAgenticStream(
     incognito: Boolean = false,
     onTool: (String) -> Unit,
     onToken: (String) -> Unit,
+    // The coach narrated something, then decided to call a tool instead. What
+    // was shown is no longer part of the answer, so drop it.
+    onReset: () -> Unit = {},
 ): CoachStreamResult {
     val token = supabase.auth.currentSessionOrNull()?.accessToken
     val url = backend.url.trimEnd('/') + "/functions/v1/coach-chat"
@@ -136,6 +139,10 @@ suspend fun WorkoutRepository.coachAgenticStream(
             if (data.isEmpty()) continue
             val obj = runCatching { json.parseToJsonElement(data).jsonObject }.getOrNull() ?: continue
             obj["tool"]?.let { onTool(it.jsonPrimitive.content) }
+            // Order matters: a reset in the same frame as a token must clear
+            // first, and gotReply has to go back to false or a later failure
+            // would be swallowed as "we already had a reply".
+            if (obj["reset"] != null) { gotReply = false; onReset() }
             obj["token"]?.let { gotReply = true; onToken(it.jsonPrimitive.content) }
             obj["error"]?.let { error = it.jsonPrimitive.contentOrNull }
             if (obj["done"] != null) {

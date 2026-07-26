@@ -506,7 +506,7 @@ interface Usage {
   completion?: number;
 }
 
-async function* sseLines(res: Response, onIdleReset: () => void): AsyncGenerator<string> {
+export async function* sseLines(res: Response, onIdleReset: () => void): AsyncGenerator<string> {
   if (!res.body) throw new Error("stream response had no body");
   const reader = res.body.getReader();
   const decoder = new TextDecoder();
@@ -530,7 +530,7 @@ async function* sseLines(res: Response, onIdleReset: () => void): AsyncGenerator
  * would be killed mid-sentence. Abort on SILENCE instead (no chunk for
  * STREAM_IDLE_MS), with a hard total ceiling as a backstop.
  */
-function streamAbort(): { signal: AbortSignal; reset: () => void; done: () => void } {
+export function streamAbort(): { signal: AbortSignal; reset: () => void; done: () => void } {
   const ctl = new AbortController();
   let idle = setTimeout(() => ctl.abort(), STREAM_IDLE_MS);
   const total = setTimeout(() => ctl.abort(), STREAM_TOTAL_MS);
