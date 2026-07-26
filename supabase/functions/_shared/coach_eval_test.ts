@@ -226,3 +226,29 @@ Deno.test("scoreCoachTurn treats a false past-tense report as a stall", () => {
   assert(s.stalled, "a claim with no tool call must not pass");
   assert(!s.pass);
 });
+
+Deno.test("cleanReply unwraps a nested envelope, not just the outer one", () => {
+  // Observed live on a re-plan turn: the athlete was shown
+  // {"action":"final","message":"You're right, four strength sessions..."}
+  // because cleanReply unwrapped exactly one layer of two.
+  const inner = JSON.stringify({ action: "final", message: "Here is your week." });
+  const doubled = JSON.stringify({ action: "final", message: inner });
+  assertEquals(cleanReply(doubled), "Here is your week.");
+  assert(!looksLikeJsonLeak(cleanReply(doubled)));
+});
+
+Deno.test("cleanReply still leaves ordinary prose and JSON-ish text alone", () => {
+  assertEquals(cleanReply("Easy run today, keep it conversational."), "Easy run today, keep it conversational.");
+  // A reply that merely MENTIONS braces must not be eaten.
+  assertEquals(cleanReply("Use {reps} as the placeholder."), "Use {reps} as the placeholder.");
+  // Single-layer unwrap is unchanged.
+  assertEquals(cleanReply('{"action":"final","message":"Done."}'), "Done.");
+});
+
+Deno.test("cleanReply terminates on a deeply nested envelope", () => {
+  let t = "the actual reply";
+  for (let i = 0; i < 12; i++) t = JSON.stringify({ action: "final", message: t });
+  const out = cleanReply(t);
+  // Bounded, so it will not fully unwrap 12 layers, but it must RETURN.
+  assertEquals(typeof out, "string");
+});

@@ -129,12 +129,21 @@ export function cleanReply(text: string): string {
   let t = text.trim();
   const fence = t.match(/^```(?:json)?\s*([\s\S]*?)```$/i);
   if (fence) t = fence[1].trim();
-  if (t.startsWith("{")) {
+
+  // Unwrap REPEATEDLY, not once. Observed live: the model answered with its own
+  // envelope nested inside another envelope, a single unwrap left
+  // {"action":"final","message":"..."} on screen, and the athlete read raw JSON
+  // where their training week should have been. Bounded so a pathological
+  // response cannot spin.
+  for (let depth = 0; depth < 4 && t.startsWith("{"); depth++) {
+    let next: string | null = null;
     try {
       const o = JSON.parse(t) as Record<string, unknown>;
       const m = o.message ?? o.reply ?? o.final;
-      if (typeof m === "string" && m.trim()) return stripDashes(m.trim());
+      if (typeof m === "string" && m.trim()) next = m.trim();
     } catch { /* not JSON, keep as-is */ }
+    if (next === null) break;
+    t = next;
   }
   return stripDashes(t);
 }
