@@ -33,6 +33,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import com.workoutmaker.app.data.PlannedWorkout
 import com.workoutmaker.app.data.CompletedActivity
@@ -51,6 +52,25 @@ import com.workoutmaker.app.ui.components.Metrics
 import com.workoutmaker.app.ui.components.fmtPace
 import com.workoutmaker.app.ui.theme.amberAccent
 import com.workoutmaker.app.data.weekPlan
+
+internal val MARKER = 10.dp
+
+/**
+ * Where to start-pad the phase marker so it sits centred on [progress].
+ *
+ * THE CRASH THIS FIXES: this was `maxWidth * progress - 4.dp` inline, and
+ * Periodization.Phase.progress is exactly 0f whenever the goal is 20 or more
+ * weeks out (`1 - min(weeks,20)/20`). The centring subtraction then made the
+ * padding -4.dp, Compose rejects a negative padding by throwing, and the whole
+ * Calendar tab died on open. Any goal a season away triggered it.
+ *
+ * Clamped at BOTH ends: at progress 1 (race week) an uncorrected offset also
+ * pushes the marker past the right edge of the strip.
+ */
+internal fun markerOffset(maxWidth: Dp, progress: Float, marker: Dp = MARKER): Dp {
+    val span = (maxWidth - marker).coerceAtLeast(0.dp)
+    return (maxWidth * progress.coerceIn(0f, 1f) - marker / 2).coerceIn(0.dp, span)
+}
 
 // Where this week sits in the bigger arc: the four phases as a strip with a
 // marker at the athlete's position, plus the week's focus from the planner.
@@ -96,8 +116,8 @@ private fun PhaseStrip(phase: Periodization.Phase, focus: String?) {
                 BoxWithConstraints(Modifier.fillMaxWidth()) {
                     Box(
                         Modifier
-                            .padding(start = maxWidth * phase.progress - 4.dp)
-                            .size(10.dp)
+                            .padding(start = markerOffset(maxWidth, phase.progress, MARKER))
+                            .size(MARKER)
                             .clip(CircleShape)
                             .background(MaterialTheme.colorScheme.onSurface),
                     )
