@@ -24,8 +24,8 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.FitnessCenter
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.KeyboardArrowDown
-import androidx.compose.material.icons.filled.KeyboardArrowLeft
-import androidx.compose.material.icons.filled.KeyboardArrowRight
+import androidx.compose.material.icons.automirrored.filled.KeyboardArrowLeft
+import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import androidx.compose.material.icons.filled.KeyboardArrowUp
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -568,11 +568,11 @@ fun HomeScreen(
         onTitleClick = { showCalendar = true },
         actions = {
             IconButton(onClick = { vm.prevDay() }) {
-                Icon(Icons.Filled.KeyboardArrowLeft, contentDescription = "Previous day")
+                Icon(Icons.AutoMirrored.Filled.KeyboardArrowLeft, contentDescription = "Previous day")
             }
             IconButton(onClick = { vm.nextDay() }, enabled = !isToday) {
                 Icon(
-                    Icons.Filled.KeyboardArrowRight,
+                    Icons.AutoMirrored.Filled.KeyboardArrowRight,
                     contentDescription = "Next day",
                     tint = if (isToday) MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.3f)
                     else MaterialTheme.colorScheme.onSurface,
@@ -987,7 +987,7 @@ private fun SessionDebriefCard(
                 )
             }
             Icon(
-                Icons.Filled.KeyboardArrowRight,
+                Icons.AutoMirrored.Filled.KeyboardArrowRight,
                 contentDescription = "Open activity",
                 tint = MaterialTheme.colorScheme.onSurfaceVariant,
             )
@@ -1181,7 +1181,7 @@ private fun FitnessSection(
                         }
                     }
                     Icon(
-                        Icons.Filled.KeyboardArrowRight,
+                        Icons.AutoMirrored.Filled.KeyboardArrowRight,
                         contentDescription = "Open details",
                         tint = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
@@ -1469,7 +1469,7 @@ private fun DayPickerDialog(
                     }
                     Spacer(Modifier.weight(1f))
                     IconButton(onClick = { month = month.minusMonths(1) }) {
-                        Icon(Icons.Filled.KeyboardArrowLeft, contentDescription = "Previous month")
+                        Icon(Icons.AutoMirrored.Filled.KeyboardArrowLeft, contentDescription = "Previous month")
                     }
                     Text(
                         month.format(java.time.format.DateTimeFormatter.ofPattern("MMMM yyyy")).uppercase(),
@@ -1478,7 +1478,7 @@ private fun DayPickerDialog(
                     )
                     IconButton(onClick = { if (canGoNextMonth) month = month.plusMonths(1) }, enabled = canGoNextMonth) {
                         Icon(
-                            Icons.Filled.KeyboardArrowRight, contentDescription = "Next month",
+                            Icons.AutoMirrored.Filled.KeyboardArrowRight, contentDescription = "Next month",
                             tint = if (canGoNextMonth) MaterialTheme.colorScheme.onSurface
                             else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.3f),
                         )
