@@ -19,6 +19,7 @@ for the full list. Most-used:
 
 ```
 scripts/dev.sh android:install        # build + install debug APK (JDK17, device from dev.local.sh)
+scripts/dev.sh android:test           # unit tests, BOTH flavors (what CI runs)
 scripts/dev.sh android:log [regex]     # tail THIS app's logcat by pid, optional grep
 scripts/dev.sh deno:test               # run the _shared/ test suite
 scripts/dev.sh deno:check [fn ...]     # type-check functions (default: all)

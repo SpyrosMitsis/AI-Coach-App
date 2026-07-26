@@ -58,6 +58,11 @@ gradlew() { ( cd "$ROOT/android" && ./gradlew "$@" ); }
 cmd_android_build()   { say "assemblePlayDebug (JDK17)"; gradlew :app:assemblePlayDebug -q; }
 cmd_android_install() { say "installPlayDebug (JDK17) -> $ANDROID_SERIAL"; gradlew :app:installPlayDebug -q; say "installed."; }
 
+# BOTH flavors on purpose — this is exactly what CI runs. play is what the other
+# android:* commands build, so a foss-only breakage (the billing source set is
+# flavor-specific) is invisible locally until CI catches it.
+cmd_android_test()    { say "unit tests, both flavors (JDK17)"; gradlew testPlayDebugUnitTest testFossDebugUnitTest; }
+
 cmd_android_restart() {
   need adb
   say "restarting $APP_ID on $ANDROID_SERIAL"
@@ -308,7 +313,8 @@ ${c_blue}dev.sh${c_off} — build, run, debug & observe Workout Maker
 
 ${c_green}Android${c_off}
   android:install         build + install the debug APK on the phone (JDK17)
-  android:build           assembleDebug only
+  android:build           assemblePlayDebug only
+  android:test            unit tests, BOTH flavors (what CI runs)
   android:restart         force-stop + relaunch the app
   android:log [regex]     tail THIS app's logcat (by pid), optional grep filter
   android:logclear        clear the logcat buffer
@@ -352,6 +358,7 @@ main() {
   case "$cmd" in
     android:install)  cmd_android_install "$@" ;;
     android:build)    cmd_android_build "$@" ;;
+    android:test)     cmd_android_test "$@" ;;
     android:restart)  cmd_android_restart "$@" ;;
     android:log)      cmd_android_log "$@" ;;
     android:logclear) cmd_android_logclear "$@" ;;
