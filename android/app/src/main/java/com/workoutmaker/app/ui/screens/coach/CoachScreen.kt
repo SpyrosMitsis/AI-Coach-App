@@ -85,6 +85,7 @@ fun CoachScreen(vm: CoachViewModel = hiltViewModel(), onOpenCalendar: () -> Unit
     val actionWeek by vm.actionWeek.collectAsStateSafe()
     val lastAction by vm.lastAction.collectAsStateSafe()
     val showReplan by vm.showReplan.collectAsStateSafe()
+    val describedExistingPlan by vm.describedExistingPlan.collectAsStateSafe()
     val suggestions by vm.suggestions.collectAsStateSafe()
     val showHistory by vm.showHistory.collectAsStateSafe()
     val conversations by vm.conversations.collectAsStateSafe()
@@ -380,7 +381,7 @@ fun CoachScreen(vm: CoachViewModel = hiltViewModel(), onOpenCalendar: () -> Unit
         // likelier to be seen, since looksLikeWorkoutProposal matches on day names.
         val lastAssistant = messages.lastOrNull { it.role == "assistant" }?.content ?: ""
         if (!revealing && messages.size > 1 && actionWeek == null && lastAction == null &&
-            looksLikeWorkoutProposal(lastAssistant)
+            !describedExistingPlan && looksLikeWorkoutProposal(lastAssistant)
         ) {
             Text(
                 "Coach proposed this but didn't apply it:",

@@ -8,6 +8,7 @@
 // Best-effort: any failure yields { review: null } and the card shows just its
 // deterministic stats.
 
+import { stripDashes } from "../_shared/coach_eval.ts";
 import { errorStatus, handleOptions, json } from "../_shared/cors.ts";
 import { adminClient, getUserId } from "../_shared/supabase.ts";
 import { llmAccess } from "../_shared/llm_keys.ts";
@@ -132,7 +133,7 @@ Deno.serve(async (req) => {
       resolveModel,
       resolveBaseUrl,
     );
-    const review = outcome.text.trim().replace(/^["']|["']$/g, "").slice(0, 600);
+    const review = stripDashes(outcome.text.trim().replace(/^["']|["']$/g, "")).slice(0, 600);
 
     waitUntil(logLlmResult(admin, userId, "week_review", hosted, outcome, profile));
 

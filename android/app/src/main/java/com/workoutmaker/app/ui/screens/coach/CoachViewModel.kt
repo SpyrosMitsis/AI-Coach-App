@@ -78,6 +78,9 @@ class CoachViewModel @Inject constructor(
     val lastAction = MutableStateFlow<String?>(null)
     // Whether a full week was (re)planned this turn — gates the card's "Re-plan" escape hatch.
     val showReplan = MutableStateFlow(false)
+    // True when this turn read the planned week, so any day names in the reply
+    // describe what is already scheduled rather than a proposal.
+    val describedExistingPlan = MutableStateFlow(false)
     // Contextual conversation starters, built from the cached dashboard.
     val suggestions = MutableStateFlow(
         listOf(
@@ -278,6 +281,13 @@ class CoachViewModel @Inject constructor(
     private fun onToolsUsed(tools: List<String>) {
         val writes = tools.filter { it in WRITE_TOOL_NAMES }
         followUps.value = followUpChips(tools)
+        // looksLikeWorkoutProposal fires on three or more day names, so ANY
+        // answer describing the athlete's existing week trips it. Seen on
+        // device: a pure "how's my fitness?" read listed the week's four days
+        // and got a "Coach proposed this but didn't apply it" banner offering
+        // to put an already-scheduled week on the calendar. If the coach read
+        // the plan, the day names came FROM the plan and nothing was proposed.
+        describedExistingPlan.value = tools.contains("get_planned_week")
         if (writes.isNotEmpty()) {
             lastAction.value = friendlyTools(writes)
             showReplan.value = writes.contains("plan_week")
@@ -363,6 +373,7 @@ class CoachViewModel @Inject constructor(
         banner.value = null
         lastAction.value = null
         showReplan.value = false
+        describedExistingPlan.value = false
         followUps.value = emptyList()
         currentStep.value = null
         liveStatus.value = "Thinking…"
