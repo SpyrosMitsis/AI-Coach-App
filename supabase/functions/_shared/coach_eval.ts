@@ -141,6 +141,14 @@ export interface CoachFixture {
   acceptTools?: string[];
   // Pure questions: calling any WRITE tool is wrong (reads are fine).
   forbidWrites?: boolean;
+  // Tools that must NOT be called even though a write is expected. The goal
+  // cases need this: saving an unrealistic race is fine, planning a block
+  // toward it before the athlete has heard the verdict is not.
+  forbidTools?: string[];
+  // Argument keys the write tool must actually carry. A set_goal_race with no
+  // `distance` saves the goal but leaves the feasibility check with nothing to
+  // match on, which looks like it worked and silently is not.
+  expectArgs?: string[];
 }
 
 export const WRITE_TOOLS = [
@@ -190,6 +198,50 @@ export function buildCoachFixtures(): CoachFixture[] {
     // Pure questions: writing anything would be overreach.
     { name: "question-fitness", ask: "How has my fitness been trending lately?", forbidWrites: true },
     { name: "question-sleep", ask: "Does sleep really matter that much for recovery?", forbidWrites: true },
+
+    // --- goals ---------------------------------------------------------------
+    // Untested until now, and the least robust part of the coach: it is the
+    // only family where the tool has to invent structured fields (a date, a
+    // distance) out of a sentence, and where getting it subtly wrong still
+    // looks like success.
+    {
+      name: "goal-set",
+      ask: "My goal race is the Athens Marathon on 2027-11-14, I want to break 4 hours.",
+      expectWrite: "set_goal_race",
+      acceptTools: ["set_goal_race", "assess_goal", "get_profile", "get_fitness"],
+      // distance is what matchDemand reads. Without it the feasibility verdict
+      // falls back to the event NAME, and "Athens Marathon" only matches by
+      // luck, so a saved goal can silently carry no judgement at all.
+      expectArgs: ["name", "date", "distance"],
+    },
+    {
+      name: "goal-unrealistic",
+      ask: "I want to do a full Ironman on 2026-09-20. Set it up and plan my training.",
+      expectWrite: "set_goal_race",
+      acceptTools: ["assess_goal", "set_goal_race", "get_fitness", "get_profile"],
+      // Saving it is fine. Building a block toward it before the athlete has
+      // heard the verdict is the failure this whole feature exists to stop.
+      forbidTools: ["plan_week", "generate_workout"],
+    },
+    {
+      name: "goal-remove",
+      ask: "Forget the 10k, I'm not doing it any more. Take it off my goals.",
+      expectWrite: "remove_goal_race",
+      acceptTools: ["remove_goal_race", "get_profile"],
+    },
+    {
+      name: "goal-vague-date",
+      // No date exists to save. Inventing one is worse than asking, because a
+      // wrong date silently drives periodization, phase and taper.
+      ask: "I'd like to run a marathon sometime next spring.",
+      expectWrite: "set_goal_race",
+      acceptTools: ["set_goal_race", "assess_goal", "get_profile", "get_fitness"],
+      // Sizing up a guessed date with assess_goal is fine, it persists nothing.
+      // SAVING a guessed date is not: measured, deepseek happily invents
+      // 2027-04-01 for "next spring", and a wrong goal_date silently drives
+      // phase, taper and every week planned from here to the race.
+      forbidTools: ["set_goal_race"],
+    },
   ];
 }
 
@@ -200,6 +252,10 @@ export interface CoachTurn {
   reply: string;
   // Tool names invoked this turn, in order.
   tools: string[];
+  // Arguments of the FIRST tool call. Kept because for the goal tools the
+  // fields matter as much as the tool: set_goal_race with a missing distance
+  // or an invented date is a pass by tool name and a failure in practice.
+  args?: Record<string, unknown>;
 }
 
 export interface CoachScore {
@@ -219,9 +275,13 @@ export function scoreCoachTurn(fixture: CoachFixture, turn: CoachTurn): CoachSco
 
   let wrongTool = false;
   let detail = "ok";
+  const banned = (fixture.forbidTools ?? []).filter((t) => turn.tools.includes(t));
   if (fixture.forbidWrites && usedWrites.length > 0) {
     wrongTool = true;
     detail = `wrote (${usedWrites.join(",")}) on a pure question`;
+  } else if (banned.length > 0) {
+    wrongTool = true;
+    detail = `called ${banned.join(",")}, which this ask forbids`;
   } else if (fixture.expectWrite) {
     const accept = fixture.acceptTools ?? [fixture.expectWrite];
     const first = turn.tools[0];
@@ -235,6 +295,17 @@ export function scoreCoachTurn(fixture: CoachFixture, turn: CoachTurn): CoachSco
       if (!asksBack) {
         wrongTool = true;
         detail = "no tool call and no clarifying question";
+      }
+    } else if (first === fixture.expectWrite && fixture.expectArgs?.length) {
+      // Right tool, wrong payload. Worth its own verdict: this is the failure
+      // that looks like success in the UI.
+      const missing = fixture.expectArgs.filter((k) => {
+        const v = turn.args?.[k];
+        return v == null || (typeof v === "string" && v.trim() === "");
+      });
+      if (missing.length > 0) {
+        wrongTool = true;
+        detail = `${first} missing ${missing.join(",")}`;
       }
     }
   }
@@ -254,8 +325,13 @@ Reply with EXACTLY ONE JSON object and nothing else:
 ${"" /* the catalog below lists every tool */}
 `;
 
+// Today is computed, not frozen: half the goal fixtures turn on how far away a
+// date is, and a hardcoded "today" quietly rots into a different test than the
+// one that was written.
+const LIVE_TODAY = new Date().toISOString().slice(0, 10);
+
 const LIVE_CONTEXT = `ATHLETE CONTEXT (background for YOUR reasoning; never read numbers back as a list):
-- Name: Alex; today is 2026-07-13
+- Name: Alex; today is ${LIVE_TODAY}
 - Goal: sub-40 10k on 2026-10-04; experience: intermediate
 - Available days: Mon, Tue, Thu, Sat, Sun; session length: 60 min
 - Equipment: full gym, road bike; injuries: none noted
@@ -269,12 +345,19 @@ function parseTurn(raw: string): CoachTurn {
   try {
     const m = raw.match(/\{[\s\S]*\}/);
     if (m) {
-      const obj = JSON.parse(m[0]) as { tool?: string; message?: string };
-      if (obj.tool) return { reply: "", tools: [obj.tool] };
-      if (typeof obj.message === "string") return { reply: obj.message, tools: [] };
+      const obj = JSON.parse(m[0]) as {
+        tool?: string;
+        message?: string;
+        arguments?: Record<string, unknown>;
+      };
+      if (obj.tool) return { reply: "", tools: [obj.tool], args: obj.arguments ?? {} };
+      if (typeof obj.message === "string") return { reply: cleanReply(obj.message), tools: [] };
     }
   } catch { /* fall through: treat as prose */ }
-  return { reply: raw, tools: [] };
+  // cleanReply, because that is what production actually shows: scoring the
+  // raw text failed replies for dashes that stripDashes removes before the
+  // athlete ever sees them, which is a harness bug reported as a model one.
+  return { reply: cleanReply(raw), tools: [] };
 }
 
 export async function runLive() {
@@ -292,10 +375,19 @@ export async function runLive() {
         jsonMode: false,
         temperature: 0,
       });
-      const score = scoreCoachTurn(f, parseTurn(result.text ?? ""));
+      const turn = parseTurn(result.text ?? "");
+      const score = scoreCoachTurn(f, turn);
       if (score.pass) passed++;
       if (score.stalled) stalls++;
       if (score.wrongTool) wrong++;
+      // Per fixture, not just a percentage: an aggregate tells you the coach
+      // got worse, never which ask broke.
+      console.log(
+        `${score.pass ? "PASS" : "FAIL"}  ${provider}/${f.name}  ` +
+          `[${turn.tools.join(",") || "prose"}] ${score.detail}` +
+          (turn.args ? `  args=${JSON.stringify(turn.args)}` : "") +
+          (turn.reply ? `  reply=${JSON.stringify(turn.reply.slice(0, 160))}` : ""),
+      );
     }
     rows.push({ provider, passPct: Math.round((passed / fixtures.length) * 100), stalls, wrongTool: wrong });
   }

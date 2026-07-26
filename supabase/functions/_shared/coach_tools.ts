@@ -9,7 +9,7 @@ import { computeRecovery } from "./recovery.ts";
 import { freshnessWord, recoveryWord } from "./prompt.ts";
 import { applyFallbackFitness } from "./load.ts";
 import { injuriesText } from "./profile.ts";
-import { assessFeasibility, type FeasibilityInput } from "./feasibility.ts";
+import { assessFeasibility, type FeasibilityInput, matchDemand } from "./feasibility.ts";
 
 const DAY = 86400000;
 const iso = (d: number) => new Date(d).toISOString().slice(0, 10);
@@ -51,6 +51,25 @@ async function feasibilityInputs(
     ctl: acts.find((r) => r.ctl != null)?.ctl ?? null,
     experience: (o.experience as string | undefined) ?? null,
   };
+}
+
+/**
+ * The text the feasibility check should judge, given a goal's name and its
+ * (optional, model-supplied) distance.
+ *
+ * `distance ?? name` was too trusting: models routinely omit distance or fill
+ * it with prose, and a goal that matches no known event gets no verdict at all
+ * while still looking saved. Measured against deepseek-v4-flash, it also sends
+ * things like "sub-4 marathon", where the useful word is in the name.
+ *
+ * Naively concatenating both is wrong in the other direction: distance "10K"
+ * with name "Athens Marathon" would match `marathon`, which is tested before
+ * `10k`, and overstate the event. So distance wins WHEN IT MATCHES something
+ * real, and the name is the fallback rather than a peer.
+ */
+export function goalTextFor(name: string, distance: string | null): string {
+  if (distance && matchDemand(distance)) return distance;
+  return name || distance || "";
 }
 
 /**
@@ -721,7 +740,7 @@ export async function executeTool(
         // Return the verdict WITH the write, so the coach cannot save a goal
         // and start planning without having seen whether it is achievable.
         const f = assessFeasibility(
-          await feasibilityInputs(admin, userId, distance ?? name, date),
+          await feasibilityInputs(admin, userId, goalTextFor(name, distance), date),
         );
         return JSON.stringify({
           ok: true,

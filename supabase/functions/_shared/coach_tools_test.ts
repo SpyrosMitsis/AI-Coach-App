@@ -1,6 +1,8 @@
 import { assert, assertEquals } from "jsr:@std/assert@1";
+import { matchDemand } from "./feasibility.ts";
 import {
   executeTool,
+  goalTextFor,
   matchesGoal,
   nativeToolDefs,
   TOOL_CATALOG,
@@ -532,4 +534,41 @@ Deno.test("remove_goal_race is advertised to the model", () => {
   // The description has to warn against confirming a removal that did not
   // happen, since that is the behaviour this tool exists to stop.
   assert(/removed nothing|nothing/i.test(t.description));
+});
+
+Deno.test("goalTextFor: distance wins when real, name is the fallback", () => {
+  // The measured failure: deepseek sends "sub-4 marathon" as the goal and
+  // often omits distance entirely, so `distance ?? name` judged nothing.
+  assertEquals(goalTextFor("Athens Marathon", null), "Athens Marathon");
+  assertEquals(goalTextFor("Athens Marathon", ""), "Athens Marathon");
+  // Distance names a real event: it is authoritative.
+  assertEquals(goalTextFor("Athens Marathon", "Marathon"), "Marathon");
+  assertEquals(goalTextFor("Nice", "70.3"), "70.3");
+  // Distance is prose the demand table cannot read: fall back to the name,
+  // which is where the distance usually hides.
+  assertEquals(goalTextFor("Berlin Marathon", "the classic distance"), "Berlin Marathon");
+  assertEquals(goalTextFor("Some 10K", "sub 40 minutes"), "Some 10K");
+});
+
+Deno.test("goalTextFor never lets a longer event swallow a shorter one", () => {
+  // Why the two are not simply concatenated: matchDemand tests `marathon`
+  // before `10k`, so "10K Athens Marathon" would be judged as a marathon and
+  // wildly overstate what the athlete signed up for.
+  const text = goalTextFor("Athens Marathon 10K Fun Run", "10K");
+  assertEquals(matchDemand(text)?.label, "10K");
+});
+
+Deno.test("a goal whose distance is a target time still gets a real verdict", async () => {
+  const s = writeStub({
+    user_profiles: [{ onboarding: {} }],
+    completed_activities: [{ date: "2026-07-20", distance_m: 5_000, duration_seconds: 1800, ctl: 8 }],
+    races: [],
+  });
+  const obs = JSON.parse(await executeTool(s.admin, "u1", "auth", "set_goal_race", {
+    name: "Athens Marathon", date: iso6WeeksOut(), distance: "sub 4 hours",
+  }));
+  // Before goalTextFor this matched nothing and came back "I don't have a
+  // standard training demand", i.e. saved with no judgement at all.
+  assertEquals(obs.feasibility.verdict, "unrealistic");
+  assertEquals(obs.feasibility.push_back, true);
 });
