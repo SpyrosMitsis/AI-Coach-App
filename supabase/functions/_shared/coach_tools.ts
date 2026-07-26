@@ -529,16 +529,27 @@ export async function executeTool(
         return JSON.stringify(rows);
       }
       case "get_planned_week": {
-        const start = (typeof args.week_start === "string" && args.week_start) || mondayOf();
+        const start = (typeof args.week_start === "string" && args.week_start) ||
+          mondayOf(new Date(minDate));
         const end = iso(new Date(start + "T00:00:00").getTime() + 6 * DAY);
         const { data } = await admin.from("planned_workouts")
           .select("id, date, type, completed, locked, workout_json")
           .eq("user_id", userId).gte("date", start).lte("date", end).order("date");
+        // Each day's position relative to TODAY, stated rather than left to be
+        // worked out. A week starts on Monday, so by Sunday most of it is
+        // history: measured live, the coach read Monday's session from six days
+        // ago and told the athlete it was "tomorrow". Dates alone were not
+        // enough; this makes the tense unmissable.
         const rows = (data ?? []).map((r) => ({
-          id: r.id, date: r.date, type: r.type, completed: r.completed, locked: r.locked,
+          id: r.id,
+          date: r.date,
+          when: r.date < minDate ? "past" : r.date === minDate ? "today" : "upcoming",
+          type: r.type,
+          completed: r.completed,
+          locked: r.locked,
           title: (r.workout_json as { title?: string })?.title ?? "",
         }));
-        return JSON.stringify({ week_start: start, sessions: rows });
+        return JSON.stringify({ today: minDate, week_start: start, sessions: rows });
       }
       case "get_strength_summary": {
         const cutoff = Date.now() - 28 * DAY;

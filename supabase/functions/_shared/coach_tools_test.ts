@@ -730,3 +730,30 @@ Deno.test("plan_week still accepts the current week's Monday, which is in the pa
     globalThis.fetch = origFetch;
   }
 });
+
+Deno.test("get_planned_week says where each day sits relative to today", async () => {
+  // Measured live: the coach read Monday's session from six days earlier and
+  // told the athlete it was "tomorrow". A week starts on Monday, so by Sunday
+  // most of it is history and bare dates were not enough to stop that.
+  const s = writeStub({
+    planned_workouts: [
+      { id: "a", date: "2026-07-20", type: "run", completed: true, locked: false, workout_json: { title: "Easy Run" } },
+      { id: "b", date: "2026-07-26", type: "ride", completed: false, locked: false, workout_json: { title: "Long Ride" } },
+      { id: "c", date: "2026-07-27", type: "strength", completed: false, locked: false, workout_json: { title: "Full Body" } },
+    ],
+  });
+  const obs = JSON.parse(
+    await executeTool(s.admin, "u1", "auth", "get_planned_week", {}, "2026-07-26"),
+  );
+  assertEquals(obs.today, "2026-07-26");
+  assertEquals(obs.sessions.map((x: Any) => x.when), ["past", "today", "upcoming"]);
+});
+
+Deno.test("get_planned_week's default week is anchored to the athlete's date", async () => {
+  // mondayOf() read the SERVER clock, which is UTC and not the athlete's day.
+  const s = writeStub({ planned_workouts: [] });
+  const obs = JSON.parse(
+    await executeTool(s.admin, "u1", "auth", "get_planned_week", {}, "2026-07-26"),
+  );
+  assertEquals(obs.week_start, "2026-07-20", "Sunday the 26th belongs to the week starting Monday the 20th");
+});
