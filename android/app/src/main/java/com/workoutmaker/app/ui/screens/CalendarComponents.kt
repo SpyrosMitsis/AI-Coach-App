@@ -56,7 +56,7 @@ import com.workoutmaker.app.ui.theme.amberAccent
 // The bands mirror prompt.ts trainingPhase, so what's shown is what the AI
 // was actually told when it built the week.
 @Composable
-internal fun PhaseStrip(phase: Periodization.Phase, focus: String?) {
+private fun PhaseStrip(phase: Periodization.Phase, focus: String?) {
     val segments = listOf(
         "Base" to MaterialTheme.colorScheme.primary,
         "Build" to MaterialTheme.colorScheme.secondary,
@@ -284,7 +284,7 @@ internal fun MonthGrid(
 }
 
 @Composable
-internal fun DayCell(
+private fun DayCell(
     date: LocalDate,
     isToday: Boolean,
     isSelected: Boolean,
