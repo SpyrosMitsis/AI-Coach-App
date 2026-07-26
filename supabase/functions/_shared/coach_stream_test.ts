@@ -1,16 +1,11 @@
 import { assert, assertEquals } from "jsr:@std/assert@1";
-import {
-  dashScrubber,
-  HOLDBACK_CHARS,
-  speculativeStream,
-  type StreamEvent,
-} from "./coach_stream.ts";
+import { dashScrubber, finalLegStream, type StreamEvent } from "./coach_stream.ts";
 import { stripDashes } from "./coach_eval.ts";
 
 // Collect what the client would be told, and reconstruct what it would show.
-function harness(holdback = HOLDBACK_CHARS) {
+function harness() {
   const events: StreamEvent[] = [];
-  const s = speculativeStream((e) => events.push(e), holdback);
+  const s = finalLegStream((e) => events.push(e));
   const screen = () => {
     let out = "";
     for (const e of events) {
@@ -24,52 +19,47 @@ function harness(holdback = HOLDBACK_CHARS) {
 
 const LONG = "You're fresh this week, so let's put the hard work on Thursday.";
 
-Deno.test("a text-only reply streams through in full with no resets", () => {
+Deno.test("a text-only reply is delivered in full when the turn ends", () => {
   const h = harness();
   for (const c of LONG) h.s.onDelta(c);
+  assertEquals(h.screen(), "", "nothing may be shown before the turn ends");
   h.s.endMessage();
   assertEquals(h.screen(), LONG);
   assertEquals(h.s.committed(), LONG);
   assertEquals(h.resets(), 0);
 });
 
-// The common Anthropic shape: narrate, then call a tool. The athlete should see
-// only the tool progress row, never the abandoned sentence.
-Deno.test("a short preamble before a tool call is dropped silently", () => {
+Deno.test("a preamble before a tool call is dropped silently", () => {
   const h = harness();
   for (const c of "Let me check.") h.s.onDelta(c);
   h.s.onToolStart();
   assertEquals(h.screen(), "");
   assertEquals(h.s.committed(), "");
-  assertEquals(h.resets(), 0);
   assertEquals(h.events.length, 0, "nothing at all should reach the client");
 });
 
-Deno.test("text past the hold-back then a tool call costs exactly one reset", () => {
+// THE REGRESSION THIS FILE EXISTS FOR. Measured on deepseek-v4-flash, a leg can
+// write 947 characters of confident, answer-shaped prose and THEN call a tool,
+// while real final answers ran 175 to 397. Under the old hold-back policy that
+// long preamble was flushed to the screen and then yanked back, once per leg,
+// for the whole turn. Length must now be irrelevant.
+Deno.test("a long preamble before a tool call is dropped, however long", () => {
   const h = harness();
-  for (const c of LONG) h.s.onDelta(c);
+  const essay = "You're in a good spot, Alex. ".repeat(40); // ~1160 chars
+  assert(essay.length > 947);
+  for (const c of essay) h.s.onDelta(c);
   h.s.onToolStart();
-  assertEquals(h.resets(), 1);
-  assertEquals(h.screen(), "");
-  assertEquals(h.s.committed(), "");
+  assertEquals(h.screen(), "", "a long preamble must not reach the screen");
+  assertEquals(h.resets(), 0, "and must not need taking back");
+  assertEquals(h.events.length, 0);
 });
 
-Deno.test("a reply after a reset still arrives intact", () => {
+Deno.test("a reset from a tool call is impossible by construction", () => {
+  // Any interleaving at all: the only text ever emitted is what survives to
+  // endMessage, so onToolStart can never need to retract anything.
   const h = harness();
-  for (const c of LONG) h.s.onDelta(c);
-  h.s.onToolStart();
-  const answer = "Your CTL is climbing nicely, keep Thursday hard.";
-  for (const c of answer) h.s.onDelta(c);
-  h.s.endMessage();
-  assertEquals(h.screen(), answer);
-  assertEquals(h.s.committed(), answer);
-  assertEquals(h.resets(), 1);
-});
-
-Deno.test("several tool calls after only short preambles never reset", () => {
-  const h = harness();
-  for (let i = 0; i < 3; i++) {
-    for (const c of "Checking.") h.s.onDelta(c);
+  for (let i = 0; i < 5; i++) {
+    for (const c of LONG) h.s.onDelta(c);
     h.s.onToolStart();
   }
   const answer = "All good, you're on track for the half.";
@@ -77,6 +67,17 @@ Deno.test("several tool calls after only short preambles never reset", () => {
   h.s.endMessage();
   assertEquals(h.resets(), 0);
   assertEquals(h.screen(), answer);
+  assertEquals(h.s.committed(), answer);
+});
+
+Deno.test("discarded() reports what was thrown away, for cost logging", () => {
+  const h = harness();
+  for (const c of "Let me check.") h.s.onDelta(c);
+  h.s.onToolStart();
+  for (const c of "Answer.") h.s.onDelta(c);
+  h.s.endMessage();
+  assertEquals(h.s.discarded(), "Let me check.".length);
+  assertEquals(h.screen(), "Answer.");
 });
 
 // THE INVARIANT THE WHOLE THING EXISTS FOR: the client's screen and the
@@ -90,6 +91,8 @@ Deno.test("committed() always equals what the client would have on screen", () =
     ["a", "b", "c", "END"],
     ["TOOL", "TOOL", "answer after two silent tools", "END"],
     [LONG, "END"],
+    ["TOOL", "END"],
+    ["END"],
   ];
   for (const script of scripts) {
     const h = harness();
@@ -102,48 +105,29 @@ Deno.test("committed() always equals what the client would have on screen", () =
   }
 });
 
-Deno.test("a short final message is still delivered when the stream ends", () => {
+Deno.test("a short final message is still delivered", () => {
   const h = harness();
-  // Well under the hold-back, so it only escapes via endMessage().
   for (const c of "Done.") h.s.onDelta(c);
   h.s.endMessage();
   assertEquals(h.screen(), "Done.");
 });
 
-Deno.test("each assistant message gets its own hold-back window", () => {
+Deno.test("a turn that only ran tools emits nothing at all", () => {
   const h = harness();
-  for (const c of "First.") h.s.onDelta(c);
-  h.s.endMessage();
-  // A short second message must not ride the first one's flushed state.
-  for (const c of "Hm.") h.s.onDelta(c);
   h.s.onToolStart();
-  assertEquals(h.resets(), 0, "a fresh short preamble should drop, not reset");
-  assertEquals(h.screen(), "First.");
+  h.s.onToolStart();
+  h.s.endMessage();
+  assertEquals(h.events.length, 0, "an empty final leg must not emit an empty token");
+  assertEquals(h.s.committed(), "");
 });
 
-Deno.test("empty deltas are ignored and never trigger an empty reset", () => {
+Deno.test("empty deltas are ignored", () => {
   const h = harness();
   h.s.onDelta("");
   h.s.onToolStart();
   h.s.endMessage();
   assertEquals(h.events.length, 0);
   assertEquals(h.resets(), 0);
-});
-
-Deno.test("the hold-back threshold is configurable and respected", () => {
-  const h = harness(4);
-  for (const c of "abc") h.s.onDelta(c);
-  assertEquals(h.screen(), "", "under the threshold, nothing is shown yet");
-  h.s.onDelta("d");
-  assertEquals(h.screen(), "abcd", "crossing the threshold flushes the buffer");
-});
-
-Deno.test("a chunky delta larger than the hold-back flushes whole, not truncated", () => {
-  const h = harness();
-  h.s.onDelta(LONG);
-  h.s.endMessage();
-  assertEquals(h.screen(), LONG);
-  assert(LONG.length > HOLDBACK_CHARS);
 });
 
 // ---------------------------------------------------------------------------
@@ -196,7 +180,7 @@ Deno.test("a streamed reply needs no reset when only dashes differ", () => {
   // will persist, so coach-chat's invariant check stays quiet.
   const raw = "You're carrying fatigue — nothing alarming, just volume.";
   const events: StreamEvent[] = [];
-  const spec = speculativeStream((e) => events.push(e), 4);
+  const spec = finalLegStream((e) => events.push(e));
   const s = dashScrubber(stripDashes);
   for (const ch of raw) spec.onDelta(s.push(ch));
   spec.onDelta(s.flush());

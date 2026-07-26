@@ -55,11 +55,11 @@ import {
 import {
   callBudget,
   cleanReply,
-  looksLikeStall,
+  talksWithoutActing,
   shouldUpdateKnowledge,
   stripDashes,
 } from "../_shared/coach_eval.ts";
-import { dashScrubber, speculativeStream } from "../_shared/coach_stream.ts";
+import { dashScrubber, finalLegStream } from "../_shared/coach_stream.ts";
 import { runNativeToolLoop, supportsNativeTools } from "../_shared/llm_native_tools.ts";
 
 // Tool-use protocol appended to the coach system prompt for chat mode. The
@@ -129,6 +129,7 @@ const WRITE_TOOLS = new Set([
   "generate_workout",
   "move_workout",
   "set_goal_race",
+  "remove_goal_race",
   "set_rest_day",
   "make_easier",
   "set_training_pause",
@@ -147,8 +148,9 @@ const WRITE_TOOLS = new Set([
 
 const STALL_NUDGE =
   "You described an action but did not perform it, no tool was called this turn. " +
-  "If you intend to change the plan, call the tool NOW (plan_week / generate_workout / move_workout / set_rest_day / make_easier / set_goal_race), read the result, and report what you DID in the past tense. " +
-  "If no change is actually needed, answer plainly without promising any future work.";
+  "Saying you already did it is worse than promising to: the athlete's plan is unchanged and they now believe otherwise. " +
+  "If the change should happen, call the tool NOW (plan_week / generate_workout / move_workout / set_rest_day / make_easier / set_goal_race / remove_goal_race), read the result, and report what you DID. " +
+  "If no change is actually needed, answer plainly, and do not claim or promise one.";
 
 // Supabase Edge runtime keeps the worker alive for promises passed to
 // EdgeRuntime.waitUntil even if the client disconnects mid-stream — without it
@@ -478,13 +480,15 @@ Deno.serve(async (req) => {
         let replyText = await generateOnce(messages);
 
         // Anti-stall guard: the model sometimes PROMISES a change ("I'll adjust
-        // your plan", "let me review…") and ends the turn without calling any
-        // write tool — exactly the "it talks but never does it" failure. Give it
-        // ONE corrective turn to act now or finalize cleanly. Capped at a single
-        // retry and gated on no write-tool having run, so it can't loop or pile
-        // onto rate limits.
+        // your plan") or, worse, REPORTS one it never made ("I moved tomorrow's
+        // run to Saturday"), and ends the turn without calling any write tool.
+        // Both are the "it talks but never does it" failure; the past-tense one
+        // is the more damaging, since the athlete believes their plan changed.
+        // Give it ONE corrective turn to act now or finalize cleanly. Capped at
+        // a single retry and gated on no write-tool having run, so it can't loop
+        // or pile onto rate limits.
         if (
-          !toolsUsed.some((t) => WRITE_TOOLS.has(t)) && looksLikeStall(replyText) &&
+          !toolsUsed.some((t) => WRITE_TOOLS.has(t)) && talksWithoutActing(replyText) &&
           !spendGuard.exhausted()
         ) {
           const corrected: ChatMessage[] = [
@@ -585,13 +589,13 @@ Deno.serve(async (req) => {
             }, HEARTBEAT_MS);
             try {
               // Protocol 1 clients concatenate {token} events but silently
-              // ignore {reset}, which would leave a discarded preamble on
-              // screen forever. So speculative streaming is opt-in by version:
-              // an old APK keeps exactly today's buffer-then-one-token
-              // behaviour, and this function can deploy before the app ships.
+              // ignore {reset}, which the invariant below can still emit. So
+              // this stays opt-in by version: an old APK keeps exactly the
+              // buffer-then-one-token behaviour, and this function can deploy
+              // before the app ships.
               const proto = Number(body.streamProtocol) || 1;
               const spec = proto >= 2
-                ? speculativeStream((e) => send(e.reset ? { reset: true } : { token: e.text }))
+                ? finalLegStream((e) => send(e.reset ? { reset: true } : { token: e.text }))
                 : null;
               // Deltas go through the same dash rule cleanReply applies to the
               // finished reply. Without this the two disagree on almost every
@@ -622,7 +626,7 @@ Deno.serve(async (req) => {
                   send({ reset: true });
                   send({ token: replyText });
                 }
-                if (spec.resets() > 0) log.info("stream_resets", { count: spec.resets() });
+                if (spec.discarded() > 0) log.info("stream_discarded", { chars: spec.discarded() });
               } else {
                 send({ token: replyText });
               }

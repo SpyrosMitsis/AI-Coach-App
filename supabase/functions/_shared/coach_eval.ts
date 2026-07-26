@@ -38,6 +38,34 @@ export function looksLikeStall(text: string): boolean {
   return FUTURE_INTENT.test(text) && PLAN_VERB.test(text);
 }
 
+/**
+ * A reply claiming, in the PAST tense, that a change was already made.
+ *
+ * The gap this closes: looksLikeStall only catches promises ("I'll move it"),
+ * so a model that skips straight to "I moved tomorrow's run to Saturday"
+ * without calling a tool sailed through. Measured on deepseek-v4-flash, that is
+ * the more common failure of the two, and it is worse: a promise merely fails
+ * to happen, a false past-tense report tells the athlete their plan changed
+ * when it did not. It is the same failure that let the coach say it had removed
+ * a goal race when no such tool even existed.
+ *
+ * Only MUTATING verbs are listed. "I've looked at your numbers" and "I checked
+ * your week" are honest reports of reads and must not trip this. The caller
+ * gates on no write tool having run, so a genuine past-tense report after a
+ * real write is never seen here.
+ */
+export const DONE_CLAIM =
+  /\b(?:done|all set|sorted)\b|\bi(?:'ve| have| had)?\s+(?:just\s+)?(?:moved|shifted|swapped|updated|adjusted|changed|rescheduled|re-?planned|planned|scheduled|created|generated|built|cleared|removed|deleted|dropped|lowered|reduced|toned|dialed|dialled|set)\b/i;
+
+export function claimsCompletedAction(text: string): boolean {
+  return Boolean(text) && DONE_CLAIM.test(text);
+}
+
+/** Either failure mode: promised and did not act, or claimed it already had. */
+export function talksWithoutActing(text: string): boolean {
+  return looksLikeStall(text) || claimsCompletedAction(text);
+}
+
 // The JSON tool envelope must never reach the athlete as prose.
 export function looksLikeJsonLeak(text: string): boolean {
   const t = text.trim();
@@ -269,7 +297,9 @@ export interface CoachScore {
 
 export function scoreCoachTurn(fixture: CoachFixture, turn: CoachTurn): CoachScore {
   const usedWrites = turn.tools.filter((t) => WRITE_TOOLS.includes(t));
-  const stalled = turn.tools.length === 0 && looksLikeStall(turn.reply);
+  // Both failure modes count as a stall for scoring: promising a change and
+  // reporting one that never happened are the same lie to the athlete.
+  const stalled = turn.tools.length === 0 && talksWithoutActing(turn.reply);
   const jsonLeak = looksLikeJsonLeak(turn.reply);
   const dashes = hasForbiddenDashes(turn.reply);
 

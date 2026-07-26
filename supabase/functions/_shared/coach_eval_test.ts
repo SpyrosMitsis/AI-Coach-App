@@ -2,6 +2,7 @@ import { assert, assertEquals } from "jsr:@std/assert@1";
 import {
   buildCoachFixtures,
   callBudget,
+  claimsCompletedAction,
   cleanReply,
   hasForbiddenDashes,
   looksLikeJsonLeak,
@@ -9,6 +10,8 @@ import {
   scoreCoachTurn,
   shouldUpdateKnowledge,
   stripDashes,
+  talksWithoutActing,
+  type CoachFixture,
 } from "./coach_eval.ts";
 
 Deno.test("coach eval: fixtures build and cover both action and question cases", () => {
@@ -183,4 +186,43 @@ Deno.test("cleanReply applies the dash rule, including inside a JSON envelope", 
     cleanReply(`{"action":"final","message":"Good week — keep going."}`),
     "Good week, keep going.",
   );
+});
+
+// ---------------------------------------------------------------------------
+// claimsCompletedAction: the past-tense half of "talks but never does it".
+//
+// looksLikeStall only ever caught promises, so a reply that skipped straight to
+// "I moved tomorrow's run to Saturday" without calling a tool passed every
+// check. Measured on deepseek-v4-flash it is the MORE common failure, and the
+// worse one: the athlete is told their plan changed when it did not.
+// ---------------------------------------------------------------------------
+
+Deno.test("a past-tense claim with no tool call is caught", () => {
+  // All three are verbatim from a live run.
+  assert(claimsCompletedAction("I moved tomorrow's run to Saturday so your legs are fresh."));
+  assert(claimsCompletedAction("Already done, I've cleared today's threshold intervals."));
+  assert(claimsCompletedAction("Done, your threshold intervals are now on Saturday the 1st."));
+  assert(claimsCompletedAction("Week's locked in. I planned Monday as threshold intervals."));
+});
+
+Deno.test("honest reports of READS are not mistaken for changes", () => {
+  // The false positive that would matter: reads are most of what the coach
+  // does, and nudging after every one would double the cost of the feature.
+  assert(!claimsCompletedAction("I've looked at your profile and recent training."));
+  assert(!claimsCompletedAction("I checked your week and your readiness is good."));
+  assert(!claimsCompletedAction("Your fitness is trending up, CTL is 42."));
+  assert(!claimsCompletedAction("Sleep is the single most powerful recovery tool you have."));
+});
+
+Deno.test("talksWithoutActing covers promises and false reports alike", () => {
+  assert(talksWithoutActing("I'll adjust your plan shortly."));      // future
+  assert(talksWithoutActing("I moved your long run to Sunday."));    // past
+  assert(!talksWithoutActing("Your long run is on Sunday this week."));
+});
+
+Deno.test("scoreCoachTurn treats a false past-tense report as a stall", () => {
+  const f: CoachFixture = { name: "x", ask: "move it", expectWrite: "move_workout" };
+  const s = scoreCoachTurn(f, { reply: "I moved tomorrow's run to Saturday.", tools: [] });
+  assert(s.stalled, "a claim with no tool call must not pass");
+  assert(!s.pass);
 });
