@@ -39,6 +39,7 @@ import com.workoutmaker.app.ui.screens.settings.PeriodizationControl
 import com.workoutmaker.app.ui.screens.settings.SportGoalsLevel
 import com.workoutmaker.app.ui.screens.settings.SportSelector
 import com.workoutmaker.app.ui.screens.settings.WeeklyAvailabilityEditor
+import com.workoutmaker.app.ui.screens.settings.durationLabel
 import com.workoutmaker.app.ui.screens.settings.toggleIn
 import com.workoutmaker.app.ui.screens.settings.toggled
 
@@ -243,6 +244,13 @@ internal fun StepEffort(profile: TrainingProfile, vm: OnboardingViewModel) {
                 style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
         } else {
+            // Show the week these options are priced from. It is the only input
+            // to the chips below, and it was previously invisible: an athlete
+            // who accepted the defaults never saw what got recorded.
+            Text(
+                "Your week: ${profile.day_availability.size} days, ${durationLabel(minutes)} total",
+                style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
             Text(
                 "How hard should your weeks be?",
                 style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.SemiBold,

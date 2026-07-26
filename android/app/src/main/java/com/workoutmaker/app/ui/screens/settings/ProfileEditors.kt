@@ -27,6 +27,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import com.workoutmaker.app.data.TrainingProfile
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -216,6 +217,15 @@ internal fun WeeklyAvailabilityEditor(
     var longMin by remember { mutableStateOf(seed.longMin) }
 
     fun push() = onChange(buildAvailability(daysPerWeek, typical, longDays, longMin))
+
+    // Commit the seeded answers once, when we opened with nothing stored.
+    // Every chip below renders as already-selected (4 days, 1h, "None"), but
+    // push() only ran from a chip's onClick, so an athlete who agreed with the
+    // defaults tapped nothing and left day_availability empty. That made the
+    // next step ("How hard to go") compute a null ceiling and render an empty
+    // page, and silently dropped the week from the review step and the server.
+    // The pre-selection is a promise; this keeps it.
+    LaunchedEffect(Unit) { if (availability.isEmpty()) push() }
 
     Text("How many days a week can you train?", style = MaterialTheme.typography.labelLarge)
     FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {

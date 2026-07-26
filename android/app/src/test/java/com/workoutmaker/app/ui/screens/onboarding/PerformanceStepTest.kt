@@ -3,6 +3,7 @@ package com.workoutmaker.app.ui.screens.onboarding
 import com.workoutmaker.app.data.InjuryEntry
 import com.workoutmaker.app.data.Periodization
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Test
 import com.workoutmaker.app.ui.screens.settings.availabilityToQuestions
@@ -121,5 +122,29 @@ class AvailabilityBuildTest {
         val q = availabilityToQuestions(days)
         assertEquals(listOf("Sat", "Sun"), q.longDays.sorted())
         assertEquals(120, q.longMin)
+    }
+
+    // THE REGRESSION TEST. WeeklyAvailabilityEditor opens every chip
+    // pre-selected from availabilityToQuestions(emptyList()), but only pushed
+    // on a chip tap, so agreeing with the defaults left day_availability empty.
+    // availabilityCeiling(0) is null by design, which made the next onboarding
+    // step ("How hard to go") render an empty page. The editor now commits the
+    // seed on first composition; this pins the invariant that seed has to
+    // satisfy, independently of the composable.
+    @Test
+    fun `the editor's default answers describe a real, plannable week`() {
+        val seed = availabilityToQuestions(emptyList())
+        val days = buildAvailability(seed.daysPerWeek, seed.typicalMin, seed.longDays, seed.longMin)
+
+        assert(days.isNotEmpty()) { "the pre-selected defaults must produce a week" }
+        assertEquals(seed.daysPerWeek, days.size)
+
+        val minutes = days.sumOf { it.max_minutes }
+        val ceiling = Periodization.availabilityCeiling(minutes)
+        assertNotNull("effort options must be priceable from the defaults", ceiling)
+        // Non-null is the load-bearing part; this pins the actual week too, so a
+        // change to the defaults is a deliberate edit rather than a surprise.
+        assertEquals(4 * 60, minutes)
+        assertEquals(211, ceiling)
     }
 }
