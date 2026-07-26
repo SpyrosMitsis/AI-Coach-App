@@ -5,7 +5,10 @@
 import { assert } from "jsr:@std/assert@1";
 import {
   BRIEF_SYSTEM,
+  CHAT_COACHING_DIGEST,
+  COACH_REPLY_SHAPE,
   COACH_SYSTEM_PROMPT,
+  COACH_VOICE_RULE,
   PUNCTUATION_RULE,
   SYSTEM_PROMPT,
   WEEK_REVIEW_SYSTEM,
@@ -27,6 +30,11 @@ const PROMPTS: Record<string, string> = {
   BRIEF_SYSTEM,
   WEEK_REVIEW_SYSTEM,
   DEFAULT_SOUL,
+  // Chat's constituent blocks, checked individually as well as via the
+  // assembled COACH_SYSTEM_PROMPT, so a dash in one is attributed to it.
+  CHAT_COACHING_DIGEST,
+  COACH_VOICE_RULE,
+  COACH_REPLY_SHAPE,
 };
 
 Deno.test("prompts carry the punctuation rule where users see the output", () => {

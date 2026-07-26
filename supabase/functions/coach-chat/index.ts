@@ -35,7 +35,15 @@ import {
 } from "../_shared/agent_memory.ts";
 import { corsHeaders } from "../_shared/cors.ts";
 import { injuriesText, profileFactsBlock } from "../_shared/profile.ts";
-import { COACH_SYSTEM_PROMPT, finalizeInstruction, freshnessWord, recoveryWord, trainingPhase } from "../_shared/prompt.ts";
+import {
+  COACH_SYSTEM_PROMPT,
+  effortWord,
+  finalizeInstruction,
+  freshnessWord,
+  loadWord,
+  recoveryWord,
+  trainingPhase,
+} from "../_shared/prompt.ts";
 import type { LlmProvider } from "../_shared/types.ts";
 import {
   type AppSettingChange,
@@ -63,7 +71,7 @@ RULES:
 - Call remember when the athlete shares a durable preference, constraint, or injury.
 - Call set_training_pause when the athlete says they're stopping/pausing training for a stretch WITH a return date (travel, illness, work crunch, "I'm going to X until Y"). This is what actually stops plan_week from scheduling sessions in that window, do not rely on remember alone for this. Call resume_training if they say they're back early.
 - Be efficient: a few targeted reads, then act/answer. You have at most 6 tool calls per turn.
-- Final messages are warm but concise, and sound like a human coach. NOT a stats readout. Translate the data into plain language ("you're a bit run-down", "you're fresh"); don't recite raw metrics like "CTL 7, ATL 14, TSB -7, readiness 57/100". Quote a number only when it's directly actionable (a target pace, a working weight). End with what you did or one clear next step.`;
+- Your final message follows the Voice and Shape rules already given in the system prompt.`;
 
 // System prompt suffix when the provider has native tool calling.
 const NATIVE_TOOL_PREAMBLE = `
@@ -273,20 +281,24 @@ Deno.serve(async (req) => {
 
     // Digest of the most recent sessions so "how did my workouts go?" never
     // gets "I can't see your workouts" — deeper detail still comes from tools.
+    // Distance stays a number (athletes ask about it directly and it is
+    // actionable); per-session TSS becomes a word, because six raw load figures
+    // per turn is exactly the metric dump the voice rule then has to argue the
+    // model out of reciting.
     const recentLines = a.slice(0, 6).map((r) => {
       const km = r.distance_m ? ` ${(r.distance_m / 1000).toFixed(1)} km` : "";
-      const tss = r.tss != null ? ` · ${Math.round(r.tss)} TSS` : "";
-      return `${r.date} ${r.type ?? "session"}${km}${tss}`;
+      const effort = effortWord(r.tss);
+      return `${r.date} ${r.type ?? "session"}${km}${effort ? `, ${effort}` : ""}`;
     });
 
     const context =
-      `ATHLETE CONTEXT (background for YOUR reasoning, interpret it in plain language; never read these numbers back to the athlete as a list):
+      `ATHLETE CONTEXT (background for your reasoning only):
 - Name: ${profile?.display_name ?? "athlete"}; today is ${today}
 - Goal: ${onboarding.goal ?? "not set"}; experience: ${onboarding.experience ?? "unknown"}
 - Available days: ${(onboarding.days as string[] | undefined)?.join(", ") ?? "unknown"}; session length: ${onboarding.session_duration ?? "?"} min
 - Equipment: ${onboarding.equipment ?? "unknown"}; injuries: ${injuriesText(onboarding) || "none noted"}
-- Form/freshness: ${freshnessWord(ctl - atl)} (TSB ${(ctl - atl).toFixed(0)})
-- Recovery today: ${recoveryWord(recovery.band)} (${recovery.score}/100), trend ${recoveryTrendWord}; weekly load so far ~${weeklyTss} TSS, background only, don't quote it unless they ask
+- Form/freshness: ${freshnessWord(ctl - atl)}
+- Recovery today: ${recoveryWord(recovery.band)}, trend ${recoveryTrendWord}; load so far ${loadWord(weeklyTss, onboarding.weekly_tss_target as number | undefined)}
 - This week: ${adherenceLine}
 - Today's plan: ${todayLine}
 - Last completed sessions (newest first): ${recentLines.join(" | ") || "none recorded in the last 28 days"}

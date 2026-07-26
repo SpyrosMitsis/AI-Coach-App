@@ -296,11 +296,20 @@ export async function executeTool(
         const load7 = a.filter((r) => (r.date ?? "") >= since7).reduce((s, r) => s + (r.tss ?? 0), 0);
         const load28 = a.reduce((s, r) => s + (r.tss ?? 0), 0);
         const acwr = load28 > 0 ? (load7 / (load28 / 4)).toFixed(2) : "n/a";
+        // Words at the top level, numbers nested under `raw`. A model that
+        // lazily echoes the payload's surface now echoes prose. The figures
+        // stay available because "quote a number when it's actionable"
+        // requires the number to exist. The prose `note:` field that used to
+        // ask for this is gone: it was one of five copies of the same rule.
         return JSON.stringify({
           freshness: freshnessWord(ctl - atl),
-          ctl: +ctl.toFixed(0), atl: +atl.toFixed(0), tsb: +(ctl - atl).toFixed(0),
-          weekly_tss: Math.round(load7), acwr,
-          note: "Interpret this in plain words, don't read the raw numbers back to the athlete.",
+          raw: {
+            ctl: +ctl.toFixed(0),
+            atl: +atl.toFixed(0),
+            tsb: +(ctl - atl).toFixed(0),
+            weekly_tss: Math.round(load7),
+            acwr,
+          },
         });
       }
       case "get_recent_activities": {
@@ -386,10 +395,15 @@ export async function executeTool(
         );
         return JSON.stringify({
           readiness: recoveryWord(rec.band),
-          score: rec.score, band: rec.band, summary: rec.summary,
-          hrv: rec.hrv ?? null, resting_hr: rec.rhr ?? null, sleep: rec.sleep ?? null,
-          wellness_1to5: rec.wellness,
-          note: "Interpret this in plain words, don't read the raw numbers back to the athlete.",
+          summary: rec.summary,
+          raw: {
+            score: rec.score,
+            band: rec.band,
+            hrv: rec.hrv ?? null,
+            resting_hr: rec.rhr ?? null,
+            sleep: rec.sleep ?? null,
+            wellness_1to5: rec.wellness,
+          },
         });
       }
       case "get_execution_analysis": {

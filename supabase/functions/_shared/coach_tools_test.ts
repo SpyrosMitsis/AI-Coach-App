@@ -48,10 +48,18 @@ Deno.test("executeTool get_fitness: leads with an interpreted word, keeps the ra
   const obs = JSON.parse(await executeTool(admin, "u1", "auth", "get_fitness", {}));
   // Plain-language interpretation is present so the coach doesn't recite numbers.
   assert(typeof obs.freshness === "string" && obs.freshness.length > 0);
-  assert(String(obs.note).toLowerCase().includes("interpret"));
-  // Raw figures still come through for the model's own reasoning.
-  assertEquals(obs.ctl, 42);
-  assertEquals(obs.tsb, -8);
+  // Raw figures still come through for the model's own reasoning, but nested
+  // under `raw` so the payload's SURFACE is prose. A model that lazily echoes
+  // the top level now echoes a word. This replaced a prose "note: interpret
+  // this in plain words" field, which was one of five copies of that rule and
+  // asked the model to do what the structure can just make true.
+  assertEquals(obs.raw.ctl, 42);
+  assertEquals(obs.raw.tsb, -8);
+  assertEquals(obs.note, undefined);
+  for (const k of Object.keys(obs)) {
+    if (k === "raw") continue;
+    assert(typeof obs[k] !== "number", `top-level ${k} should not be a bare number`);
+  }
 });
 
 // ---------------------------------------------------------------------------
