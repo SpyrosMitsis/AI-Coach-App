@@ -6,7 +6,7 @@
 #   - Android/Kotlin needs JDK 17 (system JDK breaks Kotlin)        -> JAVA_HOME
 #   - deno lives at ~/.deno/bin                                     -> PATH
 #   - function deploys/logs need the project ref                    -> PROJECT_REF
-#   - one phone is wired up                                         -> ANDROID_SERIAL
+#   - one phone, wired OR wireless                                  -> ANDROID_SERIAL
 #
 # Usage:  scripts/dev.sh <command> [args]      (run with no args for help)
 # ============================================================================
@@ -36,6 +36,39 @@ export JAVA_HOME
 [[ -n "$ANDROID_SERIAL" ]] && export ANDROID_SERIAL
 export PATH="$DENO_BIN:$PATH"
 
+# --- device resolution (wired or wireless) ----------------------------------
+# Wireless debugging gives the SAME phone a different serial:
+#   wired     R3CT40D46AD
+#   wireless  adb-R3CT40D46AD-XAVAZP._adb-tls-connect._tcp
+# so a configured ANDROID_SERIAL stops matching the moment you unplug, and
+# gradle/adb silently target "no device" or the wrong one. Resolve it instead
+# of trusting it: exact match, then substring (which bridges the two forms
+# above), then the only attached device. Everything downstream, gradle
+# included, reads the resolved value from the environment.
+adb_devices() { adb devices 2>/dev/null | awk 'NR>1 && $2=="device" {print $1}'; }
+
+resolve_device() {
+  need adb
+  local attached; attached="$(adb_devices)"
+  [[ -n "$attached" ]] || die "no device attached (usb, or 'scripts/dev.sh android:connect <host:port>')"
+
+  if [[ -n "$ANDROID_SERIAL" ]]; then
+    if grep -qxF "$ANDROID_SERIAL" <<<"$attached"; then return 0; fi
+    # Same phone over the other transport.
+    local match; match="$(grep -F "$ANDROID_SERIAL" <<<"$attached" | head -1 || true)"
+    if [[ -n "$match" ]]; then
+      say "device $ANDROID_SERIAL is attached as $match (wireless), using that"
+      ANDROID_SERIAL="$match"; export ANDROID_SERIAL; return 0
+    fi
+  fi
+
+  local count; count="$(wc -l <<<"$attached")"
+  if [[ "$count" -eq 1 ]]; then
+    ANDROID_SERIAL="$attached"; export ANDROID_SERIAL; return 0
+  fi
+  die "several devices attached, set ANDROID_SERIAL to one of:"$'\n'"$attached"
+}
+
 # --- pretty output ----------------------------------------------------------
 c_blue=$'\033[34m'; c_green=$'\033[32m'; c_yellow=$'\033[33m'; c_red=$'\033[31m'; c_dim=$'\033[2m'; c_off=$'\033[0m'
 say()  { printf '%s>>%s %s\n' "$c_blue" "$c_off" "$*"; }
@@ -56,7 +89,42 @@ confirm() { # confirm "question"
 gradlew() { ( cd "$ROOT/android" && ./gradlew "$@" ); }
 
 cmd_android_build()   { say "assemblePlayDebug (JDK17)"; gradlew :app:assemblePlayDebug -q; }
-cmd_android_install() { say "installPlayDebug (JDK17) -> $ANDROID_SERIAL"; gradlew :app:installPlayDebug -q; say "installed."; }
+cmd_android_install() {
+  resolve_device
+  say "installPlayDebug (JDK17) -> $ANDROID_SERIAL"
+  gradlew :app:installPlayDebug -q
+  say "installed."
+}
+
+cmd_android_devices() {
+  need adb
+  local attached; attached="$(adb_devices)"
+  [[ -n "$attached" ]] || { warn "no devices attached"; return 0; }
+  while read -r s; do
+    local model; model="$(adb -s "$s" shell getprop ro.product.model 2>/dev/null | tr -d '\r' || true)"
+    local kind="usb"; [[ "$s" == *_adb-tls-connect._tcp || "$s" == *:* ]] && kind="wireless"
+    printf '  %s  %s  %s\n' "$s" "${model:-?}" "$kind"
+  done <<<"$attached"
+}
+
+# Wireless debugging, once per network: pair with the code from
+# Settings > Developer options > Wireless debugging > Pair device with code,
+# then connect to the (different) port shown on the main wireless-debugging
+# screen. After that adb reconnects on its own until the phone reboots.
+cmd_android_pair() {
+  need adb
+  [[ $# -eq 2 ]] || die "usage: android:pair <host:port> <6-digit-code>   (the PAIRING port, not the connect one)"
+  adb pair "$1" "$2"
+  say "paired. now: scripts/dev.sh android:connect <host:port> (the other port)"
+}
+
+cmd_android_connect() {
+  need adb
+  [[ $# -eq 1 ]] || die "usage: android:connect <host:port>   (from the wireless-debugging screen)"
+  adb connect "$1"
+  resolve_device
+  say "connected: $ANDROID_SERIAL"
+}
 
 # BOTH flavors on purpose — this is exactly what CI runs. play is what the other
 # android:* commands build, so a foss-only breakage (the billing source set is
@@ -64,17 +132,17 @@ cmd_android_install() { say "installPlayDebug (JDK17) -> $ANDROID_SERIAL"; gradl
 cmd_android_test()    { say "unit tests, both flavors (JDK17)"; gradlew testPlayDebugUnitTest testFossDebugUnitTest; }
 
 cmd_android_restart() {
-  need adb
+  resolve_device
   say "restarting $APP_ID on $ANDROID_SERIAL"
   adb shell am force-stop "$APP_ID" || true
   adb shell monkey -p "$APP_ID" -c android.intent.category.LAUNCHER 1 >/dev/null
 }
 
-cmd_android_logclear() { need adb; adb logcat -c && say "logcat buffer cleared"; }
+cmd_android_logclear() { resolve_device; adb logcat -c && say "logcat buffer cleared"; }
 
 # android:log [regex]  — stream the app's own logs (by PID), color E/W, optional grep.
 cmd_android_log() {
-  need adb
+  resolve_device
   local filter="${1:-}"
   local pid; pid="$(adb shell pidof "$APP_ID" 2>/dev/null | tr -d '\r' || true)"
   if [[ -z "$pid" ]]; then
@@ -313,6 +381,9 @@ ${c_blue}dev.sh${c_off} — build, run, debug & observe Workout Maker
 
 ${c_green}Android${c_off}
   android:install         build + install the debug APK on the phone (JDK17)
+  android:devices         list attached devices (usb / wireless)
+  android:pair <hp> <code>    wireless: pair once, using the PAIRING port
+  android:connect <host:port> wireless: connect, using the other port
   android:build           assemblePlayDebug only
   android:test            unit tests, BOTH flavors (what CI runs)
   android:restart         force-stop + relaunch the app
@@ -357,6 +428,9 @@ main() {
   local cmd="${1:-help}"; shift || true
   case "$cmd" in
     android:install)  cmd_android_install "$@" ;;
+    android:devices)  cmd_android_devices "$@" ;;
+    android:pair)     cmd_android_pair "$@" ;;
+    android:connect)  cmd_android_connect "$@" ;;
     android:build)    cmd_android_build "$@" ;;
     android:test)     cmd_android_test "$@" ;;
     android:restart)  cmd_android_restart "$@" ;;
