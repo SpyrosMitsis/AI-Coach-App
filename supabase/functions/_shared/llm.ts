@@ -117,8 +117,10 @@ export const PROVIDERS: Record<LlmProvider, ProviderSpec> = {
   },
   deepseek: {
     label: "DeepSeek",
-    // V4 Flash. The old deepseek-chat/deepseek-reasoner aliases were retired
-    // 2026-07-24 and now 404, so this id is not optional.
+    // V4 Flash. DeepSeek's docs say the old deepseek-chat/deepseek-reasoner
+    // aliases became "inaccessible after 2026-07-24 15:59 UTC". Measured
+    // 2026-07-26: deepseek-chat still answers 200 and routes here, so it is
+    // living on borrowed time rather than already dead. Pin the real id.
     // Thinking mode is OPT-IN on V4 (a `thinking: {type:"enabled"}` body
     // field). We never send it: reasoning tokens bill as output and would eat
     // the hosted spend cap for a chat turn that doesn't need them. Keep it off.
