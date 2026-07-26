@@ -8,6 +8,7 @@ import {
   looksLikeStall,
   scoreCoachTurn,
   shouldUpdateKnowledge,
+  stripDashes,
 } from "./coach_eval.ts";
 
 Deno.test("coach eval: fixtures build and cover both action and question cases", () => {
@@ -131,4 +132,55 @@ Deno.test("shouldUpdateKnowledge: periodic safety net fires every 4th user turn"
 
 Deno.test("shouldUpdateKnowledge: an unrelated question on an off-cadence turn does not trigger it", () => {
   assert(!shouldUpdateKnowledge("What's a good cadence for easy runs?", 2));
+});
+
+// ---------------------------------------------------------------------------
+// stripDashes: the no-em-dash house rule, enforced on OUTPUT.
+//
+// PUNCTUATION_RULE has been in every prompt for a long time and models still
+// ignore it. Measured against deepseek-v4-flash on real coach questions: 1 in 5
+// replies carried an em dash on the old chat prompt, 3 in 5 on the newer,
+// shorter one. no_dashes_test.ts only ever checked the prompts.
+// ---------------------------------------------------------------------------
+
+Deno.test("stripDashes: a spaced parenthetical dash becomes a comma", () => {
+  assertEquals(
+    stripDashes("You're carrying fatigue — nothing alarming."),
+    "You're carrying fatigue, nothing alarming.",
+  );
+  assertEquals(stripDashes("Keep it easy – save the hard work."), "Keep it easy, save the hard work.");
+});
+
+Deno.test("stripDashes: numeric ranges become a plain hyphen, per the rule", () => {
+  assertEquals(stripDashes("5—8 reps"), "5-8 reps");
+  assertEquals(stripDashes("20 – 30 min"), "20-30 min");
+  assertEquals(stripDashes("Z1—Z2"), "Z1-Z2");
+});
+
+Deno.test("stripDashes: no double punctuation is left behind", () => {
+  assertEquals(stripDashes("Nice work. — Keep it up."), "Nice work. Keep it up.");
+  assert(!/,\s*,/.test(stripDashes("a, — b")));
+});
+
+Deno.test("stripDashes: text without dashes is returned untouched", () => {
+  const clean = "You're fresh today, so let's push on Thursday. Keep 5-8 reps in the tank.";
+  assertEquals(stripDashes(clean), clean);
+});
+
+Deno.test("stripDashes: plain hyphens and bullet lists survive", () => {
+  const t = "Here's the week:\n- Mon easy run\n- Tue strength\nKeep 5-8 reps.";
+  assertEquals(stripDashes(t), t);
+});
+
+Deno.test("stripDashes: markdown table pipes and separators are untouched", () => {
+  const t = "| Day | What |\n|---|---|\n| Mon | Easy run |";
+  assertEquals(stripDashes(t), t);
+});
+
+Deno.test("cleanReply applies the dash rule, including inside a JSON envelope", () => {
+  assertEquals(cleanReply("You're fine — really."), "You're fine, really.");
+  assertEquals(
+    cleanReply(`{"action":"final","message":"Good week — keep going."}`),
+    "Good week, keep going.",
+  );
 });
