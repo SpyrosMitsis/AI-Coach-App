@@ -20,7 +20,7 @@ export const PROVIDER_LABELS: Record<LlmProvider, string> = {
 
 export const PROVIDER_MODELS: Record<LlmProvider, string> = {
   anthropic: "claude-opus-4-8",
-  deepseek: "deepseek-chat",
+  deepseek: "deepseek-v4-flash",
   openai: "gpt-5-mini",
   gemini: "gemini-2.5-flash",
   groq: "llama-3.3-70b-versatile",

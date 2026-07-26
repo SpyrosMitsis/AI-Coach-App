@@ -10,7 +10,13 @@
 // ============================================================================
 
 import type { LlmProvider } from "./types.ts";
-import { anthropicAcceptsTemperature, maxTokensOf, openAiModernParams, PROVIDERS } from "./llm.ts";
+import {
+  anthropicAcceptsTemperature,
+  deepseekBodyExtras,
+  maxTokensOf,
+  openAiModernParams,
+  PROVIDERS,
+} from "./llm.ts";
 import type { ChatMessage } from "./llm.ts";
 
 // Per-step deadline — one hung tool-call step shouldn't run to the platform
@@ -162,6 +168,7 @@ async function openAiCompatibleLoop(args: NativeLoopArgs): Promise<NativeLoopRes
         model,
         messages: msgs,
         tools,
+        ...deepseekBodyExtras(args.provider, model),
         ...(openAiModernParams(args.provider, model)
           ? { max_completion_tokens: maxTokensOf(args) }
           : { temperature: 0.6, max_tokens: maxTokensOf(args) }),

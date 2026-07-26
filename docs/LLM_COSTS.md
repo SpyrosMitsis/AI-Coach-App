@@ -23,7 +23,7 @@ Rates live in `PROVIDERS` in `_shared/llm.ts`:
 
 | Provider | Default model | Input $/1M | Output $/1M |
 |---|---|---|---|
-| `deepseek` | `deepseek-chat` | 0.28 | 0.42 |
+| `deepseek` | `deepseek-v4-flash` | 0.09 | 0.18 |
 | `openai` | `gpt-5-mini` | 0.25 | 2.00 |
 | `gemini` | `gemini-2.5-flash` | 0.30 | 2.50 |
 | `groq` | `llama-3.3-70b-versatile` | 0.59 | 0.79 |

@@ -44,10 +44,10 @@ A single `llmGenerate(provider, { prompt, systemPrompt, apiKey })`
 
 | Provider  | Model                    | Notes                |
 |-----------|--------------------------|----------------------|
-| Anthropic | claude-sonnet-4-20250514 | Best reasoning       |
-| DeepSeek  | deepseek-chat            | Very cheap           |
-| OpenAI    | gpt-4o-mini              | Balanced             |
-| Gemini    | gemini-2.0-flash         | **Free tier**        |
+| Anthropic | claude-opus-4-8          | Best reasoning       |
+| DeepSeek  | deepseek-v4-flash        | Very cheap           |
+| OpenAI    | gpt-5-mini               | Balanced             |
+| Gemini    | gemini-2.5-flash         | **Free tier**        |
 | Groq      | llama-3.3-70b-versatile  | **Free tier**, fast  |
 
 The same system prompt (with an embedded JSON schema) is sent to every

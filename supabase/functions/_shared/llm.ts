@@ -117,9 +117,14 @@ export const PROVIDERS: Record<LlmProvider, ProviderSpec> = {
   },
   deepseek: {
     label: "DeepSeek",
-    model: "deepseek-chat",
-    inputPer1M: 0.28,
-    outputPer1M: 0.42,
+    // V4 Flash. The old deepseek-chat/deepseek-reasoner aliases were retired
+    // 2026-07-24 and now 404, so this id is not optional.
+    // Thinking mode is OPT-IN on V4 (a `thinking: {type:"enabled"}` body
+    // field). We never send it: reasoning tokens bill as output and would eat
+    // the hosted spend cap for a chat turn that doesn't need them. Keep it off.
+    model: "deepseek-v4-flash",
+    inputPer1M: 0.09,
+    outputPer1M: 0.18,
     getFreeKeyUrl: "https://platform.deepseek.com/api_keys",
   },
   openai: {
@@ -298,6 +303,26 @@ export function openAiModernParams(provider: LlmProvider, model: string): boolea
   return provider === "openai" && /^(gpt-5|o\d|chatgpt)/i.test(model);
 }
 
+// DeepSeek V4 defaults to THINKING mode, and its reasoning tokens are billed as
+// output AND counted against max_tokens. Measured against the live API: a plain
+// `deepseek-v4-flash` call with max_tokens 20 returned content "" with
+// finish_reason "length", having spent the entire budget on reasoning_content.
+// At OUTPUT_BUDGETS.workout/plan that means truncated-or-empty JSON, the exact
+// failure documented for the MiMo reasoning models in scripts/eval/models.ts.
+//
+// `{"type":"disabled"}` is the only thing that works: `reasoning_effort:"none"`
+// is rejected (400, expects high/low/medium/max/xhigh) and
+// `{"type":"enabled","enabled":false}` still thinks. Applies to every DeepSeek
+// request body, so it lives here rather than at each call site.
+export function deepseekBodyExtras(
+  provider: LlmProvider,
+  model: string,
+): Record<string, unknown> {
+  return provider === "deepseek" && /^deepseek-v4/.test(model)
+    ? { thinking: { type: "disabled" } }
+    : {};
+}
+
 // Optional ranking/attribution headers OpenRouter uses for its app leaderboard.
 // Purely informational — calls work without them; ignored by every other base.
 function openRouterHeaders(provider: LlmProvider): Record<string, string> {
@@ -318,6 +343,7 @@ async function openAiCompatible(
       { role: "system", content: args.systemPrompt },
       ...turns(args),
     ],
+    ...deepseekBodyExtras(provider, model),
   };
   if (openAiModernParams(provider, model)) {
     body.max_completion_tokens = maxTokensOf(args);
@@ -492,6 +518,7 @@ export async function llmStream(
       model,
       messages: [{ role: "system", content: args.systemPrompt }, ...turns(args)],
       stream: true,
+      ...deepseekBodyExtras(provider, model),
     };
     if (openAiModernParams(provider, model)) {
       body.max_completion_tokens = maxTokensOf(args);

@@ -33,7 +33,11 @@ export interface EvalModel {
 
 export const EVAL_MODELS: EvalModel[] = [
   { id: "groq/llama-3.3-70b", provider: "groq", envKey: "GROQ_API_KEY" },
-  { id: "deepseek/chat", provider: "deepseek", envKey: "DEEPSEEK_API_KEY" },
+  // Renamed from "deepseek/chat" when the deepseek-chat alias was retired
+  // (2026-07-24) and the provider default became deepseek-v4-flash. The id is
+  // deliberately different so rows in eval_runs/*.jsonl from before the switch
+  // don't silently average together with rows from a different model.
+  { id: "deepseek/v4-flash", provider: "deepseek", envKey: "DEEPSEEK_API_KEY" },
 
   // Xiaomi MiMo, via OpenRouter. Prices are per 1M tokens, read from
   // openrouter.ai/api/v1/models — llm.ts prices the openrouter PROVIDER at 0/0
@@ -60,7 +64,7 @@ export const EVAL_MODELS: EvalModel[] = [
  * A judge that also appears in EVAL_MODELS grades its own output; that's flagged
  * per-row as self_judged rather than silently trusted.
  */
-export const EVAL_JUDGE = "deepseek/chat";
+export const EVAL_JUDGE = "deepseek/v4-flash";
 
 /**
  * Providers we KNOW honor `seed`, so `deterministic: true` really is

@@ -1,6 +1,47 @@
 import { assert, assertEquals, assertRejects } from "jsr:@std/assert@1";
-import { extractJson, llmGenerateWithFallback, maxTokensOf, OUTPUT_BUDGETS } from "./llm.ts";
+import {
+  deepseekBodyExtras,
+  extractJson,
+  llmGenerateWithFallback,
+  maxTokensOf,
+  OUTPUT_BUDGETS,
+  PROVIDERS,
+} from "./llm.ts";
 import type { LlmProvider } from "./types.ts";
+
+// ---------------------------------------------------------------------------
+// DeepSeek V4 thinking mode
+//
+// THE REGRESSION TEST. Verified against the live API on 2026-07-26: a plain
+// deepseek-v4-flash call with max_tokens 20 came back content "" /
+// finish_reason "length", the whole budget spent on reasoning_content. Every
+// JSON-producing feature (workout, plan) would return empty or truncated JSON.
+// If this assertion ever fails, that is what breaks.
+// ---------------------------------------------------------------------------
+
+Deno.test("deepseek v4 requests disable thinking", () => {
+  assertEquals(deepseekBodyExtras("deepseek", "deepseek-v4-flash"), {
+    thinking: { type: "disabled" },
+  });
+  assertEquals(deepseekBodyExtras("deepseek", "deepseek-v4-pro"), {
+    thinking: { type: "disabled" },
+  });
+});
+
+Deno.test("the thinking flag is deepseek-only and v4-only", () => {
+  // Sending an unknown body key to another vendor's endpoint can 400.
+  assertEquals(deepseekBodyExtras("openai", "gpt-5-mini"), {});
+  assertEquals(deepseekBodyExtras("groq", "llama-3.3-70b-versatile"), {});
+  assertEquals(deepseekBodyExtras("openrouter", "deepseek/deepseek-v4-flash"), {});
+  // A user override back to a pre-V4 id must not carry the V4-only field.
+  assertEquals(deepseekBodyExtras("deepseek", "deepseek-chat"), {});
+});
+
+Deno.test("the deepseek default model is a V4 id, so the flag applies to it", () => {
+  const model = PROVIDERS.deepseek.model;
+  assert(/^deepseek-v4/.test(model), `expected a v4 id, got ${model}`);
+  assertEquals(deepseekBodyExtras("deepseek", model), { thinking: { type: "disabled" } });
+});
 
 // ---------------------------------------------------------------------------
 // extractJson

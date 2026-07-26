@@ -7,7 +7,7 @@ import kotlinx.serialization.Serializable
 
 enum class LlmProvider(val label: String, val model: String, val freeKeyUrl: String, val freeTier: Boolean) {
     @SerialName("anthropic") ANTHROPIC("Anthropic", "claude-opus-4-8", "https://console.anthropic.com/settings/keys", false),
-    @SerialName("deepseek")  DEEPSEEK("DeepSeek", "deepseek-chat", "https://platform.deepseek.com/api_keys", false),
+    @SerialName("deepseek")  DEEPSEEK("DeepSeek", "deepseek-v4-flash", "https://platform.deepseek.com/api_keys", false),
     @SerialName("openai")    OPENAI("OpenAI", "gpt-5-mini", "https://platform.openai.com/api-keys", false),
     @SerialName("gemini")    GEMINI("Google Gemini", "gemini-2.5-flash", "https://aistudio.google.com/app/apikey", true),
     @SerialName("groq")      GROQ("Groq", "llama-3.3-70b-versatile", "https://console.groq.com/keys", true),
