@@ -1,5 +1,11 @@
 import { assert, assertEquals } from "jsr:@std/assert@1";
-import { HOLDBACK_CHARS, speculativeStream, type StreamEvent } from "./coach_stream.ts";
+import {
+  dashScrubber,
+  HOLDBACK_CHARS,
+  speculativeStream,
+  type StreamEvent,
+} from "./coach_stream.ts";
+import { stripDashes } from "./coach_eval.ts";
 
 // Collect what the client would be told, and reconstruct what it would show.
 function harness(holdback = HOLDBACK_CHARS) {
@@ -138,4 +144,63 @@ Deno.test("a chunky delta larger than the hold-back flushes whole, not truncated
   h.s.endMessage();
   assertEquals(h.screen(), LONG);
   assert(LONG.length > HOLDBACK_CHARS);
+});
+
+// ---------------------------------------------------------------------------
+// dashScrubber: the house dash rule, applied to a stream.
+//
+// cleanReply strips dashes from the finished reply. If the deltas keep theirs,
+// the streamed and persisted text differ and coach-chat's display/persist
+// invariant resets the reply. 6 of 7 live replies contain a dash, so without
+// this nearly every reply would stream in, vanish and reappear.
+// ---------------------------------------------------------------------------
+
+/** Feed a full text through the scrubber in arbitrary chunks. */
+function scrubbed(chunks: string[]): string {
+  const s = dashScrubber(stripDashes);
+  return chunks.map((c) => s.push(c)).join("") + s.flush();
+}
+
+Deno.test("a dash split across delta boundaries still becomes a comma", () => {
+  // The exact shape that broke: the space, the dash and the next word all
+  // arrive in different deltas.
+  assertEquals(scrubbed(["Nothing alarming", " ", "—", " just", " fatigue."]), "Nothing alarming, just fatigue.");
+});
+
+Deno.test("scrubbing a stream matches scrubbing the whole text at once", () => {
+  const full = "You're fine — really. Keep 5—8 reps, easy pace – all week.";
+  for (const size of [1, 2, 3, 7, 13, 500]) {
+    const chunks: string[] = [];
+    for (let i = 0; i < full.length; i += size) chunks.push(full.slice(i, i + size));
+    assertEquals(
+      scrubbed(chunks),
+      stripDashes(full),
+      `chunk size ${size} disagreed with whole-text scrubbing`,
+    );
+  }
+});
+
+Deno.test("dash-free text passes through byte for byte", () => {
+  const full = "Easy run today, then strides. Keep 5-8 reps in reserve.";
+  assertEquals(scrubbed([full]), full);
+  assertEquals(scrubbed(full.split("")), full);
+});
+
+Deno.test("nothing is swallowed: trailing whitespace survives the flush", () => {
+  assertEquals(scrubbed(["hello "]), "hello ");
+  assertEquals(scrubbed(["hello", " ", "world"]), "hello world");
+});
+
+Deno.test("a streamed reply needs no reset when only dashes differ", () => {
+  // The end-to-end property: what the client was shown equals what cleanReply
+  // will persist, so coach-chat's invariant check stays quiet.
+  const raw = "You're carrying fatigue — nothing alarming, just volume.";
+  const events: StreamEvent[] = [];
+  const spec = speculativeStream((e) => events.push(e), 4);
+  const s = dashScrubber(stripDashes);
+  for (const ch of raw) spec.onDelta(s.push(ch));
+  spec.onDelta(s.flush());
+  spec.endMessage();
+  assertEquals(spec.committed(), stripDashes(raw));
+  assertEquals(events.filter((e) => e.reset).length, 0);
 });

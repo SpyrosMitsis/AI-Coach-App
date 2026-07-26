@@ -52,8 +52,14 @@ import {
   toolCatalogPrompt,
   validateAppSettings,
 } from "../_shared/coach_tools.ts";
-import { callBudget, cleanReply, looksLikeStall, shouldUpdateKnowledge } from "../_shared/coach_eval.ts";
-import { speculativeStream } from "../_shared/coach_stream.ts";
+import {
+  callBudget,
+  cleanReply,
+  looksLikeStall,
+  shouldUpdateKnowledge,
+  stripDashes,
+} from "../_shared/coach_eval.ts";
+import { dashScrubber, speculativeStream } from "../_shared/coach_stream.ts";
 import { runNativeToolLoop, supportsNativeTools } from "../_shared/llm_native_tools.ts";
 
 // Tool-use protocol appended to the coach system prompt for chat mode. The
@@ -582,16 +588,25 @@ Deno.serve(async (req) => {
               const spec = proto >= 2
                 ? speculativeStream((e) => send(e.reset ? { reset: true } : { token: e.text }))
                 : null;
+              // Deltas go through the same dash rule cleanReply applies to the
+              // finished reply. Without this the two disagree on almost every
+              // reply and the invariant below resets each one, which would make
+              // streaming visibly worse than not streaming.
+              const scrub = dashScrubber(stripDashes);
 
               const { replyText, toolsUsed, provider, settingsChanges, rememberCalledThisTurn } =
                 await runAgentic(
                   (name) => send({ tool: name }),
                   spec
-                    ? { onDelta: (t) => spec.onDelta(t), onToolStart: () => spec.onToolStart() }
+                    ? {
+                      onDelta: (t) => spec.onDelta(scrub.push(t)),
+                      onToolStart: () => spec.onToolStart(),
+                    }
                     : undefined,
                 );
 
               if (spec) {
+                spec.onDelta(scrub.flush());
                 spec.endMessage();
                 // INVARIANT: what the client displays must equal what gets
                 // persisted. replyText has been through cleanReply (fence
