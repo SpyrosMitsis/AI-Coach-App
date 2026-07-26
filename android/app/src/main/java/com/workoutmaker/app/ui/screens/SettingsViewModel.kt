@@ -284,8 +284,6 @@ class SettingsViewModel @Inject constructor(
     val healthProviderPackage: String get() = health.providerPackage
     val healthStatus = MutableStateFlow<String?>(null)
 
-    suspend fun hasHealthPerms(): Boolean = health.hasAllPermissions()
-
     /** Granted read permissions — syncing works with a partial grant too. */
     suspend fun grantedHealthPerms(): Set<String> = health.grantedPermissions()
     fun setHealthStatus(msg: String) { healthStatus.value = msg }

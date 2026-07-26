@@ -25,14 +25,6 @@ val ChartPace = Color(0xFF30D158)    // pace — vivid green
 val ChartCadence = Color(0xFFBF5AF2) // cadence — vivid violet
 val ChartPower = Color(0xFFFF9F0A)   // power — vivid amber
 
-// Shared chart geometry so every plot leaves room for its axis text in the
-// margins (gutters) instead of drawing labels over the line.
-object ChartDims {
-    const val GUTTER_LEFT = 44f // px added at runtime via toPx(); see usage
-    const val GUTTER_BOTTOM = 16f
-    const val PAD_TOP = 8f
-}
-
 /** A faint horizontal gridline at [y], optionally only across the plot area. */
 fun DrawScope.hGridLine(y: Float, xStart: Float = 0f, xEnd: Float = size.width) {
     drawLine(

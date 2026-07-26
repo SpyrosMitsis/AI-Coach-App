@@ -367,16 +367,6 @@ class StrengthViewModel @Inject constructor(
         loading.value = false
     }
 
-    // Open a logged workout's full detail (every exercise + set).
-    fun openWorkout(id: String) = viewModelScope.launch {
-        val pair = repo.workoutWithSets(id) ?: run { status.value = "Workout not found"; return@launch }
-        val (w, sets) = pair
-        val grouped = sets.groupBy { it.exerciseName }
-            .map { (name, s) -> name to s.sortedBy { it.idx } }
-        workoutDetail.value = WorkoutDetailUi(w, grouped, sets.size)
-        nav.value = StrengthNav.WorkoutDetail(id)
-    }
-
     // --- session lifecycle -------------------------------------------------
     private fun reset() {
         exercises.clear()

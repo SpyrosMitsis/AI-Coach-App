@@ -111,9 +111,6 @@ data class Recovery(
 )
 
 @Serializable
-data class TsbPoint(val date: String, val tsb: Double, val ctl: Double, val atl: Double)
-
-@Serializable
 data class WeeklyLoad(val tss: Int, val target: Int)
 
 @Serializable
@@ -197,7 +194,6 @@ data class DailySummary(
     val recovery_synced_date: String? = null,
     val vo2max: Vo2Max? = null,
     val today_workout: PlannedWorkout? = null,
-    val tsb_sparkline: List<TsbPoint> = emptyList(),
     val weekly_load: WeeklyLoad,
     val week_review: WeekReview? = null,
     val debrief: SessionDebrief? = null,

@@ -2,7 +2,6 @@ package com.workoutmaker.app.ui.components
 
 import com.workoutmaker.app.data.Zones
 import kotlin.math.abs
-import kotlin.math.roundToInt
 
 // Canonical formatters — one source of truth so durations, paces, weights and
 // loads read identically on every screen. Older helpers (fmtPaceSec, trimKg, the
@@ -26,12 +25,6 @@ fun fmtPace(secPerKm: Int): String = Zones.formatPace(secPerKm)
 fun fmtWeight(kg: Double): String =
     if (abs(kg - kg.toLong()) < 0.05) kg.toLong().toString()
     else ((kg * 10).toLong() / 10.0).toString()
-
-/** Training load → a whole number. */
-fun fmtTss(tss: Double): String = tss.roundToInt().toString()
-
-/** Form (TSB) → a signed whole number, e.g. "+3" / "-12". */
-fun fmtSignedTsb(tsb: Double): String = "%+.0f".format(tsb)
 
 /**
  * Turn a raw error (exception or message) into something a person can act on.

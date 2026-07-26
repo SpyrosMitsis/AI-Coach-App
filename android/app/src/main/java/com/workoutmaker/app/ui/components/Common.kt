@@ -23,7 +23,6 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.ui.draw.clip
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
-import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
@@ -183,11 +182,6 @@ fun SectionCard(
             content()
         }
     }
-}
-
-@Composable
-fun LoadingBox(modifier: Modifier = Modifier) {
-    Box(modifier.fillMaxWidth().padding(40.dp), Alignment.Center) { CircularProgressIndicator() }
 }
 
 /**

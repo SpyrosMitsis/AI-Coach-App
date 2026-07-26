@@ -21,7 +21,6 @@ import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.text.withLink
 import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 
 // ============================================================================
 // Tiny markdown renderer for LLM output — no dependency, covers what the
@@ -133,6 +132,3 @@ fun MarkdownText(
         }
     }
 }
-
-// Keep the line-height pleasant for chat bubbles regardless of caller style.
-val ChatBodyLineHeight = 20.sp

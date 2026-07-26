@@ -374,11 +374,6 @@ class WorkoutRepository @Inject constructor(
             }.body(),
         )
 
-    // Delete a logged/manual completed activity (and its Intervals event if it was one).
-    suspend fun deleteCompletedActivity(intervalsId: String) {
-        supabase.postgrest.from("completed_activities").delete { filter { eq("intervals_id", intervalsId) } }
-    }
-
     suspend fun pushStrengthWorkout(req: PushStrengthRequest): PushResult =
         json.decodeFromString(
             supabase.functions.invoke("push-strength") {
@@ -476,11 +471,6 @@ class WorkoutRepository @Inject constructor(
         supabase.postgrest.from("wellness_checkins").select {
             filter { eq("date", date) }
         }.decodeList<WellnessCheckin>().firstOrNull()
-
-    // Persist a Health Connect snapshot onto today's wellness row.
-    suspend fun submitHealthSnapshot(snap: com.workoutmaker.app.health.HealthSnapshot) {
-        submitHealthSnapshots(listOf(snap))
-    }
 
     // Upsert a multi-day Health Connect series (7-day trend) in one call.
     suspend fun submitHealthSnapshots(snaps: List<com.workoutmaker.app.health.HealthSnapshot>) {
@@ -605,12 +595,6 @@ class WorkoutRepository @Inject constructor(
     suspend fun logStrengthSet(log: StrengthLogInsert) {
         supabase.postgrest.from("strength_logs").insert(log)
     }
-
-    suspend fun recentStrengthLogs(limit: Long = 20): List<StrengthLogRow> =
-        supabase.postgrest.from("strength_logs").select {
-            order("date", Order.DESCENDING)
-            limit(limit)
-        }.decodeList()
 
     // Fire-and-forget refresh of the rolling athlete "training memory".
     // Invalidates the profile cache so a following loadMemory() reads the new notes.

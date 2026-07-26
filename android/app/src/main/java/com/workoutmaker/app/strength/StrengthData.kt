@@ -168,10 +168,6 @@ interface StrengthDao {
     @Query("SELECT * FROM strength_workout WHERE endedAt >= :since")
     suspend fun workoutsSince(since: Long): List<WorkoutEntity>
 
-    // All local workout ids — used to pull-merge only cloud workouts we lack.
-    @Query("SELECT id FROM strength_workout")
-    suspend fun allWorkoutIds(): List<String>
-
     @Query("DELETE FROM strength_workout WHERE id = :id")
     suspend fun deleteWorkout(id: String)
 

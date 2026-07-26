@@ -91,10 +91,6 @@ private fun vibrator(ctx: Context): Vibrator? =
         @Suppress("DEPRECATION") ctx.getSystemService(Context.VIBRATOR_SERVICE) as? Vibrator
     }
 
-fun vibrateOnce(ctx: Context, ms: Long = 450) {
-    runCatching { vibrator(ctx)?.vibrate(VibrationEffect.createOneShot(ms, VibrationEffect.DEFAULT_AMPLITUDE)) }
-}
-
 /** A light celebratory triple-tap, softer and quicker than [vibrateStrong]. */
 fun vibrateCelebrate(ctx: Context) {
     runCatching {

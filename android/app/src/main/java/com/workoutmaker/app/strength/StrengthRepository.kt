@@ -2,8 +2,6 @@ package com.workoutmaker.app.strength
 
 import androidx.room.withTransaction
 import com.workoutmaker.app.data.AppDatabase
-import com.workoutmaker.app.data.PushResult
-import com.workoutmaker.app.data.PushStrengthRequest
 import com.workoutmaker.app.data.StrengthLogInsert
 import com.workoutmaker.app.data.StrengthSet
 import com.workoutmaker.app.data.WorkoutRepository
@@ -333,8 +331,6 @@ class StrengthRepository @Inject constructor(
         dao.deleteRoutine(id)
         dao.insertTombstone(TombstoneEntity("routine", id))
     }
-
-    suspend fun pushToWatch(req: PushStrengthRequest): PushResult = cloud.pushStrengthWorkout(req)
 
     // B3: ask the AI generator for a strength session (not pushed; the user logs it live).
     private val genJson = kotlinx.serialization.json.Json { ignoreUnknownKeys = true; isLenient = true }
