@@ -123,6 +123,37 @@ async function backfillAnchorRace(admin: SupabaseClient, userId: string): Promis
   });
 }
 
+/**
+ * The seven days around [anchor], as they stand RIGHT NOW.
+ *
+ * THE BUG THIS FIXES: a re-plan turn called plan_week, which correctly returned
+ * the week it had built, and then called set_rest_day four times, deleting the
+ * four training sessions it had just created. The reply described the week
+ * plan_week had returned, which by then no longer existed. Grounding each write
+ * in its OWN result is not enough when a later write in the same turn changes
+ * the state underneath it.
+ *
+ * So every write returns this. The last observation the model sees before it
+ * writes the reply is always the calendar the athlete will actually open.
+ */
+async function weekSnapshot(
+  admin: SupabaseClient,
+  userId: string,
+  anchor: string,
+): Promise<Array<{ date: string; type: string; title: string | null }>> {
+  const start = mondayOf(new Date(anchor));
+  const end = iso(new Date(start + "T00:00:00").getTime() + 6 * DAY);
+  const { data } = await admin.from("planned_workouts")
+    .select("date, type, workout_json")
+    .eq("user_id", userId).gte("date", start).lte("date", end)
+    .order("date", { ascending: true });
+  return (data ?? []).map((d) => ({
+    date: d.date,
+    type: d.type,
+    title: (d.workout_json as { title?: string } | null)?.title ?? null,
+  }));
+}
+
 function mondayOf(date = new Date()): string {
   const d = new Date(date);
   d.setDate(d.getDate() - ((d.getDay() + 6) % 7));
@@ -655,7 +686,14 @@ export async function executeTool(
         }
         if (!workoutId) return "error: no workout found, pass workout_id (see get_planned_week) or date";
         const r = await callFunction(auth, "move-workout", { workout_id: workoutId, new_date: newDate }) as Record<string, unknown>;
-        return JSON.stringify({ ok: !r.error, old_date: r.old_date ?? null, new_date: r.new_date ?? newDate, event_moved: r.event_moved ?? null, error: r.error ?? null });
+        return JSON.stringify({
+          ok: !r.error,
+          old_date: r.old_date ?? null,
+          new_date: r.new_date ?? newDate,
+          event_moved: r.event_moved ?? null,
+          error: r.error ?? null,
+          week_now: await weekSnapshot(admin, userId, newDate),
+        });
       }
       case "set_rest_day": {
         const d = String(args.date ?? "");
@@ -664,13 +702,25 @@ export async function executeTool(
         // Clear every non-rest planned session that day; delete-workout removes the
         // watch event too (same path the app's delete uses).
         const { data: rows } = await admin.from("planned_workouts")
-          .select("id, type").eq("user_id", userId).eq("date", d).neq("type", "rest");
-        let cleared = 0;
+          .select("id, type, workout_json").eq("user_id", userId).eq("date", d).neq("type", "rest");
+        // NAME what was deleted, do not just count it. This returned a bare
+        // `cleared: 4` while quietly destroying the four sessions plan_week had
+        // created moments earlier in the same turn; a count gave the model no
+        // way to notice it had just undone its own work.
+        const cleared = (rows ?? []).map((r) => ({
+          type: r.type,
+          title: (r.workout_json as { title?: string } | null)?.title ?? null,
+        }));
         for (const row of rows ?? []) {
           await callFunction(auth, "delete-workout", { workout_id: row.id });
-          cleared++;
         }
-        return JSON.stringify({ ok: true, date: d, cleared });
+        return JSON.stringify({
+          ok: true,
+          date: d,
+          cleared_count: cleared.length,
+          cleared,
+          week_now: await weekSnapshot(admin, userId, d),
+        });
       }
       case "set_training_pause": {
         const until = String(args.until_date ?? "");
@@ -734,6 +784,7 @@ export async function executeTool(
           was: { type: current.type, title: (current.workout_json as { title?: string } | null)?.title ?? null },
           now: { type: current.type, title: w?.title ?? null },
           error: r.error ?? null,
+          week_now: await weekSnapshot(admin, userId, day),
         });
       }
       case "plan_week": {
@@ -766,7 +817,7 @@ export async function executeTool(
           week_focus: r.week_focus,
           pushed: r.pushed,
           // The authoritative answer to "what is on the calendar now".
-          days: (days ?? []).map((d) => ({
+          week_now: (days ?? []).map((d) => ({
             date: d.date,
             type: d.type,
             title: (d.workout_json as { title?: string } | null)?.title ?? null,
@@ -793,6 +844,7 @@ export async function executeTool(
           date: (typeof r.date === "string" ? r.date : null) ?? args.date ?? minDate,
           type: args.type ?? "auto",
           error: r.error ?? null,
+          week_now: await weekSnapshot(admin, userId, String(args.date ?? minDate)),
         });
       }
       case "assess_goal": {

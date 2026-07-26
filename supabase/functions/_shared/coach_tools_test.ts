@@ -701,9 +701,9 @@ Deno.test("plan_week reports the real days, not just how many", async () => {
       await executeTool(s.admin, "u1", "auth", "plan_week", { start_date: "2026-07-27" }, "2026-07-26"),
     );
     // A bare count is what let the model describe a week it had not created.
-    assertEquals(obs.days.length, 2);
-    assertEquals(obs.days[0], { date: "2026-07-27", type: "run", title: "Easy Run" });
-    assertEquals(obs.days[1].type, "strength");
+    assertEquals(obs.week_now.length, 2);
+    assertEquals(obs.week_now[0], { date: "2026-07-27", type: "run", title: "Easy Run" });
+    assertEquals(obs.week_now[1].type, "strength");
     assertEquals(obs.week_start, "2026-07-27");
   } finally {
     globalThis.fetch = origFetch;
@@ -756,4 +756,63 @@ Deno.test("get_planned_week's default week is anchored to the athlete's date", a
     await executeTool(s.admin, "u1", "auth", "get_planned_week", {}, "2026-07-26"),
   );
   assertEquals(obs.week_start, "2026-07-20", "Sunday the 26th belongs to the week starting Monday the 20th");
+});
+
+// ---------------------------------------------------------------------------
+// week_now: every write reports the calendar AS IT STANDS AFTER it.
+//
+// THE BUG: a re-plan turn called plan_week (which correctly returned the week
+// it built), then set_rest_day four times, deleting the four training sessions
+// it had just created. The reply described plan_week's result, which no longer
+// existed. Grounding a write in its OWN result is not enough when a later write
+// in the same turn moves the ground.
+// ---------------------------------------------------------------------------
+
+Deno.test("set_rest_day names what it deleted instead of counting it", async () => {
+  const s = writeStub({
+    planned_workouts: [
+      { id: "w1", type: "run", workout_json: { title: "Easy Run with Strides" } },
+    ],
+  });
+  const origFetch = globalThis.fetch;
+  globalThis.fetch = (() =>
+    Promise.resolve(new Response("{}", { headers: { "Content-Type": "application/json" } }))) as typeof fetch;
+  try {
+    const obs = JSON.parse(
+      await executeTool(s.admin, "u1", "auth", "set_rest_day", { date: "2026-07-27" }, "2026-07-26"),
+    );
+    assertEquals(obs.cleared_count, 1);
+    // The name is the point: "cleared: 1" gave the model no way to notice it
+    // had just undone a session it created moments earlier.
+    assertEquals(obs.cleared[0].title, "Easy Run with Strides");
+    assertEquals(obs.cleared[0].type, "run");
+    assert(Array.isArray(obs.week_now), "a write must report the resulting week");
+  } finally {
+    globalThis.fetch = origFetch;
+  }
+});
+
+Deno.test("every calendar write reports week_now", async () => {
+  const s = writeStub({
+    planned_workouts: [{ id: "w1", type: "run", workout_json: { title: "Easy Run" } }],
+  });
+  const origFetch = globalThis.fetch;
+  globalThis.fetch = (() =>
+    Promise.resolve(new Response(JSON.stringify({ workout_id: "w2", workout: { title: "X" }, scheduled: 1 }), {
+      headers: { "Content-Type": "application/json" },
+    }))) as typeof fetch;
+  try {
+    for (const [tool, args] of [
+      ["plan_week", { start_date: "2026-07-27" }],
+      ["generate_workout", { date: "2026-07-27" }],
+      ["make_easier", { date: "2026-07-27" }],
+      ["set_rest_day", { date: "2026-07-27" }],
+      ["move_workout", { workout_id: "w1", new_date: "2026-07-28" }],
+    ] as const) {
+      const obs = JSON.parse(await executeTool(s.admin, "u1", "auth", tool, args, "2026-07-26"));
+      assert(Array.isArray(obs.week_now), `${tool} did not report week_now`);
+    }
+  } finally {
+    globalThis.fetch = origFetch;
+  }
 });

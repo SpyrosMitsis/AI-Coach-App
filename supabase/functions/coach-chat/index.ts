@@ -72,7 +72,7 @@ RULES:
 - NEVER ask the athlete to describe past workouts, sessions, or numbers you can look up yourself. Questions like "how did my last workouts go?" mean: call get_recent_activities and get_execution_analysis (plus get_strength_summary for lifting), then answer from the data.
 - DRIVE the task to completion in this turn. When the athlete's message already asks for or agrees to an action (e.g. "plan my week and put it on my calendar", "make me today's workout", "apply that"), TAKE the action (plan_week, generate_workout, move_workout, set_goal_race) now, don't stop to ask "shall I?" again. Then confirm what you did and why.
 - NEVER promise an action instead of performing it. There is only THIS turn, the athlete cannot grant you a "next turn", so phrases like "I'll adjust your plan", "let me review your week", "I will proceed with these adjustments", "I'm going to update…", or "give me a moment" are FORBIDDEN unless you call the matching tool in this same turn. If you intend to change the plan, call plan_week / generate_workout / move_workout / set_goal_race NOW, read back the result, and report what you DID in the past tense, never what you will do.
-- REPORT WHAT THE TOOL RETURNED, NOT WHAT YOU ASKED FOR. A write tool tells you what actually landed: plan_week returns the real day list, make_easier returns the session before and after, generate_workout returns the date and title it created. Describe THAT. If the result differs from what you intended, say what really happened, do not describe your intention as though it came true. The athlete is looking at the same calendar you just wrote.
+- REPORT WHAT THE TOOL RETURNED, NOT WHAT YOU ASKED FOR. Every write tool returns week_now: the athlete's calendar AS IT STANDS AFTER that write. Describe the LAST week_now you were given, never an earlier one and never what you intended. If you scheduled sessions and then cleared days, week_now shows what actually survived. set_rest_day also returns cleared, naming the sessions it deleted: if it names something you just created, say so instead of describing the plan you meant to leave behind. If the result differs from what you intended, say what really happened, do not describe your intention as though it came true. The athlete is looking at the same calendar you just wrote.
 - A request that signals intent IS consent to act. "I have an exam until June 30, adjust my plan", "lighten this week", "move my long run" all mean: do it now. Don't re-ask. For a destructive overwrite (regenerating an existing/partly-locked week, changing a goal-race date) just give a one-line heads-up of what you replaced as part of the report, don't stop to ask first.
 - Only pause to ask first when the action is genuinely ambiguous AND unsignalled. When you do ask, ask once and propose a specific default.
 - Don't end a turn by handing trivial work back ("want me to schedule it?") when the request already implied yes, just do it and report.
@@ -376,12 +376,38 @@ Deno.serve(async (req) => {
         // original thread and call the same tool again. Returning the first
         // observation instead of re-executing prevents the double-write.
         const writeCache = new Map<string, Promise<string>>();
+        // Reads are memoized for the turn too. Measured across 69 real turns,
+        // 28 of 181 read calls were EXACT duplicates within a single turn (the
+        // same get_profile or get_fitness twice), and each one costs a provider
+        // round trip plus roughly 6k prompt tokens, because every later leg
+        // re-sends the whole observation list.
+        //
+        // Cleared by any write: a cached get_planned_week served after plan_week
+        // ran would hand the model a week that no longer exists, which is the
+        // exact class of bug this session has been chasing. Correctness first,
+        // saving second.
+        const readCache = new Map<string, Promise<string>>();
         const exec = (name: string, targs: Record<string, unknown>) => {
-          const writeKey = WRITE_TOOLS.has(name) ? `${name}:${JSON.stringify(targs)}` : null;
+          const isWrite = WRITE_TOOLS.has(name);
+          const writeKey = isWrite ? `${name}:${JSON.stringify(targs)}` : null;
           if (writeKey) {
             const prior = writeCache.get(writeKey);
             if (prior) { log.warn("dedup_write", { tool: name }); return prior; }
           }
+          const readKey = name.startsWith("get_") ? `${name}:${JSON.stringify(targs)}` : null;
+          if (readKey) {
+            const prior = readCache.get(readKey);
+            if (prior) {
+              log.info("dedup_read", { tool: name });
+              // Still counted as used: it is what the coach consulted, and the
+              // progress row and follow-up chips both read this list.
+              toolsUsed.push(name);
+              try { onTool?.(name); } catch { /* never block on UI events */ }
+              return prior;
+            }
+          }
+          // A write invalidates everything read before it.
+          if (isWrite) readCache.clear();
           toolsUsed.push(name);
           if (name === "remember") rememberCalledThisTurn = true;
           try { onTool?.(name); } catch { /* never block on UI events */ }
@@ -402,6 +428,7 @@ Deno.serve(async (req) => {
             // executeTool applies a day of slack instead.
             : executeTool(admin, userId, auth, name, targs, clientToday ?? undefined);
           if (writeKey) writeCache.set(writeKey, obs);
+          if (readKey) readCache.set(readKey, obs);
           return obs;
         };
 
