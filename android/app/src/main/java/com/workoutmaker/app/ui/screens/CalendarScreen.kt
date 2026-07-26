@@ -258,16 +258,6 @@ fun CalendarScreen(vm: CalendarViewModel = hiltViewModel(), onOpenStrength: () -
                 goalDate = calProfile?.goal_date?.let { runCatching { LocalDate.parse(it) }.getOrNull() },
             )
 
-            // P2: plan a whole periodized block to the race in one go.
-            GhostButton(
-                onClick = { vm.planBlock() },
-                enabled = !planning,
-                modifier = Modifier.fillMaxWidth(),
-            ) {
-                Icon(Icons.Filled.AutoAwesome, null, modifier = Modifier.size(18.dp))
-                Text(if (planning) "  Planning…" else "  Plan full block to race (AI)")
-            }
-
             // Month switcher
             Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                 IconButton(onClick = { visibleMonth = visibleMonth.minusMonths(1) }) {

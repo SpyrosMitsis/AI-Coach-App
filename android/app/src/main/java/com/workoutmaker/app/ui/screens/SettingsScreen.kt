@@ -93,28 +93,29 @@ import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import javax.inject.Inject
 
-// Grouped by how often a normal athlete touches things: the everyday knobs up
-// top, integrations and app chrome in the middle, and an Advanced group for
-// power-user surfaces (raw thresholds, coach memory docs, import/export,
-// generation logs) so the first screen stays calm.
+// Grouped by INTENT, in the order a user reasons: who I am (everything the
+// coach knows about the athlete, in one place), how it plans, phone/app
+// concerns, power tools, account. Ids are stable — only grouping/copy changes.
 internal val SETTINGS_GROUPS = listOf(
-    SettingsGroup("Training", listOf(
-        SettingsItem("profile", Icons.Outlined.Person, "Profile & goal", "Goal, experience, days, equipment, pace"),
-        SettingsItem("races", Icons.Outlined.Flag, "Goals & races", "Multi-sport goals, targets & countdown"),
-        SettingsItem("planning", Icons.Outlined.CalendarMonth, "Planning", "Auto-plan, weekly load & challenge level"),
-        SettingsItem("defaults", Icons.Outlined.FitnessCenter, "Workout defaults", "Units, rest timer, barbell, screen"),
+    SettingsGroup("About you", listOf(
+        SettingsItem("profile", Icons.Outlined.Person, "About you", "Name, body & body trends"),
+        SettingsItem("sports", Icons.Outlined.FitnessCenter, "Sports & goals", "Sports, goals, level & equipment"),
+        SettingsItem("week", Icons.Outlined.CalendarMonth, "Your training week", "Availability & periodization"),
+        SettingsItem("races", Icons.Outlined.Flag, "Goals & races", "Goal races, targets & countdown"),
+        SettingsItem("zones", Icons.Outlined.Favorite, "Your numbers & zones", "FTP, paces, lifts & HR zones"),
+        SettingsItem("knowledge", Icons.Outlined.Psychology, "Injuries & constraints", "Hard rules the coach must respect"),
     )),
-    SettingsGroup("Coaching & AI", listOf(
-        SettingsItem("ai", Icons.Outlined.AutoAwesome, "AI providers", "Active model & API keys"),
+    SettingsGroup("Coach & planning", listOf(
+        SettingsItem("ai", Icons.Outlined.AutoAwesome, "AI model", "Model choice & API keys, the biggest quality lever"),
+        SettingsItem("planning", Icons.Outlined.CalendarMonth, "Planning", "Auto-plan, weekly load & challenge level"),
     )),
     SettingsGroup("App", listOf(
-        SettingsItem("connections", Icons.Outlined.Link, "Connections", "Intervals.icu & Health Connect"),
-        SettingsItem("appearance", Icons.Outlined.Palette, "Appearance", "Light / dark theme"),
-        SettingsItem("notifications", Icons.Outlined.Notifications, "Notifications", "Rest-timer alerts & vibration"),
+        SettingsItem("connections", Icons.Outlined.Link, "Connections", "Intervals.icu, Health Connect & calendar"),
+        SettingsItem("notifications", Icons.Outlined.Notifications, "Notifications", "Morning brief, rest alerts & vibration"),
+        SettingsItem("defaults", Icons.Outlined.FitnessCenter, "Units & gym session", "Units, rest timer, barbell, screen"),
+        SettingsItem("appearance", Icons.Outlined.Palette, "Appearance", "Theme & palette"),
     )),
-    SettingsGroup("Advanced", listOf(
-        SettingsItem("zones", Icons.Outlined.Favorite, "Training zones", "Thresholds, HR/pace/power zones & tests"),
-        SettingsItem("knowledge", Icons.Outlined.Psychology, "Coach knowledge", "Injuries, equipment & preferences"),
+    SettingsGroup("Data", listOf(
         SettingsItem("data", Icons.Outlined.Download, "Import & export", "Strong/Hevy import · CSV backup"),
         SettingsItem("diagnostics", Icons.Outlined.MonitorHeart, "Diagnostics", "AI generation log & cost"),
     )),
@@ -125,7 +126,7 @@ internal val SETTINGS_GROUPS = listOf(
 )
 
 @Composable
-fun SettingsScreen(vm: SettingsViewModel = hiltViewModel()) {
+fun SettingsScreen(vm: SettingsViewModel = hiltViewModel(), onOpenBodyHistory: () -> Unit = {}) {
     LaunchedEffect(Unit) { vm.load() }
     // Save confirmations / errors go to the one app-wide snackbar.
     val snackbar = com.workoutmaker.app.ui.components.LocalAppSnackbar.current
@@ -141,7 +142,7 @@ fun SettingsScreen(vm: SettingsViewModel = hiltViewModel()) {
     if (open == null) {
         SettingsIndex(onOpen = { open = it })
     } else {
-        SettingsDetail(open!!, vm) { open = null }
+        SettingsDetail(open!!, vm, onOpenBodyHistory) { open = null }
     }
 }
 
@@ -183,7 +184,7 @@ internal fun SettingsIndex(onOpen: (String) -> Unit) {
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-internal fun SettingsDetail(id: String, vm: SettingsViewModel, onBack: () -> Unit) {
+internal fun SettingsDetail(id: String, vm: SettingsViewModel, onOpenBodyHistory: () -> Unit = {}, onBack: () -> Unit) {
     val title = SETTINGS_GROUPS.flatMap { it.items }.firstOrNull { it.id == id }?.title ?: "Settings"
     Scaffold(
         containerColor = MaterialTheme.colorScheme.background,
@@ -202,7 +203,9 @@ internal fun SettingsDetail(id: String, vm: SettingsViewModel, onBack: () -> Uni
             verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
             when (id) {
-                "profile" -> ProfileSection(vm)
+                "profile" -> AboutYouSection(vm, onOpenBodyHistory)
+                "sports" -> SportsGoalsSection(vm)
+                "week" -> TrainingWeekSection(vm)
                 "races" -> RacesSection(vm)
                 "zones" -> ZonesSection(vm)
                 "defaults" -> WorkoutDefaultsSection(vm)

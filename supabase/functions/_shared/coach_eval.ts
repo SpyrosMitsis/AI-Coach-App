@@ -49,6 +49,59 @@ export function hasForbiddenDashes(text: string): boolean {
   return /[—–]/.test(text);
 }
 
+// --- small pure helpers shared with coach-chat's runtime loop ----------------
+// Extracted from coach-chat/index.ts so they're testable here alongside the
+// other coach-quality rubrics, instead of trapped as module-private functions
+// in an edge function with no test file.
+
+// A per-turn LLM-call budget: the native tool loop, the JSON-protocol
+// fallback, and the anti-stall retry all spend from the SAME budget, so the
+// documented worst case (they don't each get their own allowance) is real.
+export function callBudget(max: number) {
+  let used = 0;
+  return {
+    spend(n = 1) { used += n; },
+    exhausted() { return used >= max; },
+    remaining() { return Math.max(0, max - used); },
+    used() { return used; },
+  };
+}
+
+// The JSON tool protocol occasionally leaks its envelope into the final reply
+// (fenced JSON, or {"action":"final","message":...} as raw text). Scrub it
+// server-side so leaked protocol never reaches the client or the saved thread.
+export function cleanReply(text: string): string {
+  let t = text.trim();
+  const fence = t.match(/^```(?:json)?\s*([\s\S]*?)```$/i);
+  if (fence) t = fence[1].trim();
+  if (t.startsWith("{")) {
+    try {
+      const o = JSON.parse(t) as Record<string, unknown>;
+      const m = o.message ?? o.reply ?? o.final;
+      if (typeof m === "string" && m.trim()) return m.trim();
+    } catch { /* not JSON, keep as-is */ }
+  }
+  return t;
+}
+
+// Durable facts worth remembering tend to mention these. We only spend a token
+// budget on knowledge-extraction when the latest user turn plausibly carries one.
+export const KNOWLEDGE_HINTS =
+  /\b(injur|hurt|pain|sore|tendin|strain|sprain|knee|shoulder|back|hip|ankle|wrist|elbow|equipment|dumbbell|barbell|kettlebell|machine|rack|gym|home|treadmill|don'?t have|no access|only have|prefer|hate|dislike|avoid|can'?t|cannot|unable|allerg|vegan|schedule|mornings?|evenings?|nights?|work|travel|busy|recover)/i;
+
+// First-person declaratives often carry durable preferences/constraints without
+// a hint keyword ("I only train twice a week", "my coach said no deadlifts").
+export const SELF_STATEMENT =
+  /\b(i|my)\b.{0,40}\b(only|usually|always|never|tend to|can'?t|cannot|won'?t|prefer|like|love|hate|need|have to|train|do|avoid|stick to|coach|physio|doctor)\b/i;
+
+// Decide whether to run the (background, LLM-backed) knowledge maintainer: on a
+// keyword hint, on a first-person declarative, or periodically as a safety net
+// so an oddly-phrased durable fact still lands within a few turns.
+export function shouldUpdateKnowledge(lastUser: string, userTurns: number): boolean {
+  return KNOWLEDGE_HINTS.test(lastUser) || SELF_STATEMENT.test(lastUser) ||
+    (userTurns > 0 && userTurns % 4 === 0);
+}
+
 // --- fixtures ----------------------------------------------------------------
 
 export interface CoachFixture {

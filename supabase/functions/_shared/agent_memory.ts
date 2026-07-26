@@ -131,6 +131,16 @@ export async function loadAgentMemory(
 // who the coach is), then the hard rules (user), then the rolling memory. Empty
 // docs are omitted. Preserves the wording of the old knowledge/memory blocks so
 // generation behavior stays consistent, and adds the soul layer.
+//
+// IMPORTANT — free text here has NO date-level authority over the day-by-day
+// schedule. This block is prose, competing with (and losing to) plan-week's
+// concrete, JSON-schema-anchored per-date day list — that's exactly the bug a
+// stated "stopping training until X" hit (see training_paused_until). If a new
+// fact needs to override specific dates, it needs a structured field feeding
+// week_planning.ts's computeDayList (or the equivalent in generate-workout),
+// not just a line in coach_knowledge. Use set_training_pause/
+// training_paused_until in coach_tools.ts + plan-week/index.ts as the
+// reference example to copy.
 export function memoryDocsBlock(mem: AgentMemory): string {
   const parts: string[] = [];
   if (mem.soul.trim()) {
@@ -160,20 +170,24 @@ export function memoryDocsBlock(mem: AgentMemory): string {
 // ---------------------------------------------------------------------------
 
 // user.md — durable constraints/preferences distilled from the coaching chat.
+// Reads coach_knowledge fresh (not a caller-supplied snapshot) so this always
+// consolidates on top of whatever the `remember` tool most recently wrote
+// during the SAME turn, instead of racing it with a stale request-start read.
 export async function updateUserDoc(
   admin: SupabaseClient,
   userId: string,
-  existing: string,
   recent: ChatMessage[],
   bundle: LlmBundle,
 ): Promise<void> {
+  const { data: p } = await admin.from("user_profiles").select("coach_knowledge").eq("id", userId).single();
+  const existing = ((p?.coach_knowledge ?? "") as string).trim();
   const transcript = recent
     .slice(-6)
     .map((m) => `${m.role === "user" ? "Athlete" : "Coach"}: ${m.content}`)
     .join("\n");
   const prompt =
     `You maintain an athlete's durable COACHING KNOWLEDGE, a short bullet list of facts a coach must always honor: injuries/limitations, equipment they have or lack, scheduling constraints, exercise preferences and dislikes, dietary/other constraints.\n\n` +
-    `EXISTING KNOWLEDGE:\n${existing.trim() || "(empty)"}\n\n` +
+    `EXISTING KNOWLEDGE:\n${existing || "(empty)"}\n\n` +
     `RECENT CONVERSATION:\n${transcript}\n\n` +
     `Return the UPDATED knowledge as a concise markdown bullet list (max ~12 bullets). Merge new durable facts, drop anything the athlete has retracted, keep it terse. If nothing durable changed, return the existing list unchanged. Output ONLY the bullet list, no preamble.`;
   try {
@@ -195,7 +209,7 @@ export async function updateUserDoc(
       log.debug("user_doc_skip", { reason: "no-content" });
     } else if (next.length > 2000) {
       log.warn("user_doc_skip", { reason: "too-long", len: next.length });
-    } else if (next === existing.trim()) {
+    } else if (next === existing) {
       log.debug("user_doc_skip", { reason: "unchanged" });
     } else {
       await admin.from("user_profiles").update({ coach_knowledge: next }).eq("id", userId);

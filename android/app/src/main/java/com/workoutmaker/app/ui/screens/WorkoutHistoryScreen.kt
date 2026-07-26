@@ -270,7 +270,10 @@ class StrengthAnalysisViewModel @javax.inject.Inject constructor(
         error.value = null
         runCatching { repo.analyzeStrength(date, force) }
             .onSuccess { results.value = results.value + (date to it) }
-            .onFailure { error.value = it.message }
+            .onFailure {
+                com.workoutmaker.app.util.AppLog.w("analyze", "analyze-strength failed date=$date", it)
+                error.value = com.workoutmaker.app.util.friendlyFnError(it)
+            }
         busy.value = null
     }
 

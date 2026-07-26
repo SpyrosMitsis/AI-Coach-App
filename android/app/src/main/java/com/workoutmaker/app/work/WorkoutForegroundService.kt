@@ -61,8 +61,12 @@ class WorkoutForegroundService : Service() {
     }
 
     private fun startForegroundCompat(n: Notification) {
+        // specialUse, not health: this service never reads a health sensor, it
+        // only shows a chronometer notification — health type requires a Health
+        // Connect/activity-recognition runtime permission to already be granted
+        // just to start, which crashed on fresh installs with none granted yet.
         if (Build.VERSION.SDK_INT >= 34) {
-            startForeground(NOTIF_ID, n, ServiceInfo.FOREGROUND_SERVICE_TYPE_HEALTH)
+            startForeground(NOTIF_ID, n, ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE)
         } else {
             startForeground(NOTIF_ID, n)
         }

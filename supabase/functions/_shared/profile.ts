@@ -3,6 +3,8 @@
 // legacy fields the app also writes (deriveLegacyFields on the client). Pure and
 // dependency-free so it is trivial to unit test.
 
+import type { InjuryEntry } from "./types.ts";
+
 export type Onboarding = Record<string, unknown>;
 
 export interface DayAvail {
@@ -28,6 +30,43 @@ function dayAvail(o: Onboarding): DayAvail[] {
     .filter((d): d is DayAvail =>
       !!d && typeof (d as DayAvail).day === "string" && typeof (d as DayAvail).max_minutes === "number")
     .map((d) => ({ day: d.day, max_minutes: d.max_minutes }));
+}
+
+const SEVERITY_RE = /\((mild|moderate|serious)\)/i;
+
+function isInjuryEntry(v: unknown): v is InjuryEntry {
+  return !!v && typeof v === "object" && typeof (v as InjuryEntry).area === "string";
+}
+
+// Structured injuries, falling back to parsing the legacy free-text
+// injury_history string (the "Knee (moderate), lower back" format the Android
+// InjuryEditor used to write) when `injuries` isn't set. This is the sole seam
+// for reading injury data server-side — every other reader should call this,
+// never `o.injury_history`/`o.injuries` directly, so old and new profiles
+// behave identically to every caller.
+export function injuriesOf(o: Onboarding): InjuryEntry[] {
+  const raw = o.injuries;
+  if (Array.isArray(raw) && raw.every(isInjuryEntry)) return raw as InjuryEntry[];
+  const legacy = o.injury_history;
+  if (typeof legacy !== "string" || !legacy.trim()) return [];
+  return legacy
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean)
+    .map((part) => {
+      const m = SEVERITY_RE.exec(part);
+      const severity = (m?.[1]?.toLowerCase() ?? "") as InjuryEntry["severity"];
+      const area = part.replace(SEVERITY_RE, "").trim();
+      return { area, severity };
+    });
+}
+
+// Prose rendering of injuriesOf() for prompt/tool contexts that need a
+// human-readable line rather than the structured array.
+export function injuriesText(o: Onboarding): string {
+  return injuriesOf(o)
+    .map((i) => (i.severity ? `${i.area} (${i.severity})` : i.area))
+    .join("; ");
 }
 
 const SPORT_LABEL: Record<string, string> = {
@@ -101,14 +140,32 @@ export function profileFactsBlock(o: Onboarding, displayName?: string | null): s
   if (typeof o.sex === "string" && o.sex.trim()) facts.push(`Sex: ${o.sex.trim()}`);
   if (typeof o.height_cm === "number" && o.height_cm > 0) facts.push(`Height: ${o.height_cm} cm`);
   if (typeof o.weight_kg === "number" && o.weight_kg > 0) facts.push(`Weight: ${o.weight_kg} kg`);
+  if (typeof o.body_fat_pct === "number" && o.body_fat_pct >= 3 && o.body_fat_pct <= 60) {
+    facts.push(`Body fat: ~${o.body_fat_pct}%`);
+  }
   const goals = goalsText(o);
   if (goals && goals !== "General fitness") facts.push(`Goals: ${goals}`);
-  if (typeof o.injury_history === "string" && o.injury_history.trim()) {
-    facts.push(`Injuries to train around: ${o.injury_history.trim()}`);
+  const injuries = injuriesText(o);
+  if (injuries) {
+    facts.push(`Injuries to train around: ${injuries}`);
   }
   if (!facts.length) return "";
   return "\n\nATHLETE PROFILE (durable facts, always true; address them by name):\n" +
     facts.map((f) => `- ${f}`).join("\n");
+}
+
+// Body composition for the strength prompt (prompt.ts bodyLine). Bounded so a
+// typo'd weight never anchors every prescribed load. Null when nothing usable.
+export function bodyComposition(
+  o: Onboarding,
+): { weightKg?: number; heightCm?: number; bodyFatPct?: number } | null {
+  const out: { weightKg?: number; heightCm?: number; bodyFatPct?: number } = {};
+  if (typeof o.weight_kg === "number" && o.weight_kg >= 30 && o.weight_kg <= 250) out.weightKg = o.weight_kg;
+  if (typeof o.height_cm === "number" && o.height_cm >= 120 && o.height_cm <= 230) out.heightCm = o.height_cm;
+  if (typeof o.body_fat_pct === "number" && o.body_fat_pct >= 3 && o.body_fat_pct <= 60) {
+    out.bodyFatPct = o.body_fat_pct;
+  }
+  return Object.keys(out).length ? out : null;
 }
 
 // Modality constraint for the weekly planner: only schedule what the athlete

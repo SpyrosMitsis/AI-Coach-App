@@ -52,6 +52,7 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.workoutmaker.app.data.AppPreferences
 import com.workoutmaker.app.data.AppSettings
+import com.workoutmaker.app.data.InjuryEntry
 import com.workoutmaker.app.data.LlmProvider
 import com.workoutmaker.app.data.Race
 import com.workoutmaker.app.data.TestKeyRequest
@@ -72,7 +73,7 @@ import javax.inject.Inject
 // The onboarding steps, in order. RACE and EQUIPMENT are conditional; the rest
 // always show. Conditional steps come AFTER the step that decides them (SPORTS),
 // so the visible-step index of the current screen never shifts under the user.
-internal enum class ObStep { WELCOME, APPEARANCE, PERSONAL, SPORTS, ACTIVITY, PERFORMANCE, RACE, AVAILABILITY, EQUIPMENT, INJURIES, COACH, CONNECT, REVIEW }
+internal enum class ObStep { WELCOME, APPEARANCE, PERSONAL, SPORTS, ACTIVITY, PERFORMANCE, RACE, AVAILABILITY, EFFORT, EQUIPMENT, INJURIES, COACH, CONNECT, PERMISSIONS, REVIEW }
 
 // A step, plus (for ACTIVITY) which sport it asks about.
 internal data class StepSpec(val kind: ObStep, val sport: String? = null)
@@ -90,9 +91,16 @@ internal fun visibleSteps(p: TrainingProfile): List<StepSpec> = buildList {
     if (p.sports.isNotEmpty()) add(StepSpec(ObStep.PERFORMANCE))
     if (shouldAskGoalRace(p)) add(StepSpec(ObStep.RACE))
     add(StepSpec(ObStep.AVAILABILITY))
+    // Effort + progression get their own page: they price themselves from the
+    // week just chosen, and burying them under the day picker hid the choice.
+    add(StepSpec(ObStep.EFFORT))
     if (sportNeedsEquipment(p.sports)) add(StepSpec(ObStep.EQUIPMENT))
     add(StepSpec(ObStep.INJURIES))
     add(StepSpec(ObStep.COACH))
+    // Permissions last, right before Review: by here the user has seen what the
+    // readiness score, the planner and the rest timer actually do, so "why does
+    // it want my calendar" answers itself instead of being a cold ask up front.
+    add(StepSpec(ObStep.PERMISSIONS))
     add(StepSpec(ObStep.REVIEW))
 }
 
@@ -105,10 +113,12 @@ private fun stepTitle(spec: StepSpec): String = when (spec.kind) {
     ObStep.PERFORMANCE -> "Your numbers"
     ObStep.RACE -> "Your goal race"
     ObStep.AVAILABILITY -> "Your week"
+    ObStep.EFFORT -> "How hard to go"
     ObStep.EQUIPMENT -> "Your equipment"
     ObStep.INJURIES -> "Injuries"
     ObStep.COACH -> "Your AI coach"
     ObStep.CONNECT -> "Connect your watch"
+    ObStep.PERMISSIONS -> "Permissions"
     ObStep.REVIEW -> "Review & finish"
 }
 
@@ -117,6 +127,8 @@ class OnboardingViewModel @Inject constructor(
     private val repo: WorkoutRepository,
     private val prefs: AppPreferences,
     private val billing: com.workoutmaker.app.billing.BillingGateway,
+    private val health: com.workoutmaker.app.health.HealthConnectManager,
+    private val deviceCalendar: com.workoutmaker.app.calendar.DeviceCalendarManager,
 ) : ViewModel() {
     val complete = MutableStateFlow<Boolean?>(null)
     val step = MutableStateFlow(0)
@@ -131,6 +143,16 @@ class OnboardingViewModel @Inject constructor(
     val appSettings = prefs.settings.stateIn(viewModelScope, SharingStarted.Eagerly, AppSettings())
     fun setThemeMode(m: ThemeMode) = viewModelScope.launch { prefs.setThemeMode(m) }
     fun setThemePalette(p: ThemePalette) = viewModelScope.launch { prefs.setThemePalette(p) }
+
+    // Permissions step: the same managers Settings uses, so "granted" here and
+    // "granted" there can never disagree.
+    val healthAvailable: Boolean get() = health.isAvailable
+    val healthPermissions: Set<String> get() = health.permissions
+    suspend fun grantedHealthPerms(): Set<String> = health.grantedPermissions()
+    fun calendarReadGranted() = deviceCalendar.hasReadPermission()
+    fun calendarWriteGranted() = deviceCalendar.hasWritePermission()
+    fun setCalendarRead(on: Boolean) = viewModelScope.launch { prefs.setCalendarRead(on) }
+    fun setCalendarWrite(on: Boolean) = viewModelScope.launch { prefs.setCalendarWrite(on) }
 
     // Zero-setup Pro path: shown only when this build can bill AND this server
     // hosts an LLM key. The one summary fetch also warms the Room cache.
@@ -382,10 +404,12 @@ fun OnboardingScreen(vm: OnboardingViewModel = hiltViewModel()) {
                         ObStep.PERFORMANCE -> StepPerformance(profile, vm)
                         ObStep.RACE -> StepRace(profile, vm)
                         ObStep.AVAILABILITY -> StepAvailability(profile, vm)
+                        ObStep.EFFORT -> StepEffort(profile, vm)
                         ObStep.EQUIPMENT -> StepEquipment(profile, vm)
                         ObStep.INJURIES -> StepInjuries(profile, vm)
                         ObStep.COACH -> StepKey(vm)
                         ObStep.CONNECT -> StepConnect(vm)
+                        ObStep.PERMISSIONS -> StepPermissions(vm)
                         ObStep.REVIEW -> StepReview(profile, vm)
                     }
                     Spacer16()
@@ -642,16 +666,29 @@ private fun StepRace(profile: TrainingProfile, vm: OnboardingViewModel) {
     }
 }
 
-@OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun StepAvailability(profile: TrainingProfile, vm: OnboardingViewModel) {
     StepColumn {
         WeeklyAvailabilityEditor(profile.day_availability) { list -> vm.update { it.copy(day_availability = list) } }
-        // Weekly load target as effort chips, priced from the athlete's OWN
-        // minutes (Periodization.availabilityCeiling mirrors the server's
-        // clamp) — so the number is always achievable and never TSS jargon.
+    }
+}
+
+// Weekly effort + progression, on their own page: the chips price themselves
+// from the week chosen on the previous step (Periodization.availabilityCeiling
+// mirrors the server's clamp), so the numbers are always achievable and never
+// TSS jargon, and the chart shows what the chosen effort does over the weeks.
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun StepEffort(profile: TrainingProfile, vm: OnboardingViewModel) {
+    StepColumn {
         val minutes = profile.day_availability.sumOf { it.max_minutes }
-        com.workoutmaker.app.data.Periodization.availabilityCeiling(minutes)?.let { ceiling ->
+        val ceiling = com.workoutmaker.app.data.Periodization.availabilityCeiling(minutes)
+        if (ceiling == null) {
+            Text(
+                "Set your training days on the previous step first, this page sizes the effort options to the time you actually have.",
+                style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        } else {
             Text(
                 "How hard should your weeks be?",
                 style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.SemiBold,
@@ -703,59 +740,104 @@ private fun StepInjuries(profile: TrainingProfile, vm: OnboardingViewModel) {
                 "The coach avoids loading these and picks safer alternatives.",
             style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
-        val current = profile.injury_history ?: ""
-        FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-            INJURY_AREAS.forEach { area ->
-                val severity = injurySeverity(current, area)
-                FilterChip(
-                    selected = severity != null,
-                    onClick = { vm.update { it.copy(injury_history = toggleInjury(it.injury_history, area)) } },
-                    label = { Text(if (severity != null && severity.isNotEmpty()) "$area · $severity" else area) },
-                )
+        InjuryEditor(profile.injuries) { v -> vm.update { it.copy(injuries = v) } }
+    }
+}
+
+// Shared injuries editor (onboarding + Settings → Injuries & constraints):
+// area chips add/remove, explicit per-area severity chips, free text for the
+// rest. Edits profile.injuries directly (structured — see InjuryEntry in
+// Models.kt), so the backend's safety engine can match on `area` instead of
+// regexing a flattened string, and can use `severity` to gate strip-vs-flag.
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+internal fun InjuryEditor(injuries: List<InjuryEntry>, onChange: (List<InjuryEntry>) -> Unit) {
+    FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+        INJURY_AREAS.forEach { area ->
+            FilterChip(
+                selected = injurySeverity(injuries, area) != null,
+                onClick = { onChange(toggleInjury(injuries, area)) },
+                label = { Text(area) },
+            )
+        }
+    }
+    // Severity is its own explicit control per selected area — the old
+    // tap-again-to-cycle pattern was invisible and nobody used it.
+    val selected = INJURY_AREAS.filter { injurySeverity(injuries, it) != null }
+    if (selected.isNotEmpty()) {
+        Text(
+            "How serious is it?",
+            style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.SemiBold,
+        )
+        selected.forEach { area ->
+            val severity = injurySeverity(injuries, area)
+            Text(area, style = MaterialTheme.typography.bodyMedium)
+            FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                INJURY_SEVERITIES.filter { it.isNotEmpty() }.forEach { s ->
+                    FilterChip(
+                        selected = severity == s,
+                        onClick = { onChange(setInjurySeverity(injuries, area, if (severity == s) "" else s)) },
+                        label = { Text(s.replaceFirstChar { c -> c.uppercase() }) },
+                    )
+                }
             }
         }
         Text(
-            "Tap an area again to set how serious it is; a fourth tap removes it.",
+            "The more serious it is, the more strictly the coach protects it.",
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
-        OutlinedTextField(
-            profile.injury_history ?: "",
-            { v -> vm.update { it.copy(injury_history = v.ifBlank { null }) } },
-            label = { Text("Injuries / notes (optional)") },
-            modifier = Modifier.fillMaxWidth(),
-        )
     }
+    OutlinedTextField(
+        injuryNote(injuries),
+        { v -> onChange(withNote(injuries, v)) },
+        label = { Text("Injuries / notes (optional)") },
+        modifier = Modifier.fillMaxWidth(),
+    )
 }
 
-// Structured-ish injuries in the same free-text field the backend already
-// reads: each tap cycles area → "(mild)" → "(moderate)" → "(serious)" → gone.
-// The parenthetical enriches the coach prompts (profileFactsBlock renders it)
-// without breaking the safety engine's keyword matching on the area name.
 private val INJURY_SEVERITIES = listOf("", "mild", "moderate", "serious")
 
+// Freeform notes (the text field below the chips) live in one entry with a
+// blank area — not a body-area chip — so they still ride along to the backend
+// (activeSafetyRules matches rule patterns against `note` too) without forcing
+// arbitrary text into the structured `area` field.
+private const val NOTE_AREA = ""
+
 /** Current severity for [area]: null = not present, "" = present unqualified. */
-internal fun injurySeverity(current: String, area: String): String? {
-    val part = current.split(",").map { it.trim() }
-        .firstOrNull { it.startsWith(area, ignoreCase = true) } ?: return null
-    return Regex("""\((mild|moderate|serious)\)""", RegexOption.IGNORE_CASE)
-        .find(part)?.groupValues?.get(1)?.lowercase() ?: ""
+internal fun injurySeverity(current: List<InjuryEntry>, area: String): String? =
+    current.firstOrNull { it.area.equals(area, ignoreCase = true) }?.severity
+
+/** Add [area] (unqualified) when absent, remove it entirely when present. */
+internal fun toggleInjury(current: List<InjuryEntry>, area: String): List<InjuryEntry> =
+    if (injurySeverity(current, area) != null) current.filterNot { it.area.equals(area, ignoreCase = true) }
+    else current + InjuryEntry(area = area)
+
+/** Set [area]'s severity ("" clears the qualifier, keeping the area listed). */
+internal fun setInjurySeverity(current: List<InjuryEntry>, area: String, severity: String): List<InjuryEntry> =
+    if (current.any { it.area.equals(area, ignoreCase = true) }) {
+        current.map { if (it.area.equals(area, ignoreCase = true)) it.copy(severity = severity) else it }
+    } else {
+        current + InjuryEntry(area = area, severity = severity)
+    }
+
+internal fun injuryNote(current: List<InjuryEntry>): String =
+    current.firstOrNull { it.area == NOTE_AREA }?.note ?: ""
+
+internal fun withNote(current: List<InjuryEntry>, note: String): List<InjuryEntry> {
+    val rest = current.filterNot { it.area == NOTE_AREA }
+    return if (note.isBlank()) rest else rest + InjuryEntry(area = NOTE_AREA, note = note)
 }
 
-internal fun toggleInjury(current: String?, area: String): String? {
-    val parts = (current ?: "").split(",").map { it.trim() }.filter { it.isNotEmpty() }
-    val severity = injurySeverity(current ?: "", area)
-    val rest = parts.filterNot { it.startsWith(area, ignoreCase = true) }
-    val next = when (severity) {
-        null -> rest + area                              // add, unqualified
-        "serious" -> rest                                // cycle past the end: remove
-        else -> {
-            val idx = INJURY_SEVERITIES.indexOf(severity)
-            rest + "$area (${INJURY_SEVERITIES[idx + 1]})"
+/** Human-readable summary for review/settings screens, e.g. "Knee (moderate); old ankle sprain". */
+internal fun injuriesSummary(current: List<InjuryEntry>): String =
+    current.joinToString("; ") { e ->
+        when {
+            e.area == NOTE_AREA -> e.note.orEmpty()
+            e.severity.isNotEmpty() -> "${e.area} (${e.severity})"
+            else -> e.area
         }
     }
-    return next.joinToString(", ").ifBlank { null }
-}
 
 @Composable
 private fun StepReview(profile: TrainingProfile, vm: OnboardingViewModel) {
@@ -793,7 +875,7 @@ private fun StepReview(profile: TrainingProfile, vm: OnboardingViewModel) {
         if (profile.equipment_list.isNotEmpty()) {
             ReviewLine("Equipment", profile.equipment_list.joinToString(", "))
         }
-        profile.injury_history?.takeIf { it.isNotBlank() }?.let { ReviewLine("Injuries", it) }
+        injuriesSummary(profile.injuries).takeIf { it.isNotBlank() }?.let { ReviewLine("Injuries", it) }
         profile.goal_date?.let { ReviewLine("Goal race", it) }
 
         // The payoff: build the actual first week from these answers, right

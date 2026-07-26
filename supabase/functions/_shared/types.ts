@@ -15,6 +15,15 @@ export type LlmProvider =
   // URL lives on the llm_api_keys row, not in the hardcoded provider registry.
   | "custom";
 
+// Mirrors shared/types.ts's InjuryEntry. Legacy profiles only have the
+// free-text injury_history string; injuriesOf() (profile.ts) is the single
+// place that reconciles the two shapes for every server-side reader.
+export interface InjuryEntry {
+  area: string;
+  severity: "mild" | "moderate" | "serious" | "";
+  note?: string;
+}
+
 export interface WorkoutExercise {
   name: string;
   sets: number;

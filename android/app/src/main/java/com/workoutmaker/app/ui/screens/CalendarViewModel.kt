@@ -242,20 +242,6 @@ class CalendarViewModel @Inject constructor(
             .onFailure { banner.value = "Failed to log: ${it.message}" }
     }
 
-    // P2: plan a full periodized block to the race.
-    fun planBlock() = viewModelScope.launch {
-        planning.value = true
-        banner.value = "Planning your full block to race… this calls the AI once per week."
-        runCatching { repo.planBlock(com.workoutmaker.app.data.PlanBlockRequest()) }
-            .onSuccess { r ->
-                banner.value = r.error
-                    ?: "✓ Planned ${r.weeks_planned}/${r.weeks} weeks · pushed the next ${r.pushed_weeks} to your watch"
-                load()
-            }
-            .onFailure { banner.value = "Failed to plan block: ${it.message}" }
-        planning.value = false
-    }
-
     // #3: lock/unlock a session so the weekly re-planner leaves it fixed.
     fun toggleLock(w: PlannedWorkout) = viewModelScope.launch {
         runCatching { repo.setLocked(w.id, !w.locked) }

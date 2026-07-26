@@ -269,6 +269,10 @@ interface GenArgs {
   // from the llmAccess() bundle: it selects the hosted (spend-bounded) ceiling
   // and is what quota.ts's cost model assumes.
   hosted?: boolean;
+  // Forces schema-shaped output via native tool-calling, currently honored only
+  // by the anthropic() adapter (which has no json_object-style mode otherwise).
+  // OpenAI-compatible/Gemini already enforce JSON via `jsonMode` and ignore this.
+  jsonSchema?: { name: string; description?: string; schema: Record<string, unknown> };
 }
 
 // Resolve the effective temperature for a call (deterministic → 0, else 0.6).
@@ -369,6 +373,17 @@ async function anthropic(args: GenArgs): Promise<LlmResult> {
     messages: turns(args),
   };
   if (anthropicAcceptsTemperature(model)) body.temperature = tempOf(args);
+  // No json_object-style mode exists on this API, so schema-shaped output is
+  // forced via a single tool the model must call (same mechanism
+  // llm_native_tools.ts uses for agentic tool calls).
+  if (args.jsonSchema) {
+    body.tools = [{
+      name: args.jsonSchema.name,
+      description: args.jsonSchema.description ?? "Emit the result.",
+      input_schema: args.jsonSchema.schema,
+    }];
+    body.tool_choice = { type: "tool", name: args.jsonSchema.name };
+  }
   const res = await fetch("https://api.anthropic.com/v1/messages", {
     method: "POST",
     headers: {
@@ -383,9 +398,11 @@ async function anthropic(args: GenArgs): Promise<LlmResult> {
     throw new Error(`anthropic HTTP ${res.status}: ${await res.text()}`);
   }
   const data = await res.json();
-  const text: string =
-    (data.content ?? []).filter((b: { type: string }) => b.type === "text")
-      .map((b: { text: string }) => b.text).join("") ?? "";
+  const content = (data.content ?? []) as { type: string; text?: string; input?: unknown }[];
+  const toolUse = args.jsonSchema && content.find((b) => b.type === "tool_use");
+  const text: string = toolUse
+    ? JSON.stringify(toolUse.input)
+    : content.filter((b) => b.type === "text").map((b) => b.text ?? "").join("");
   return {
     text,
     promptTokens: data.usage?.input_tokens ?? estTokens(promptText(args)),

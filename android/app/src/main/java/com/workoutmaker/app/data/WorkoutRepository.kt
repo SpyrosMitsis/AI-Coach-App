@@ -18,6 +18,7 @@ import io.ktor.http.ContentType
 import io.ktor.http.contentType
 import io.ktor.utils.io.ByteReadChannel
 import io.ktor.utils.io.readUTF8Line
+import kotlinx.coroutines.flow.first
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
@@ -38,6 +39,7 @@ class WorkoutRepository @Inject constructor(
     private val prefs: AppPreferences,
     private val backend: BackendConfig,
     private val health: com.workoutmaker.app.health.HealthConnectManager,
+    private val deviceCalendar: com.workoutmaker.app.calendar.DeviceCalendarManager,
     // The DAO, not StrengthRepository (which depends on this class).
     private val strengthDao: com.workoutmaker.app.strength.StrengthDao,
     @dagger.hilt.android.qualifiers.ApplicationContext private val appContext: android.content.Context,
@@ -213,6 +215,12 @@ class WorkoutRepository @Inject constructor(
     // The coach's proactive daily note. Generated server-side at most once per
     // calendar day; cached in Room keyed by date so re-opening Home is free and
     // offline. Returns null when disabled, not yet generated offline, or empty.
+    // Whether today's brief is already cached, i.e. whether requesting it would
+    // trigger the day's one LLM generation. Lets Home sync fresh recovery data
+    // BEFORE the generation, and skip that work on every later open.
+    suspend fun hasCachedBrief(date: String = java.time.LocalDate.now().toString()): Boolean =
+        runCatching { cache.brief(date) != null }.getOrDefault(false)
+
     suspend fun coachBrief(date: String = java.time.LocalDate.now().toString()): String? {
         runCatching { cache.brief(date) }.getOrNull()?.let { return it.text }
         val body = kotlinx.serialization.json.buildJsonObject {
@@ -255,8 +263,50 @@ class WorkoutRepository @Inject constructor(
 
     suspend fun generateWorkout(req: GenerateRequest): String =
         com.workoutmaker.app.util.AppLog.time("gen", "generate-workout date=${req.date} type=${req.type}") {
-            supabase.functions.invoke("generate-workout") { setBody(json.encodeToString(GenerateRequest.serializer(), req)) }.body()
+            val enriched = req.copy(calendar_busy = req.calendar_busy ?: calendarBusy(req.date, days = 1))
+            val out: String = supabase.functions.invoke("generate-workout") {
+                setBody(json.encodeToString(GenerateRequest.serializer(), enriched))
+            }.body()
+            if (req.push) syncPlanToDeviceCalendar()
+            out
         }
+
+    // ---- Device calendar (opt-in, Settings → App) ---------------------------
+
+    // Busy windows for [days] days from [fromDate] (default today), or null when
+    // the toggle is off / permission missing / nothing busy. Times only.
+    private suspend fun calendarBusy(fromDate: String?, days: Int): List<BusyDay>? {
+        val enabled = runCatching { prefs.settings.first().calendarRead }.getOrDefault(false)
+        if (!enabled || !deviceCalendar.hasReadPermission()) return null
+        val from = runCatching { java.time.LocalDate.parse(fromDate) }.getOrNull() ?: java.time.LocalDate.now()
+        return runCatching { deviceCalendar.busyDays(from, days) }.getOrNull()?.takeIf { it.isNotEmpty() }
+    }
+
+    // Mirror the next two weeks of the plan into the device calendar as all-day
+    // events. Called after anything that changes planned_workouts; cheap no-op
+    // when the toggle is off. Failures never break the caller.
+    suspend fun syncPlanToDeviceCalendar() {
+        runCatching {
+            val enabled = prefs.settings.first().calendarWrite
+            if (!enabled || !deviceCalendar.hasWritePermission()) return
+            val from = java.time.LocalDate.now()
+            val until = from.plusDays(14)
+            val entries = plannedWorkouts(from.toString())
+                .filter { it.type != "rest" && !it.skipped }
+                .mapNotNull { p ->
+                    val date = runCatching { java.time.LocalDate.parse(p.date) }.getOrNull()
+                        ?: return@mapNotNull null
+                    if (date >= until) return@mapNotNull null
+                    val w = p.workout_json
+                    com.workoutmaker.app.calendar.DeviceCalendarManager.PlanEntry(
+                        date = p.date,
+                        title = com.workoutmaker.app.calendar.calendarEventTitle(w, p.type),
+                        detail = com.workoutmaker.app.calendar.calendarEventDetail(w, p.type),
+                    )
+                }
+            deviceCalendar.syncPlan(entries, from, 14)
+        }.logFailure("syncPlanToDeviceCalendar")
+    }
 
     suspend fun syncIntervals(): String =
         supabase.functions.invoke("sync-intervals").body()
@@ -288,8 +338,11 @@ class WorkoutRepository @Inject constructor(
         supabase.functions.invoke("push-workout") { setBody(workoutIdBody(workoutId)) }.body()
 
     // Delete a planned workout (and its Intervals.icu/watch event) server-side.
-    suspend fun deletePlannedWorkout(workoutId: String): String =
-        supabase.functions.invoke("delete-workout") { setBody(workoutIdBody(workoutId)) }.body()
+    suspend fun deletePlannedWorkout(workoutId: String): String {
+        val out: String = supabase.functions.invoke("delete-workout") { setBody(workoutIdBody(workoutId)) }.body()
+        syncPlanToDeviceCalendar()
+        return out
+    }
 
     // Garmin-style execution analysis (score, pace-vs-target series, AI
     // feedback). Cached server-side; force = true recomputes.
@@ -396,6 +449,26 @@ class WorkoutRepository @Inject constructor(
             order("date", Order.ASCENDING)
         }.decodeList()
 
+    // Body-composition history for the Body trends screen, oldest→newest.
+    // Explicit columns: pre-migration DBs error on them → empty list, and the
+    // screen shows its empty state instead of crashing.
+    suspend fun bodyHistory(fromDate: String): List<BodyHistoryPoint> = runCatching {
+        supabase.postgrest.from("wellness_checkins").select(
+            io.github.jan.supabase.postgrest.query.Columns.list("date", "weight_kg", "body_fat_pct", "lean_mass_kg"),
+        ) {
+            filter { gte("date", fromDate) }
+            order("date", Order.ASCENDING)
+        }.decodeList<BodyHistoryPoint>().filter {
+            it.weight_kg != null || it.body_fat_pct != null || it.lean_mass_kg != null
+        }
+    }.logFailure("bodyHistory").getOrDefault(emptyList())
+
+    // Dated body metrics (scale sync or manual quick-log) onto wellness rows.
+    suspend fun upsertBodyMetrics(rows: List<BodyMetricUpsert>) {
+        if (rows.isEmpty()) return
+        supabase.postgrest.from("wellness_checkins").upsert(rows, onConflict = "user_id,date")
+    }
+
     // Today's subjective check-in (energy/soreness/sleep quality), if answered.
     // The row may exist with only Health Connect metrics — energy == null means
     // the morning questions haven't been answered yet.
@@ -442,9 +515,44 @@ class WorkoutRepository @Inject constructor(
         if (!health.isAvailable) return HealthSyncResult()
         val week = health.readWeek(7)
         if (week.isNotEmpty()) submitHealthSnapshots(week)
+        runCatching { syncBodyComp() }.logFailure("syncBodyComp")
         val intervalsConnected = runCatching { intervalsConnection() != null }.getOrDefault(true)
         if (intervalsConnected) return HealthSyncResult(week)
         return HealthSyncResult(week, ingestHcExercises())
+    }
+
+    // Smart-scale weight/body-fat from Health Connect → the training profile,
+    // so strength generation always sees current body composition. Only patches
+    // an already-set-up profile (never resurrects a half-finished onboarding),
+    // and only when a value actually changed.
+    private suspend fun syncBodyComp() {
+        val bc = health.readBodyComp()
+        if (bc.weightKg == null && bc.bodyFatPct == null) return
+        val p = loadProfile() ?: return
+        if (p == TrainingProfile()) return
+        val newWeight = bc.weightKg?.let { Math.round(it).toInt() } ?: p.weight_kg
+        val newBodyFat = bc.bodyFatPct?.let { Math.round(it * 10) / 10.0 } ?: p.body_fat_pct
+        if (newWeight != p.weight_kg || newBodyFat != p.body_fat_pct) {
+            com.workoutmaker.app.util.AppLog.i("health", "body comp from HC: ${newWeight}kg, bf=$newBodyFat%")
+            saveProfile(p.copy(weight_kg = newWeight, body_fat_pct = newBodyFat))
+        }
+        // Dated history behind the Body trends screen. Own runCatching: on a
+        // pre-migration DB the upsert fails and must never undo the profile
+        // patch above; it starts working the moment the columns exist.
+        runCatching {
+            val rows = health.readBodyHistory().map {
+                BodyMetricUpsert(
+                    date = it.date,
+                    weight_kg = it.weightKg,
+                    body_fat_pct = it.bodyFatPct,
+                    lean_mass_kg = it.leanMassKg,
+                )
+            }
+            upsertBodyMetrics(rows)
+            if (rows.isNotEmpty()) {
+                com.workoutmaker.app.util.AppLog.d("health", "body history: ${rows.size} days upserted")
+            }
+        }.logFailure("bodyHistoryUpsert")
     }
 
     // Health Connect exercise sessions → completed_activities rows ("hc:<uid>").
@@ -777,20 +885,18 @@ class WorkoutRepository @Inject constructor(
             order("created_at", Order.DESCENDING)
         }.decodeList()
 
-    suspend fun planWeek(req: PlanWeekRequest): PlanWeekResult =
-        json.decodeFromString(
+    suspend fun planWeek(req: PlanWeekRequest): PlanWeekResult {
+        // Opt-in: hand the planner the week's busy windows so it schedules
+        // around life (long/hard sessions on free days). Times only, no titles.
+        val enriched = req.copy(calendar_busy = req.calendar_busy ?: calendarBusy(req.start_date, days = 7))
+        val result: PlanWeekResult = json.decodeFromString(
             supabase.functions.invoke("plan-week") {
-                setBody(json.encodeToString(PlanWeekRequest.serializer(), req))
+                setBody(json.encodeToString(PlanWeekRequest.serializer(), enriched))
             }.body(),
         )
-
-    // P2: generate a full periodized block (multi-week) toward the goal race.
-    suspend fun planBlock(req: PlanBlockRequest): PlanBlockResult =
-        json.decodeFromString(
-            supabase.functions.invoke("plan-block") {
-                setBody(json.encodeToString(PlanBlockRequest.serializer(), req))
-            }.body(),
-        )
+        syncPlanToDeviceCalendar()
+        return result
+    }
 
     // P7: move a planned workout to another date — server-side, so the
     // Intervals.icu/watch event moves with it.
@@ -803,6 +909,7 @@ class WorkoutRepository @Inject constructor(
                 }.toString(),
             )
         }
+        syncPlanToDeviceCalendar()
     }
 
     // Lock/unlock a planned session so the weekly re-planner leaves it fixed.
@@ -814,13 +921,16 @@ class WorkoutRepository @Inject constructor(
     // Ask the AI for a session on a specific date from a free-text request
     // (e.g. "social 10k run with friends, keep it easy"), locked by default so
     // the weekly re-planner plans around it instead of replacing it.
-    suspend fun requestSession(date: String, request: String, type: String, lock: Boolean = true): GenerateResult =
-        json.decodeFromString(
+    suspend fun requestSession(date: String, request: String, type: String, lock: Boolean = true): GenerateResult {
+        val result: GenerateResult = json.decodeFromString(
             supabase.functions.invoke("generate-workout") {
                 setBody(json.encodeToString(GenerateRequest.serializer(),
                     GenerateRequest(date = date, type = type, request = request, lock = lock, push = true)))
             }.body(),
         )
+        syncPlanToDeviceCalendar()
+        return result
+    }
 
     // E5: persist a manually-built structured workout into the plan (client-side),
     // returning its id so it can optionally be pushed to Intervals.icu.
@@ -959,6 +1069,8 @@ class WorkoutRepository @Inject constructor(
         supabase.postgrest.from("workout_feedback").insert(
             WorkoutFeedback(planned_workout_id = plannedId, date = date, completed = completed, actual_rpe = rpe, difficulty = difficulty),
         )
+        // Skipping removes the day's all-day event from the device calendar.
+        if (!completed) syncPlanToDeviceCalendar()
     }
 
     // Undo a skip: restore the session and drop the skip feedback so the
@@ -1071,11 +1183,13 @@ class WorkoutRepository @Inject constructor(
         val toolsUsed: List<String>,
         val error: String?,
         val gotReply: Boolean,
+        val settingsChanges: List<ChatSettingChange> = emptyList(),
     )
 
     suspend fun coachAgenticStream(
         messages: List<ChatMessage>,
         conversationId: String?,
+        incognito: Boolean = false,
         onTool: (String) -> Unit,
         onToken: (String) -> Unit,
     ): CoachStreamResult {
@@ -1083,11 +1197,15 @@ class WorkoutRepository @Inject constructor(
         val url = backend.url.trimEnd('/') + "/functions/v1/coach-chat"
         val payload = json.encodeToString(
             CoachChatRequest.serializer(),
-            CoachChatRequest(messages = messages, mode = "chat", conversationId = conversationId, purpose = "setup", stream = true),
+            CoachChatRequest(
+                messages = messages, mode = "chat", conversationId = conversationId,
+                purpose = "setup", stream = true, incognito = incognito,
+            ),
         )
 
         var convId: String? = null
         var tools: List<String> = emptyList()
+        var settingsChanges: List<ChatSettingChange> = emptyList()
         var error: String? = null
         var gotReply = false
         val streamStarted = System.currentTimeMillis()
@@ -1112,6 +1230,13 @@ class WorkoutRepository @Inject constructor(
                     convId = obj["conversation_id"]?.jsonPrimitive?.contentOrNull
                     tools = (obj["tools_used"] as? kotlinx.serialization.json.JsonArray)
                         ?.mapNotNull { (it as? JsonPrimitive)?.contentOrNull } ?: emptyList()
+                    settingsChanges = obj["settings_changes"]?.let { el ->
+                        runCatching {
+                            json.decodeFromJsonElement(
+                                kotlinx.serialization.builtins.ListSerializer(ChatSettingChange.serializer()), el,
+                            )
+                        }.getOrNull()
+                    } ?: emptyList()
                 }
             }
         }
@@ -1122,8 +1247,13 @@ class WorkoutRepository @Inject constructor(
         )
         // The coach may have evolved memory/soul server-side this turn.
         invalidateProfileCache()
-        return CoachStreamResult(convId, tools, error, gotReply)
+        return CoachStreamResult(convId, tools, error, gotReply, settingsChanges)
     }
+
+    // Device settings the coach changed via chat (update_app_settings): apply
+    // through the app's own whitelist and report what actually changed.
+    suspend fun applyChatSettings(changes: List<ChatSettingChange>): List<String> =
+        runCatching { prefs.applyChatSettings(changes) }.logFailure("applyChatSettings").getOrDefault(emptyList())
 
     // Edge-function failures throw with the JSON error body in the message —
     // pull out the human-readable part ({"error": "..."} / {"detail": "..."}).

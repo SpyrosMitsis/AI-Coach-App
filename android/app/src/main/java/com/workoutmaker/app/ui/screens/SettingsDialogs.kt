@@ -130,47 +130,153 @@ internal fun AddRaceDialog(onClose: () -> Unit, onAdd: (com.workoutmaker.app.dat
         ) { DatePicker(state = state) }
     }
 
+    // The distance is a chip picker per sport, with a "Custom" escape hatch that
+    // reveals the old free-text field. Typing "Marathon" by hand was the single
+    // most error-prone field here, and the presets are exactly the distances the
+    // planner already knows how to periodize toward.
+    var customDistance by remember { mutableStateOf(false) }
+    val presets = distancePresets(sport)
+    // Changing sport invalidates the chosen distance (a "5K" ride goal is noise).
+    LaunchedEffect(sport) { distance = ""; customDistance = false }
+
+    val weeksAway = java.time.temporal.ChronoUnit.WEEKS.between(java.time.LocalDate.now(), date).toInt()
+    val daysAway = java.time.temporal.ChronoUnit.DAYS.between(java.time.LocalDate.now(), date)
+
     androidx.compose.material3.AlertDialog(
         onDismissRequest = onClose,
         confirmButton = {
             TextButton(
-                enabled = name.isNotBlank(),
+                enabled = name.isNotBlank() && daysAway >= 0,
                 onClick = { onAdd(com.workoutmaker.app.data.Race(name = name.trim(), date = date.toString(),
                     priority = priority, sport = sport, distance = distance.ifBlank { null },
                     target = target.ifBlank { null }), setGoal && priority == "A") },
-            ) { Text("Add") }
+            ) { Text("Add goal") }
         },
         dismissButton = { TextButton(onClick = onClose) { Text("Cancel") } },
         title = { Text("Add goal") },
         text = {
-            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                OutlinedTextField(name, { name = it }, label = { Text("Name") }, singleLine = true, modifier = Modifier.fillMaxWidth())
+            // Grew past one screen once the presets and explainers landed.
+            Column(
+                Modifier.verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(10.dp),
+            ) {
+                OutlinedTextField(
+                    name, { name = it },
+                    label = { Text("Event name") },
+                    placeholder = { Text("Athens Marathon") },
+                    singleLine = true, modifier = Modifier.fillMaxWidth(),
+                )
+
+                FieldLabel("Sport")
                 FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                     GOAL_SPORTS.forEach { (key, label) ->
-                        androidx.compose.material3.FilterChip(selected = sport == key, onClick = { sport = key }, label = { Text(label) })
+                        FilterChip(selected = sport == key, onClick = { sport = key }, label = { Text(label) })
                     }
                 }
+
+                FieldLabel("Date")
                 OutlinedButton(onClick = { showPicker = true }, modifier = Modifier.fillMaxWidth()) {
                     Icon(Icons.Filled.EditCalendar, null)
-                    Text("  $date")
+                    Text("  " + date.format(java.time.format.DateTimeFormatter.ofPattern("EEE d MMM yyyy")))
                 }
-                OutlinedTextField(distance, { distance = it },
-                    label = { Text(if (sport == "strength") "Lift / event (e.g. Back squat)" else "Distance (e.g. Marathon)") },
-                    singleLine = true, modifier = Modifier.fillMaxWidth())
-                OutlinedTextField(target, { target = it },
-                    label = { Text(goalTargetHint(sport)) }, singleLine = true, modifier = Modifier.fillMaxWidth())
+                // The countdown is the whole point of a goal date: it's what picks
+                // the training phase and decides whether a taper even fits.
+                Text(
+                    when {
+                        daysAway < 0 -> "That date has already passed. Pick a future date."
+                        daysAway == 0L -> "Today."
+                        weeksAway < 1 -> "In $daysAway day${if (daysAway == 1L) "" else "s"}. Too close to build toward, the plan will just taper you into it."
+                        weeksAway < 4 -> "In $weeksAway week${if (weeksAway == 1) "" else "s"}. Enough to sharpen and taper, not to build."
+                        weeksAway <= 24 -> "In $weeksAway weeks. Room for a full base, build, peak and taper."
+                        else -> "In $weeksAway weeks. The coach plans the nearest 16 weeks and grows into the rest."
+                    },
+                    style = MaterialTheme.typography.bodySmall,
+                    color = if (daysAway < 0) MaterialTheme.colorScheme.error
+                    else MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+
+                FieldLabel(if (sport == "strength") "Lift or event" else "Distance")
+                FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    presets.forEach { d ->
+                        FilterChip(
+                            selected = !customDistance && distance == d,
+                            onClick = { customDistance = false; distance = if (distance == d) "" else d },
+                            label = { Text(d) },
+                        )
+                    }
+                    FilterChip(
+                        selected = customDistance,
+                        onClick = { customDistance = !customDistance; if (!customDistance) distance = "" },
+                        label = { Text("Custom") },
+                    )
+                }
+                if (customDistance) {
+                    OutlinedTextField(
+                        distance, { distance = it },
+                        label = { Text(if (sport == "strength") "Lift / event" else "Distance") },
+                        placeholder = { Text(if (sport == "strength") "Back squat" else "12 km trail") },
+                        singleLine = true, modifier = Modifier.fillMaxWidth(),
+                    )
+                }
+
+                FieldLabel("Target (optional)")
+                OutlinedTextField(
+                    target, { target = it },
+                    label = { Text(goalTargetHint(sport)) },
+                    singleLine = true, modifier = Modifier.fillMaxWidth(),
+                )
+
+                FieldLabel("How much does this one matter?")
                 Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                     listOf("A", "B", "C").forEach { p ->
-                        androidx.compose.material3.FilterChip(selected = priority == p, onClick = { priority = p }, label = { Text("$p goal") })
+                        FilterChip(selected = priority == p, onClick = { priority = p }, label = { Text("$p goal") })
                     }
                 }
+                // A/B/C is jargon everywhere except in the head of someone who
+                // already races. Say what the choice actually does to the plan.
+                Text(
+                    priorityBlurb(priority),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+
                 if (priority == "A") Row(verticalAlignment = Alignment.CenterVertically) {
                     androidx.compose.material3.Checkbox(checked = setGoal, onCheckedChange = { setGoal = it })
-                    Text("Make this my goal (drives the plan)", style = MaterialTheme.typography.bodySmall)
+                    Text(
+                        "Make this the goal my whole plan builds toward",
+                        style = MaterialTheme.typography.bodySmall,
+                    )
                 }
             }
         },
     )
+}
+
+/** Small field caption, so the picker rows aren't unlabelled chip soup. */
+@Composable
+private fun FieldLabel(text: String) {
+    Text(
+        text,
+        style = MaterialTheme.typography.labelMedium,
+        fontWeight = FontWeight.SemiBold,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+    )
+}
+
+/** The distances the planner can actually periodize toward, per sport. */
+internal fun distancePresets(sport: String): List<String> = when (sport) {
+    "run" -> listOf("5K", "10K", "Half marathon", "Marathon", "50K", "100K")
+    "ride" -> listOf("40K TT", "Gran fondo", "Century", "Stage race")
+    "swim" -> listOf("750 m", "1.5 km", "3.8 km", "5 km open water")
+    "strength" -> listOf("Powerlifting meet", "Weightlifting meet", "1RM test", "Hyrox")
+    else -> listOf("Sprint tri", "Olympic tri", "70.3", "Ironman", "Hyrox")
+}
+
+/** What picking A/B/C actually changes about the plan. */
+internal fun priorityBlurb(priority: String): String = when (priority) {
+    "A" -> "Everything is built around it: full base, build and peak, then a real taper into race week."
+    "B" -> "Worth doing well, but you train through it. Expect a couple of easy days beforehand, no taper."
+    else -> "Treated as a hard session with a number pinned on. The plan doesn't change for it."
 }
 
 internal val GOAL_SPORTS = listOf(
@@ -218,8 +324,6 @@ internal fun ZonesSection(vm: SettingsViewModel) {
             enabled = !busy, modifier = Modifier.fillMaxWidth()) { Text("Save thresholds") }
     }
 
-    ZoneTables(profile.lthr, profile.threshold_pace_per_km, profile.ftp)
-
     // The two "Your numbers" anchors onboarding now collects that existed
     // nowhere in Settings: swim CSS and strength starting loads. Without these
     // editors, everyone who onboarded before the step existed could never set them.
@@ -264,6 +368,9 @@ internal fun ZonesSection(vm: SettingsViewModel) {
         }
         OutlinedButton(onClick = { showTest = true }, modifier = Modifier.fillMaxWidth()) { Text("Log a test") }
     }
+
+    // Derived reference tables last — outputs of the inputs above, not settings.
+    ZoneTables(profile.lthr, profile.threshold_pace_per_km, profile.ftp)
 }
 
 // Shared pace/HR/power zone tables, reused by Settings and the cardio plan peek.

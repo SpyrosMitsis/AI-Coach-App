@@ -190,7 +190,30 @@ class SettingsViewModel @Inject constructor(
     private val strength: com.workoutmaker.app.strength.StrengthRepository,
     private val health: com.workoutmaker.app.health.HealthConnectManager,
     private val billing: com.workoutmaker.app.billing.BillingGateway,
+    private val deviceCalendar: com.workoutmaker.app.calendar.DeviceCalendarManager,
 ) : ViewModel() {
+
+    // --- Device calendar (read busy times / write workouts, both opt-in) ----
+    val calendarStatus = MutableStateFlow<String?>(null)
+    fun calendarReadGranted() = deviceCalendar.hasReadPermission()
+    fun calendarWriteGranted() = deviceCalendar.hasWritePermission()
+    fun setCalendarStatus(msg: String?) { calendarStatus.value = msg }
+
+    fun setCalendarRead(on: Boolean) = viewModelScope.launch {
+        prefs.setCalendarRead(on)
+        calendarStatus.value = if (on) "The coach will plan around your busy times from the next plan on." else null
+    }
+
+    fun setCalendarWrite(on: Boolean) = viewModelScope.launch {
+        prefs.setCalendarWrite(on)
+        if (on) {
+            runCatching { repo.syncPlanToDeviceCalendar() }
+            calendarStatus.value = "Planned workouts now appear as all-day events in your calendar."
+        } else {
+            runCatching { deviceCalendar.clearAll() }
+            calendarStatus.value = "Removed the app's events from your calendar."
+        }
+    }
 
     // --- Pro plan / hosted AI (only when this build can bill AND this server
     // hosts an LLM key — self-hosted stacks and foss builds never see it) ----

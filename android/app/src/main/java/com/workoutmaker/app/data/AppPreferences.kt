@@ -76,6 +76,10 @@ data class AppSettings(
     val spendCapUsd: Double = 0.0,
     // Morning readiness notification (score + day summary at wake-up).
     val morningNotify: Boolean = true,
+    // Device-calendar integration (both opt-in, both also need the runtime
+    // permission): read busy times into planning / write workouts as all-day events.
+    val calendarRead: Boolean = false,
+    val calendarWrite: Boolean = false,
 )
 
 private val Context.dataStore by preferencesDataStore(name = "app_prefs")
@@ -100,6 +104,8 @@ class AppPreferences @Inject constructor(
         val lastAccountUid = stringPreferencesKey("last_account_uid")
         val morningNotify = booleanPreferencesKey("morning_notify")
         val setupNudgeDismissedAt = longPreferencesKey("setup_nudge_dismissed_at")
+        val calendarRead = booleanPreferencesKey("calendar_read")
+        val calendarWrite = booleanPreferencesKey("calendar_write")
     }
 
     // The Home "finish setting up your coach" card for onboarding skippers.
@@ -145,6 +151,8 @@ class AppPreferences @Inject constructor(
             themePalette = ThemePalette.fromName(p[Keys.themePalette]),
             spendCapUsd = p[Keys.spendCap] ?: 0.0,
             morningNotify = p[Keys.morningNotify] ?: true,
+            calendarRead = p[Keys.calendarRead] ?: false,
+            calendarWrite = p[Keys.calendarWrite] ?: false,
         )
     }
 
@@ -159,6 +167,8 @@ class AppPreferences @Inject constructor(
     suspend fun setThemePalette(p: ThemePalette) = edit { it[Keys.themePalette] = p.name }
     suspend fun setSpendCap(usd: Double) = edit { it[Keys.spendCap] = usd.coerceIn(0.0, 1000.0) }
     suspend fun setMorningNotify(on: Boolean) = edit { it[Keys.morningNotify] = on }
+    suspend fun setCalendarRead(on: Boolean) = edit { it[Keys.calendarRead] = on }
+    suspend fun setCalendarWrite(on: Boolean) = edit { it[Keys.calendarWrite] = on }
 
     private suspend fun edit(block: (androidx.datastore.preferences.core.MutablePreferences) -> Unit) {
         context.dataStore.edit(block)

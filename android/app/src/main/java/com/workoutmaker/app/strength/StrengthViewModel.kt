@@ -19,6 +19,7 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
+import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -111,11 +112,31 @@ private data class SavedSession(
     val exercises: List<SavedExercise> = emptyList(),
 )
 
+// Internal pseudo-navigation WITHIN the Strength tab — distinct from the real
+// Nav Compose routes in MainActivity.kt (home/coach/calendar/strength/
+// settings, plus push routes like history/exercise-stats). Use a StrengthNav
+// case when the transition must keep this ViewModel's live in-memory state
+// mounted underneath it (an active workout, its rest timer, the mid-session
+// exercise picker) — none of that survives being torn down and recreated.
+//
+// Use a real NavHost route instead when the destination should behave like an
+// actual screen: the system back button pops just it, it gets its own
+// back-stack entry, and (per the exercise-stats routes in MainActivity.kt)
+// share THIS SAME StrengthViewModel instance via hiltViewModel(parentEntry)
+// rather than letting Nav Compose spin up a fresh one — that reference is the
+// pattern to copy for any new entry point.
+//
+// Getting this wrong is exactly what caused the "exercise stats opens as a
+// popup" bug: one entry point (the workout-detail stats button) was migrated
+// to a real NavHost route, but the picker dialog and the in-session bottom
+// sheet weren't, so they kept behaving like modals until all three were
+// aligned. Every new "go look at X" affordance in this tab should make this
+// choice deliberately, not by copying whichever pattern happened to be
+// closest in the file.
 sealed interface StrengthNav {
     data object Home : StrengthNav
     data object Active : StrengthNav
     data object Picker : StrengthNav
-    data class Stats(val exercise: String) : StrengthNav
     data class WorkoutDetail(val workoutId: String) : StrengthNav
     data object RateEffort : StrengthNav
 }
@@ -133,6 +154,7 @@ class StrengthViewModel @Inject constructor(
     private val workoutRepo: com.workoutmaker.app.data.WorkoutRepository,
     private val prefs: AppPreferences,
     private val handoff: StrengthHandoff,
+    private val catalog: StrengthCatalog,
     @ApplicationContext private val context: Context,
 ) : ViewModel() {
 
@@ -209,7 +231,9 @@ class StrengthViewModel @Inject constructor(
     val workoutDetail = MutableStateFlow<WorkoutDetailUi?>(null)
     val routines = MutableStateFlow<List<RoutineWithItems>>(emptyList())
     val loggedExercises = MutableStateFlow<List<String>>(emptyList())
-    val currentStats = MutableStateFlow<ExerciseStats?>(null)
+    // Per-exercise stats live in `catalog` (see StrengthCatalog.kt) — this is a
+    // read-only pass-through so no Composable call site needs to change.
+    val currentStats: StateFlow<ExerciseStats?> get() = catalog.currentStats
     val status = MutableStateFlow<String?>(null)
     val loading = MutableStateFlow(false)
 
@@ -244,13 +268,14 @@ class StrengthViewModel @Inject constructor(
         }
     }
 
-    // New surfaces: weekly volume/deload (B2/B5), PR celebration (C2),
-    // picker favorites/recents/custom (D1/D5), programs (B4).
+    // New surfaces: weekly volume/deload (B2/B5), PR celebration (C2), programs (B4).
     val weeklyReport = MutableStateFlow<WeeklyReport?>(null)
     val lastPrs = MutableStateFlow<List<PrHit>>(emptyList())
-    val favorites = MutableStateFlow<List<String>>(emptyList())
-    val recentExercises = MutableStateFlow<List<String>>(emptyList())
-    val customExercises = MutableStateFlow<List<Exercise>>(emptyList())
+    // Picker favorites/recents/custom (D1/D5) live in `catalog` — read-only
+    // pass-throughs so no Composable call site needs to change.
+    val favorites: StateFlow<List<String>> get() = catalog.favorites
+    val recentExercises: StateFlow<List<String>> get() = catalog.recentExercises
+    val customExercises: StateFlow<List<Exercise>> get() = catalog.customExercises
     val programs: List<StrengthProgram> = StrengthPrograms.all
 
     // Count of local strength changes not yet pushed to the cloud (offline queue).
@@ -306,34 +331,20 @@ class StrengthViewModel @Inject constructor(
         requestSync()
     }
 
-    fun loadPicker() = viewModelScope.launch {
-        runCatching {
-            repo.loadAndRegisterCustom()
-            favorites.value = repo.favorites()
-            recentExercises.value = repo.recentExercises()
-            customExercises.value = ExerciseCatalog.custom()
-        }
-    }
+    fun loadPicker() = viewModelScope.launch { catalog.loadPicker() }
 
     fun dismissPrs() { lastPrs.value = emptyList() }
 
-    fun toggleFavorite(name: String) = viewModelScope.launch {
-        val isFav = favorites.value.contains(name)
-        repo.toggleFavorite(name, !isFav)
-        favorites.value = repo.favorites()
-    }
+    fun toggleFavorite(name: String) = viewModelScope.launch { catalog.toggleFavorite(name) }
 
     fun addCustomExercise(name: String, muscle: String, category: String, compound: Boolean) = viewModelScope.launch {
-        if (name.isBlank()) return@launch
-        repo.addCustomExercise(name, muscle, category, compound)
-        customExercises.value = ExerciseCatalog.custom()
+        if (!catalog.addCustomExercise(name, muscle, category, compound)) return@launch
         status.value = "✓ Added “${name.trim()}”"
         requestSync()
     }
 
     fun deleteCustomExercise(name: String) = viewModelScope.launch {
-        repo.deleteCustomExercise(name)
-        customExercises.value = ExerciseCatalog.custom()
+        catalog.deleteCustomExercise(name)
         requestSync()
     }
 
@@ -984,14 +995,9 @@ class StrengthViewModel @Inject constructor(
             .onFailure { status.value = "Couldn't delete: ${it.message}" }
     }
 
-    fun openStats(name: String) = viewModelScope.launch {
-        currentStats.value = repo.stats(name)
-        nav.value = StrengthNav.Stats(name)
-    }
-
-    // Stats for the in-session insight peek (bottom sheet) — doesn't touch nav or
-    // currentStats, so the active session stays put underneath.
-    suspend fun statsFor(name: String): ExerciseStats = repo.stats(name)
+    // Loads stats for the dedicated exercise-stats page (a real NavHost
+    // destination, not an internal `nav` state) — doesn't touch `nav`.
+    fun openStats(name: String) = viewModelScope.launch { catalog.loadStats(name) }
 
     // --- push to Intervals.icu → watch (Zepp) ------------------------------
     private fun vibrate() {

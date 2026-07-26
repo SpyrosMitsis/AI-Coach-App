@@ -6,11 +6,14 @@ import androidx.health.connect.client.permission.HealthPermission
 import androidx.health.connect.client.records.DistanceRecord
 import androidx.health.connect.client.records.ExerciseSessionRecord
 import androidx.health.connect.client.records.HeartRateRecord
+import androidx.health.connect.client.records.BodyFatRecord
 import androidx.health.connect.client.records.HeartRateVariabilityRmssdRecord
+import androidx.health.connect.client.records.LeanBodyMassRecord
 import androidx.health.connect.client.records.RestingHeartRateRecord
 import androidx.health.connect.client.records.SleepSessionRecord
 import androidx.health.connect.client.records.StepsRecord
 import androidx.health.connect.client.records.Vo2MaxRecord
+import androidx.health.connect.client.records.WeightRecord
 import androidx.health.connect.client.request.AggregateRequest
 import androidx.health.connect.client.request.ReadRecordsRequest
 import androidx.health.connect.client.time.TimeRangeFilter
@@ -62,6 +65,16 @@ class HealthConnectManager @Inject constructor(
         HealthPermission.getReadPermission(Vo2MaxRecord::class),
         HealthPermission.getReadPermission(ExerciseSessionRecord::class),
         HealthPermission.getReadPermission(DistanceRecord::class),
+        // Body composition (smart scales write these): feeds the profile's
+        // weight/body-fat so strength prescriptions know the athlete's mass,
+        // and the dated history behind the Body trends screen.
+        HealthPermission.getReadPermission(WeightRecord::class),
+        HealthPermission.getReadPermission(BodyFatRecord::class),
+        HealthPermission.getReadPermission(LeanBodyMassRecord::class),
+        // Lets WorkManager (morning readiness) read last night's data without the
+        // app in the foreground. Literal string: the connect-client constant only
+        // exists in newer alphas. Best-effort — denial keeps the fixed-time path.
+        "android.permission.health.READ_HEALTH_DATA_IN_BACKGROUND",
     )
 
     /** SDK_AVAILABLE / SDK_UNAVAILABLE / SDK_UNAVAILABLE_PROVIDER_UPDATE_REQUIRED. */
@@ -91,6 +104,67 @@ class HealthConnectManager @Inject constructor(
         client.readRecords(ReadRecordsRequest(SleepSessionRecord::class, window))
             .records.maxByOrNull { it.endTime }?.endTime
     }.getOrNull()
+
+    /** Most recent body-composition readings (any source: smart scale, manual
+     *  entry in the HC app). Looks back [days] days; null fields = no data. */
+    data class BodyComp(val weightKg: Double? = null, val bodyFatPct: Double? = null)
+
+    suspend fun readBodyComp(days: Long = 90): BodyComp {
+        val now = Instant.now()
+        val window = TimeRangeFilter.between(now.minus(Duration.ofDays(days)), now)
+        val weight = runCatching {
+            client.readRecords(ReadRecordsRequest(WeightRecord::class, window))
+                .records.maxByOrNull { it.time }?.weight?.inKilograms
+        }.getOrNull()
+        val bodyFat = runCatching {
+            client.readRecords(ReadRecordsRequest(BodyFatRecord::class, window))
+                .records.maxByOrNull { it.time }?.percentage?.value
+        }.getOrNull()
+        return BodyComp(
+            weightKg = weight?.takeIf { it in 30.0..250.0 },
+            bodyFatPct = bodyFat?.takeIf { it in 3.0..60.0 },
+        )
+    }
+
+    /**
+     * Dated body-composition history for the last [days] days: one entry per
+     * local date that has any reading (latest reading wins within a day).
+     * Three windowed paged reads, NOT a per-day loop (365 days x 3 record
+     * types would be ~1000 binder calls). Empty on missing permission/data.
+     */
+    suspend fun readBodyHistory(days: Long = 365): List<BodyDayReading> {
+        val now = Instant.now()
+        val window = TimeRangeFilter.between(now.minus(Duration.ofDays(days)), now)
+        val weights = runCatching {
+            readAllRecords(WeightRecord::class, window).map { it.time.toEpochMilli() to it.weight.inKilograms }
+        }.getOrDefault(emptyList())
+        val fats = runCatching {
+            readAllRecords(BodyFatRecord::class, window).map { it.time.toEpochMilli() to it.percentage.value }
+        }.getOrDefault(emptyList())
+        val leans = runCatching {
+            readAllRecords(LeanBodyMassRecord::class, window).map { it.time.toEpochMilli() to it.mass.inKilograms }
+        }.getOrDefault(emptyList())
+        return bodyDaysFromReadings(weights, fats, leans, ZoneId.systemDefault())
+    }
+
+    // Full paged read: readRecords caps a page at ~1000 records, and a year of
+    // daily-scale data brushes against that.
+    private suspend fun <T : androidx.health.connect.client.records.Record> readAllRecords(
+        cls: kotlin.reflect.KClass<T>,
+        window: TimeRangeFilter,
+    ): List<T> {
+        val out = mutableListOf<T>()
+        var token: String? = null
+        do {
+            val resp = client.readRecords(
+                if (token == null) ReadRecordsRequest(cls, window)
+                else ReadRecordsRequest(cls, window, pageToken = token),
+            )
+            out += resp.records
+            token = resp.pageToken
+        } while (token != null)
+        return out
+    }
 
     /**
      * Read the most recent ~36h of metrics and reduce to today's snapshot:
@@ -305,5 +379,36 @@ class HealthConnectManager @Inject constructor(
     private fun avgRestingHr(records: List<RestingHeartRateRecord>): Int? {
         val vals = records.map { it.beatsPerMinute.toInt() }
         return if (vals.isEmpty()) null else Math.round(vals.average()).toInt()
+    }
+}
+
+/** One local date's body readings (any subset may be present). */
+data class BodyDayReading(
+    val date: String,
+    val weightKg: Double? = null,
+    val bodyFatPct: Double? = null,
+    val leanMassKg: Double? = null,
+)
+
+// Pure reducer so JVM tests cover it without a HealthConnectClient: raw
+// (epochMs, value) readings → per-local-date latest, bounds-checked and
+// rounded to 1 decimal, sorted by date.
+internal fun bodyDaysFromReadings(
+    weights: List<Pair<Long, Double>>,
+    fats: List<Pair<Long, Double>>,
+    leans: List<Pair<Long, Double>>,
+    zone: ZoneId,
+): List<BodyDayReading> {
+    fun latestPerDay(readings: List<Pair<Long, Double>>, lo: Double, hi: Double): Map<String, Double> =
+        readings
+            .filter { (_, v) -> v in lo..hi }
+            .groupBy { (ms, _) -> Instant.ofEpochMilli(ms).atZone(zone).toLocalDate().toString() }
+            .mapValues { (_, day) -> day.maxBy { it.first }.second.let { Math.round(it * 10) / 10.0 } }
+
+    val w = latestPerDay(weights, 30.0, 250.0)
+    val f = latestPerDay(fats, 3.0, 60.0)
+    val l = latestPerDay(leans, 20.0, 150.0)
+    return (w.keys + f.keys + l.keys).sorted().map { d ->
+        BodyDayReading(date = d, weightKg = w[d], bodyFatPct = f[d], leanMassKg = l[d])
     }
 }

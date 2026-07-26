@@ -114,6 +114,7 @@ import com.workoutmaker.app.ui.components.ScreenScaffold
 import com.workoutmaker.app.ui.components.SectionCard
 import com.workoutmaker.app.ui.components.SectionLabel
 import com.workoutmaker.app.ui.components.SkeletonCard
+import com.workoutmaker.app.ui.components.StatTileGrid
 import com.workoutmaker.app.ui.theme.BandAmber
 import com.workoutmaker.app.ui.theme.BandRed
 import com.workoutmaker.app.ui.theme.Sage
@@ -259,77 +260,124 @@ internal fun QuickAddRow(label: String, names: List<String>, selected: MutableLi
 // ---------------------------------------------------------------------------
 // Per-exercise stats
 // ---------------------------------------------------------------------------
+
+// Searchable, full-page picker behind the top-bar 📊 button. Tap an exercise
+// to push its stats page (see ExerciseStatsScreen below).
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-internal fun ExerciseStatsView(vm: StrengthViewModel, exercise: String) {
-    val stats by vm.currentStats.collectAsStateSafe()
-    Scaffold(
-        containerColor = MaterialTheme.colorScheme.background,
-        topBar = {
-            TopAppBar(
-                title = { Text(exercise) },
-                navigationIcon = { IconButton(onClick = { vm.goHome() }) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "Back") } },
+fun ExerciseStatsPickerScreen(exercises: List<String>, onPick: (String) -> Unit, onBack: () -> Unit) {
+    var query by remember { mutableStateOf("") }
+    val filtered = remember(exercises, query) {
+        if (query.isBlank()) exercises else exercises.filter { it.contains(query.trim(), ignoreCase = true) }
+    }
+    ScreenScaffold(
+        title = "Exercise stats",
+        subtitle = "${exercises.size} exercises logged",
+        eyebrow = "STRENGTH LOG",
+        navigationIcon = { IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "Back") } },
+    ) { mod ->
+        OutlinedTextField(
+            value = query, onValueChange = { query = it },
+            modifier = mod, singleLine = true,
+            leadingIcon = { Icon(Icons.Filled.Search, null) },
+            placeholder = { Text("Search exercises") },
+            trailingIcon = {
+                if (query.isNotBlank()) IconButton(onClick = { query = "" }) { Icon(Icons.Filled.Close, "Clear") }
+            },
+        )
+        if (filtered.isEmpty()) {
+            EmptyState(
+                modifier = mod,
+                title = "No matches",
+                subtitle = "Try a different search.",
+                icon = Icons.Filled.Search,
             )
-        },
-    ) { padding ->
-        val s = stats
-        Column(Modifier.padding(padding).fillMaxWidth().padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-            if (s == null || !s.hasData) {
-                EmptyState(
-                    title = "No history yet",
-                    subtitle = "Log this exercise to see e1RM and PRs.",
-                    icon = Icons.Filled.BarChart,
-                )
-                return@Column
-            }
-            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                Pr("Best e1RM", "${s.bestE1rm.toInt()} kg")
-                Pr("Best set", "${s.bestWeight.toInt()} kg")
-                Pr("Best volume", "${s.bestVolume.toInt()} kg")
-            }
-
-            // C1: progression chart with a metric toggle.
-            var metric by remember { mutableStateOf("e1RM") }
-            SectionCard(title = "Progression") {
-                Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                    listOf("e1RM", "Top weight", "Volume").forEach { m ->
-                        FilterChip(selected = metric == m, onClick = { metric = m }, label = { Text(m) })
-                    }
-                }
-                val series = s.points.map {
-                    when (metric) {
-                        "Top weight" -> it.bestWeight
-                        "Volume" -> it.volume
-                        else -> it.e1rm
-                    }
-                }
-                MetricChart(series, unit = if (metric == "Volume") "kg vol" else "kg")
-                Text(
-                    "${s.points.size} sessions · latest ${series.lastOrNull()?.toInt() ?: 0}" +
-                        if (metric == "Volume") " kg vol" else " kg",
-                    style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-            }
-
-            // C6: %-of-1RM training table off the best estimated 1RM.
-            SectionCard(title = "Training loads (% of ${s.bestE1rm.toInt()}kg 1RM)") {
-                OneRepMax.table(s.bestE1rm).forEach { row ->
-                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                        Text("${row.pct}% · ~${row.reps} reps", style = MaterialTheme.typography.bodySmall)
-                        Text("${trimKg(row.weightKg)} kg", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.primary)
-                    }
+            return@ScreenScaffold
+        }
+        filtered.forEach { ex ->
+            SectionCard(mod.clickable { onPick(ex) }) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(Icons.Filled.BarChart, null, Modifier.size(18.dp), tint = MaterialTheme.colorScheme.primary)
+                    Text("  $ex", style = MaterialTheme.typography.titleSmall)
                 }
             }
+        }
+    }
+}
 
-            SectionCard(title = "Sessions") {
-                s.points.reversed().forEach { p ->
-                    val d = java.time.Instant.ofEpochMilli(p.dateMillis)
-                        .atZone(java.time.ZoneId.systemDefault()).toLocalDate().toString()
-                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                        Text(d, style = MaterialTheme.typography.bodySmall)
-                        Text("e1RM ${p.e1rm.toInt()}kg · ${p.volume.toInt()}kg vol",
-                            style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                    }
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun ExerciseStatsScreen(vm: StrengthViewModel, exercise: String, onBack: () -> Unit) {
+    LaunchedEffect(exercise) { vm.openStats(exercise) }
+    val stats by vm.currentStats.collectAsStateSafe()
+    val s = stats
+    ScreenScaffold(
+        title = exercise,
+        subtitle = if (s != null && s.hasData) "${s.points.size} sessions logged" else null,
+        eyebrow = "EXERCISE STATS",
+        navigationIcon = { IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "Back") } },
+    ) { mod ->
+        if (s == null || !s.hasData) {
+            EmptyState(
+                modifier = mod,
+                title = "No history yet",
+                subtitle = "Log this exercise to see e1RM and PRs.",
+                icon = Icons.Filled.BarChart,
+            )
+            return@ScreenScaffold
+        }
+        SectionCard(mod) {
+            SectionLabel("Personal records", color = MaterialTheme.colorScheme.secondary)
+            StatTileGrid(
+                listOf(
+                    "Best e1RM" to "${s.bestE1rm.toInt()} kg",
+                    "Best set" to "${s.bestWeight.toInt()} kg",
+                    "Best volume" to "${s.bestVolume.toInt()} kg",
+                ),
+            )
+        }
+
+        // C1: progression chart with a metric toggle.
+        var metric by remember { mutableStateOf("e1RM") }
+        SectionCard(mod, title = "Progression") {
+            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                listOf("e1RM", "Top weight", "Volume").forEach { m ->
+                    FilterChip(selected = metric == m, onClick = { metric = m }, label = { Text(m) })
+                }
+            }
+            val series = s.points.map {
+                when (metric) {
+                    "Top weight" -> it.bestWeight
+                    "Volume" -> it.volume
+                    else -> it.e1rm
+                }
+            }
+            MetricChart(series, unit = if (metric == "Volume") "kg vol" else "kg")
+            Text(
+                "${s.points.size} sessions · latest ${series.lastOrNull()?.toInt() ?: 0}" +
+                    if (metric == "Volume") " kg vol" else " kg",
+                style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+
+        // C6: %-of-1RM training table off the best estimated 1RM.
+        SectionCard(mod, title = "Training loads (% of ${s.bestE1rm.toInt()}kg 1RM)") {
+            OneRepMax.table(s.bestE1rm).forEach { row ->
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                    Text("${row.pct}% · ~${row.reps} reps", style = MaterialTheme.typography.bodySmall)
+                    Text("${trimKg(row.weightKg)} kg", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.primary)
+                }
+            }
+        }
+
+        SectionCard(mod, title = "Sessions") {
+            s.points.reversed().forEach { p ->
+                val d = java.time.Instant.ofEpochMilli(p.dateMillis)
+                    .atZone(java.time.ZoneId.systemDefault()).toLocalDate().toString()
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                    Text(d, style = MaterialTheme.typography.bodySmall)
+                    Text("e1RM ${p.e1rm.toInt()}kg · ${p.volume.toInt()}kg vol",
+                        style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
             }
         }

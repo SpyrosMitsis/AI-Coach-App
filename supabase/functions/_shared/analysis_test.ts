@@ -171,3 +171,92 @@ Deno.test("combineScore double-weights intensity; label bands", () => {
   assertEquals(scoreLabel(60), "Drifted from plan");
   assertEquals(scoreLabel(20), "Off plan");
 });
+
+// ---------------------------------------------------------------------------
+// Swim units: sec/100m paces anchored to CSS, 100 m splits, swim zone table.
+// ---------------------------------------------------------------------------
+
+import { fmtPace, isSwimType, pacingInsights } from "./analysis.ts";
+import { activityMatchesPlanned } from "./analyze_core.ts";
+
+Deno.test("swim pace band derives from CSS in sec/100m via the swim zone table", () => {
+  // CSS 2:00/100m = 120s. Swim Z2 = 80-88% of CSS speed → 136-150 s/100m.
+  const band = paceBandForZones([2], 120, true)!;
+  assertEquals(band.lo, Math.round(120 / 0.88));
+  assertEquals(band.hi, Math.round(120 / 0.80));
+  // The run table would put Z2 at 136-154; swim compresses the range.
+  const runBand = paceBandForZones([2], 120, false)!;
+  assertEquals(runBand.hi, Math.round(120 / 0.78));
+});
+
+Deno.test("buildSeries swim mode: pace in sec/100m, slow-swim velocities kept", () => {
+  // Steady 0.83 m/s (2:00/100m) — below a walking cutoff but a real swim pace.
+  const n = 60;
+  const s = {
+    time: Array.from({ length: n }, (_, i) => i),
+    velocity: Array.from({ length: n }, () => 0.4),
+    hr: Array.from({ length: n }, () => 130),
+    distance: Array.from({ length: n }, (_, i) => i * 0.4),
+  };
+  const swimSeries = buildSeries(s, 10, true);
+  assertEquals(swimSeries.pace[0], Math.round(100 / 0.4)); // 250 s/100m
+  // Land mode drops the same samples as "not moving".
+  const runSeries = buildSeries(s, 10, false);
+  assertEquals(runSeries.pace[0], null);
+});
+
+Deno.test("buildSplits with 100 m splits yields per-100m times", () => {
+  // 1 m/s: 100 m every 100 s.
+  const n = 350;
+  const s = {
+    time: Array.from({ length: n }, (_, i) => i),
+    velocity: Array.from({ length: n }, () => 1),
+    hr: Array.from({ length: n }, () => 140),
+    distance: Array.from({ length: n }, (_, i) => i),
+  };
+  const splits = buildSplits(s, 100);
+  assertEquals(splits.length, 3);
+  assertEquals(splits[0].km, 0.1);
+  assertEquals(splits[0].sec, 100);
+  assertEquals(splits[2].km, 0.3);
+});
+
+Deno.test("isSwimType and the swim plan match close the swim-vs-run-plan hole", () => {
+  assertEquals(isSwimType("OpenWaterSwim"), true);
+  assertEquals(isSwimType("Run"), false);
+  assertEquals(activityMatchesPlanned("swim", "Afternoon Open Water Swim"), true);
+  assertEquals(activityMatchesPlanned("swim", "Run"), false);
+});
+
+Deno.test("fmtPace carries the unit", () => {
+  assertEquals(fmtPace(115, "/100m"), "1:55/100m");
+  assertEquals(fmtPace(285), "4:45/km");
+});
+
+Deno.test("pacingInsights: negative split, evenness and HR drift are called out", () => {
+  const splits: AnalysisSplit[] = [
+    { km: 1, sec: 300, avg_hr: 140 },
+    { km: 2, sec: 298, avg_hr: 142 },
+    { km: 3, sec: 288, avg_hr: 148 },
+    { km: 4, sec: 286, avg_hr: 152 },
+  ];
+  const series = {
+    t: Array.from({ length: 40 }, (_, i) => i * 30),
+    pace: Array.from({ length: 40 }, () => 295 as number | null),
+    hr: Array.from({ length: 40 }, (_, i) => (i < 20 ? 140 : 150) as number | null),
+    cadence: [],
+    power: [],
+  };
+  const out = pacingInsights(splits, series);
+  assertEquals(out.some((l) => l.includes("negative split")), true);
+  assertEquals(out.some((l) => l.includes("pacing")), true);
+  assertEquals(out.some((l) => l.includes("drifted up 10 bpm")), true);
+});
+
+Deno.test("pacingInsights stays quiet without enough data", () => {
+  assertEquals(pacingInsights([], null), []);
+  assertEquals(
+    pacingInsights([{ km: 1, sec: 300, avg_hr: null }, { km: 2, sec: 305, avg_hr: null }], null),
+    [],
+  );
+});

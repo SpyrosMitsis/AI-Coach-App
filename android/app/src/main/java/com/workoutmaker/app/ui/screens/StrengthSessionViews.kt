@@ -63,8 +63,6 @@ import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.ModalBottomSheet
-import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.SwipeToDismissBox
@@ -134,7 +132,7 @@ import com.workoutmaker.app.ui.theme.amberAccent
 // ---------------------------------------------------------------------------
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-internal fun WorkoutDetailView(vm: StrengthViewModel) {
+internal fun WorkoutDetailView(vm: StrengthViewModel, onOpenStats: (String) -> Unit = {}) {
     val detail by vm.workoutDetail.collectAsStateSafe()
     var confirmDelete by remember { mutableStateOf(false) }
     var menu by remember { mutableStateOf(false) }
@@ -194,7 +192,7 @@ internal fun WorkoutDetailView(vm: StrengthViewModel) {
                 }
             }
             items(d.exercises, key = { it.first }) { (name, sets) ->
-                WorkoutDetailExercise(name, sets, onStats = { vm.openStats(name) })
+                WorkoutDetailExercise(name, sets, onStats = { onOpenStats(name) })
             }
         }
     }
@@ -245,7 +243,7 @@ internal fun WorkoutDetailExercise(name: String, sets: List<com.workoutmaker.app
 // ---------------------------------------------------------------------------
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-internal fun ActiveWorkoutView(vm: StrengthViewModel) {
+internal fun ActiveWorkoutView(vm: StrengthViewModel, onOpenStats: (String) -> Unit = {}) {
     val elapsed by vm.elapsedSec.collectAsStateSafe()
     val rest by vm.restRemaining.collectAsStateSafe()
     val status by vm.status.collectAsStateSafe()
@@ -359,7 +357,7 @@ internal fun ActiveWorkoutView(vm: StrengthViewModel) {
                         else -> Modifier.animateItem()
                     },
                 ) {
-                    ExerciseCard(vm, ux, dragState)
+                    ExerciseCard(vm, ux, dragState, onOpenStats)
                 }
             }
             if (vm.exercises.isEmpty()) {
@@ -554,11 +552,14 @@ private fun EffortBars(selected: Int?, onSelect: (Int) -> Unit, modifier: Modifi
 }
 
 @Composable
-internal fun ExerciseCard(vm: StrengthViewModel, ux: UiExercise, dragState: DragDropState? = null) {
+internal fun ExerciseCard(
+    vm: StrengthViewModel,
+    ux: UiExercise,
+    dragState: DragDropState? = null,
+    onOpenStats: (String) -> Unit = {},
+) {
     var menu by remember { mutableStateOf(false) }
-    var showInsight by remember { mutableStateOf(false) }
     val haptics = LocalHapticFeedback.current
-    if (showInsight) ExerciseInsightSheet(vm, ux.name) { showInsight = false }
     SectionCard {
         Row(verticalAlignment = Alignment.CenterVertically) {
             // Q4: grab the handle and drag the card to reorder the session.
@@ -584,8 +585,8 @@ internal fun ExerciseCard(vm: StrengthViewModel, ux: UiExercise, dragState: Drag
                         .padding(8.dp),
                 )
             }
-            // Tap the name to peek this exercise's history without leaving the session.
-            Column(Modifier.weight(1f).clickable { showInsight = true }) {
+            // Tap the name to open this exercise's history page.
+            Column(Modifier.weight(1f).clickable { onOpenStats(ux.name) }) {
                 Text(ux.name, style = MaterialTheme.typography.titleSmall, color = MaterialTheme.colorScheme.primary)
                 Text(ux.muscle, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
@@ -653,74 +654,6 @@ internal fun ExerciseCard(vm: StrengthViewModel, ux: UiExercise, dragState: Drag
         }
         TextButton(onClick = { vm.addSet(ux) }, modifier = Modifier.fillMaxWidth()) {
             Icon(Icons.Filled.Add, null); Text(" Add set")
-        }
-    }
-}
-
-// In-session peek at an exercise's history (PRs, e1RM/volume trend, recent
-// sessions) as a bottom sheet, so the live session stays mounted underneath.
-// Reuses the stats pieces from the standalone ExerciseStatsView.
-@OptIn(ExperimentalMaterial3Api::class)
-@Composable
-internal fun ExerciseInsightSheet(vm: StrengthViewModel, exercise: String, onDismiss: () -> Unit) {
-    var stats by remember(exercise) { mutableStateOf<com.workoutmaker.app.strength.ExerciseStats?>(null) }
-    var loaded by remember(exercise) { mutableStateOf(false) }
-    LaunchedEffect(exercise) { stats = vm.statsFor(exercise); loaded = true }
-    ModalBottomSheet(onDismissRequest = onDismiss, sheetState = rememberModalBottomSheetState()) {
-        Column(
-            Modifier.fillMaxWidth().padding(horizontal = 20.dp).padding(bottom = 24.dp),
-            verticalArrangement = Arrangement.spacedBy(12.dp),
-        ) {
-            Text(exercise, style = MaterialTheme.typography.titleMedium, color = MaterialTheme.colorScheme.primary)
-            val s = stats
-            when {
-                !loaded -> Text("Loading…", style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant)
-                s == null || !s.hasData -> EmptyState(
-                    title = "No history yet",
-                    subtitle = "Log this exercise to see e1RM and PRs.",
-                    icon = Icons.Filled.BarChart,
-                )
-                else -> {
-                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                        Pr("Best e1RM", "${s.bestE1rm.toInt()} kg")
-                        Pr("Best set", "${s.bestWeight.toInt()} kg")
-                        Pr("Best volume", "${s.bestVolume.toInt()} kg")
-                    }
-                    var metric by remember { mutableStateOf("e1RM") }
-                    SectionCard(title = "Progression") {
-                        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                            listOf("e1RM", "Top weight", "Volume").forEach { m ->
-                                FilterChip(selected = metric == m, onClick = { metric = m }, label = { Text(m) })
-                            }
-                        }
-                        val series = s.points.map {
-                            when (metric) {
-                                "Top weight" -> it.bestWeight
-                                "Volume" -> it.volume
-                                else -> it.e1rm
-                            }
-                        }
-                        MetricChart(series, unit = if (metric == "Volume") "kg vol" else "kg")
-                        Text(
-                            "${s.points.size} sessions · latest ${series.lastOrNull()?.toInt() ?: 0}" +
-                                if (metric == "Volume") " kg vol" else " kg",
-                            style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-                    }
-                    SectionCard(title = "Recent sessions") {
-                        s.points.reversed().take(3).forEach { p ->
-                            val d = java.time.Instant.ofEpochMilli(p.dateMillis)
-                                .atZone(java.time.ZoneId.systemDefault()).toLocalDate().toString()
-                            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                                Text(d, style = MaterialTheme.typography.bodySmall)
-                                Text("e1RM ${p.e1rm.toInt()}kg · ${p.volume.toInt()}kg vol",
-                                    style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                            }
-                        }
-                    }
-                }
-            }
         }
     }
 }

@@ -130,12 +130,6 @@ export default function CalendarPage() {
     onError: fail,
   });
 
-  const planBlock = useMutation({
-    mutationFn: () => api.planBlock(),
-    onSuccess: (r) => { setBanner(`✓ Planned a ${r.weeks}-week block to your race (${r.weeks_planned} weeks built).`); invalidate(); },
-    onError: fail,
-  });
-
   const toggleLock = useMutation({
     mutationFn: async (w: PlannedWorkout) => {
       const { error } = await supabase.from("planned_workouts").update({ locked: !w.locked }).eq("id", w.id);
@@ -317,7 +311,7 @@ export default function CalendarPage() {
     );
   }, [planned.data]);
 
-  const planning = planWeek.isPending || planBlock.isPending;
+  const planning = planWeek.isPending;
   const busy = planning || adapt.isPending || sync.isPending;
 
   return (
@@ -353,16 +347,10 @@ export default function CalendarPage() {
       )}
 
       {/* AI planning actions */}
-      <div className="grid grid-cols-2 gap-2">
-        <Button variant="outline" disabled={busy} onClick={() => planWeek.mutate(selected ?? monthStart)}>
-          <Sparkles className="h-4 w-4" />
-          {planWeek.isPending ? "Planning…" : "Plan my week"}
-        </Button>
-        <Button variant="outline" disabled={busy} onClick={() => planBlock.mutate()}>
-          <CalendarRange className="h-4 w-4" />
-          {planBlock.isPending ? "Planning…" : "Plan block to race"}
-        </Button>
-      </div>
+      <Button className="w-full" variant="outline" disabled={busy} onClick={() => planWeek.mutate(selected ?? monthStart)}>
+        <Sparkles className="h-4 w-4" />
+        {planWeek.isPending ? "Planning…" : "Plan my week"}
+      </Button>
 
       {/* Month nav */}
       <div className="flex items-center justify-between">

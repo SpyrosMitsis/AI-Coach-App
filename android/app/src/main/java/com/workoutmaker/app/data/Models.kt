@@ -173,6 +173,20 @@ data class Vo2Max(val value: Double, val change: Double? = null)
 @Serializable
 data class ServerCapabilities(val hosted_ai: Boolean = false)
 
+// Today's (or yesterday's) analyzed session, picked server-side for the Home
+// "Session debrief" card. activity_id is null for strength sessions (their
+// analyses key on date, not on a completed_activities row).
+@Serializable
+data class SessionDebrief(
+    val kind: String = "activity",
+    val activity_id: String? = null,
+    val date: String = "",
+    val type: String? = null,
+    val score: Int? = null,
+    val label: String? = null,
+    val feedback: String? = null,
+)
+
 @Serializable
 data class DailySummary(
     val date: String,
@@ -186,10 +200,83 @@ data class DailySummary(
     val tsb_sparkline: List<TsbPoint> = emptyList(),
     val weekly_load: WeeklyLoad,
     val week_review: WeekReview? = null,
+    val debrief: SessionDebrief? = null,
+    val body_trend: BodyTrend? = null,
     val active_llm_provider: String,
     val goal: GoalProgress? = null,
     val server: ServerCapabilities? = null,
 )
+
+// --- Body composition (weight / body fat / lean mass over time) --------------
+
+// Compact goal-aware trend computed server-side (_shared/body_trend.ts). The
+// plots read the full history via bodyHistory(); this is just the verdict.
+@Serializable
+data class BodyMetricTrend(
+    val latest: Double = 0.0,
+    val latestDate: String = "",
+    val slopePerWeek: Double? = null,
+    val points: Int = 0,
+)
+
+@Serializable
+data class BodyTrend(
+    val focus: String = "general", // muscle | fat_loss | recomp | general
+    val weight: BodyMetricTrend? = null,
+    val bodyFat: BodyMetricTrend? = null,
+    val leanMass: BodyMetricTrend? = null,
+    val onTrack: Boolean? = null,
+    val summary: String = "",
+)
+
+// One day's measured body metrics from wellness_checkins (nullable per column).
+@Serializable
+data class BodyHistoryPoint(
+    val date: String,
+    val weight_kg: Double? = null,
+    val body_fat_pct: Double? = null,
+    val lean_mass_kg: Double? = null,
+)
+
+// Upsert row for a scale sync or manual quick-log (server merge on user_id,date).
+@Serializable
+data class BodyMetricUpsert(
+    val date: String,
+    val weight_kg: Double? = null,
+    val body_fat_pct: Double? = null,
+    val lean_mass_kg: Double? = null,
+    val source: String = "health_connect",
+)
+
+// Lean mass fallback when the scale only writes weight + fat. Mirrors the
+// backend's derivation in body_trend.ts so both sides chart the same number.
+fun deriveLeanKg(weightKg: Double?, bodyFatPct: Double?): Double? {
+    if (weightKg == null || bodyFatPct == null) return null
+    if (weightKg !in 30.0..250.0 || bodyFatPct !in 3.0..60.0) return null
+    return Math.round(weightKg * (1 - bodyFatPct / 100) * 10) / 10.0
+}
+
+// Least-squares change per week over dated points, mirroring body_trend.ts:
+// null unless >= 3 points spanning >= 14 days (day-to-day water weight is not
+// a trend). Dates are ISO yyyy-MM-dd; values are already bounds-checked.
+fun slopePerWeek(points: List<Pair<String, Double>>): Double? {
+    val dated = points.mapNotNull { (d, v) ->
+        runCatching { java.time.LocalDate.parse(d).toEpochDay() }.getOrNull()?.let { it to v }
+    }.sortedBy { it.first }
+    if (dated.size < 3 || dated.last().first - dated.first().first < 14) return null
+    val xs = dated.map { (it.first - dated.first().first) / 7.0 }
+    val ys = dated.map { it.second }
+    val mx = xs.average()
+    val my = ys.average()
+    var num = 0.0
+    var den = 0.0
+    for (i in xs.indices) {
+        num += (xs[i] - mx) * (ys[i] - my)
+        den += (xs[i] - mx) * (xs[i] - mx)
+    }
+    if (den == 0.0) return null
+    return Math.round(num / den * 100) / 100.0
+}
 
 // Billing state from user_profiles — plan columns are server-written only
 // (verify-purchase / play-rtdn); use_hosted_ai is the user's own toggle.
@@ -227,6 +314,8 @@ data class GenerateRequest(
     val lon: Double? = null,
     // Free-text athlete request for a specific date ("social 10k with friends").
     val request: String? = null,
+    // Today's busy windows from the device calendar (opt-in; times only, no titles).
+    val calendar_busy: List<BusyDay>? = null,
     // Lock the result so the weekly re-planner won't move/replace it.
     val lock: Boolean = false,
 )
@@ -240,7 +329,22 @@ data class GenerateResult(
 )
 
 @Serializable
-data class PlanWeekRequest(val start_date: String? = null, val push: Boolean = true)
+data class PlanWeekRequest(
+    val start_date: String? = null,
+    val push: Boolean = true,
+    // The week's busy windows from the device calendar (opt-in; times only, no
+    // titles) so the planner puts hard/long sessions on the free days.
+    val calendar_busy: List<BusyDay>? = null,
+)
+
+// One day's busy summary, derived on-device from the calendar. Only times and
+// an all-day flag cross the wire, never event titles.
+@Serializable
+data class BusyDay(
+    val date: String,
+    val windows: List<String> = emptyList(), // "18:00-20:30"
+    val all_day: Boolean = false,
+)
 
 @Serializable
 data class WeekPlanRow(val start_date: String, val focus: String? = null, val rationale: String? = null)
@@ -263,30 +367,6 @@ data class PlanWeekResult(
     val scheduled: Int = 0,
     val pushed: Int = 0,
     val days: List<PlanDaySummary> = emptyList(),
-    val error: String? = null,
-)
-
-@Serializable
-data class PlanBlockRequest(val weeks: Int? = null, val push_weeks: Int = 2)
-
-@Serializable
-data class PlanBlockWeek(
-    val week: Int = 0,
-    val start_date: String = "",
-    val focus: String? = null,
-    val scheduled: Int = 0,
-    val pushed: Int = 0,
-    val error: String? = null,
-)
-
-@Serializable
-data class PlanBlockResult(
-    val start_date: String? = null,
-    val end_date: String? = null,
-    val weeks: Int = 0,
-    val weeks_planned: Int = 0,
-    val pushed_weeks: Int = 0,
-    val weeks_detail: List<PlanBlockWeek> = emptyList(),
     val error: String? = null,
 )
 
@@ -362,6 +442,18 @@ data class CompletedActivity(
             return (s / (d / 1000.0)).toInt()
         }
 
+    // Swims are paced per 100 m everywhere (summary tiles, charts, splits).
+    val isSwim: Boolean get() = (type ?: "").contains("swim", ignoreCase = true)
+
+    /** Average swim pace in sec/100m. */
+    val paceSecPer100m: Int?
+        get() {
+            val d = distance_m ?: return null
+            val s = duration_seconds ?: return null
+            if (d < 100) return null
+            return (s / (d / 100.0)).toInt()
+        }
+
     // --- typed pulls out of the raw Intervals object ---
     fun str(key: String): String? =
         (data_json?.get(key) as? kotlinx.serialization.json.JsonPrimitive)?.contentOrNull
@@ -385,6 +477,8 @@ data class CompletedActivity(
     val elapsedSeconds: Int? get() = num("elapsed_time")?.toInt()
     // Max pace from peak speed (m/s → sec/km); ignores GPS spikes under ~0.5 m/s.
     val maxPaceSecPerKm: Int? get() = num("max_speed")?.let { if (it > 0.5) (1000.0 / it).toInt() else null }
+    // Max swim pace (m/s → sec/100m); a lower floor since swim speeds are lower.
+    val maxPaceSecPer100m: Int? get() = num("max_speed")?.let { if (it > 0.25) (100.0 / it).toInt() else null }
     // Normalized/weighted power for runs/rides with a power source.
     val normalizedPower: Int? get() = num("icu_weighted_avg_watts")?.toInt()
     // Aerobic decoupling (Pa:HR / Pw:HR drift), as a percentage.
@@ -520,9 +614,15 @@ data class ActivityAnalysis(
     val target: AnalysisTarget? = null,
     val splits: List<AnalysisSplit> = emptyList(),
     val planned_title: String? = null,
+    // "/km" (default) or "/100m" for swims; old cached analyses lack it.
+    val pace_unit: String? = null,
+    // Metres per split (1000, or 100 for swims).
+    val split_m: Int? = null,
     val streams_error: String? = null,
     val error: String? = null,
-)
+) {
+    val isPer100m: Boolean get() = pace_unit == "/100m"
+}
 
 // --- Strength session analysis (analyze-strength) ---------------------------
 @Serializable
@@ -636,7 +736,16 @@ data class CoachChatRequest(
     val purpose: String = "plan",
     val save: Boolean = false,
     val stream: Boolean = false,
+    // Incognito turn: the server answers with full context but persists nothing
+    // (no conversation row, no knowledge/summary updates).
+    val incognito: Boolean = false,
 )
+
+// A device setting the coach changed via the update_app_settings tool. Values
+// arrive normalized as strings ("dark", "90", "true"); the app maps them onto
+// AppPreferences through its own whitelist (ChatSettings.kt).
+@Serializable
+data class ChatSettingChange(val key: String, val value: String)
 
 @Serializable
 data class CoachReply(
@@ -645,6 +754,7 @@ data class CoachReply(
     val provider: String? = null,
     val estimated_cost_usd: Double = 0.0,
     val tools_used: List<String> = emptyList(),
+    val settings_changes: List<ChatSettingChange> = emptyList(),
 )
 
 @Serializable
@@ -658,6 +768,13 @@ data class CoachConversation(
 
 // --- Training profile (onboarding jsonb) ------------------------------------
 @Serializable
+data class InjuryEntry(
+    val area: String,
+    val severity: String = "", // "" | "mild" | "moderate" | "serious"
+    val note: String? = null,
+)
+
+@Serializable
 data class TrainingProfile(
     val goal: String? = null,
     val experience: String? = null,
@@ -669,7 +786,12 @@ data class TrainingProfile(
     val equipment: String? = null,
     val target_pace: String? = null,
     val goal_date: String? = null,
+    // Legacy free-text field, kept only so old profiles still round-trip; no
+    // longer written by the app. New injuries go into `injuries` below —
+    // backend readers go through injuriesOf() (_shared/profile.ts) which falls
+    // back to parsing this string when `injuries` is empty.
     val injury_history: String? = null,
+    val injuries: List<InjuryEntry> = emptyList(),
     val weekly_tss_target: Int? = null,
     // E1: thresholds for zone calculation. lthr=bpm, ftp=watts,
     // threshold_pace_per_km="m:ss" (your ~1h race pace).
@@ -694,6 +816,9 @@ data class TrainingProfile(
     val birth_year: Int? = null,
     val weight_kg: Int? = null,
     val height_cm: Int? = null,
+    // Body fat %, from a Health Connect smart scale or typed in. Optional; when
+    // present the strength generator gets bodyweight/BMI/body-fat context.
+    val body_fat_pct: Double? = null,
     // --- Rich onboarding fields (additive) --------------------------------
     // These carry the fuller picture the onboarding flow now collects. The
     // single-value fields above are DERIVED from these (deriveLegacyFields) so

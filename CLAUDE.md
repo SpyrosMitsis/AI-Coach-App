@@ -41,6 +41,11 @@ scripts/dev.sh db:push                 # run pending migrations (asks first)
 - **Coach voice**: human, not a stats recital. Don't shove raw numbers into the prompt
   context. The biggest coach-quality lever is the LLM model (default groq is weak; strong
   models need Settings opt-in).
+- **Free-text `coach_knowledge` has no date-level authority.** It's prose competing with
+  `plan-week`'s concrete per-date day list, and prose loses (a stated "stopping training
+  until X" got scheduled over anyway until this was fixed). A fact that should override
+  specific dates needs a structured field feeding `_shared/week_planning.ts`'s
+  `computeDayList` — `training_paused_until`/`set_training_pause` is the reference example.
 - **Project ref & device serial** live in `scripts/dev.local.sh` (untracked) — `dev.sh`
   sources it automatically. Don't hardcode them in tracked files; this repo is public.
 
@@ -69,7 +74,7 @@ scripts/dev.sh db:push                 # run pending migrations (asks first)
 ## Test / deploy
 
 ```
-scripts/dev.sh deno:test                       # 93+ shared tests
+scripts/dev.sh deno:test                       # 327+ shared tests
 scripts/dev.sh deno:check generate-workout …   # type-check before deploy
 scripts/dev.sh fn:deploy generate-workout coach-chat
 scripts/dev.sh db:push                          # migrations (confirm first)

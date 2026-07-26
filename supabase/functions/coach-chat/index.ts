@@ -34,11 +34,17 @@ import {
   updateUserDoc,
 } from "../_shared/agent_memory.ts";
 import { corsHeaders } from "../_shared/cors.ts";
-import { profileFactsBlock } from "../_shared/profile.ts";
+import { injuriesText, profileFactsBlock } from "../_shared/profile.ts";
 import { COACH_SYSTEM_PROMPT, finalizeInstruction, freshnessWord, recoveryWord, trainingPhase } from "../_shared/prompt.ts";
 import type { LlmProvider } from "../_shared/types.ts";
-import { executeTool, nativeToolDefs, toolCatalogPrompt } from "../_shared/coach_tools.ts";
-import { looksLikeStall } from "../_shared/coach_eval.ts";
+import {
+  type AppSettingChange,
+  executeTool,
+  nativeToolDefs,
+  toolCatalogPrompt,
+  validateAppSettings,
+} from "../_shared/coach_tools.ts";
+import { callBudget, cleanReply, looksLikeStall, shouldUpdateKnowledge } from "../_shared/coach_eval.ts";
 import { runNativeToolLoop, supportsNativeTools } from "../_shared/llm_native_tools.ts";
 
 // Tool-use protocol appended to the coach system prompt for chat mode. The
@@ -55,6 +61,7 @@ RULES:
 - Only pause to ask first when the action is genuinely ambiguous AND unsignalled. When you do ask, ask once and propose a specific default.
 - Don't end a turn by handing trivial work back ("want me to schedule it?") when the request already implied yes, just do it and report.
 - Call remember when the athlete shares a durable preference, constraint, or injury.
+- Call set_training_pause when the athlete says they're stopping/pausing training for a stretch WITH a return date (travel, illness, work crunch, "I'm going to X until Y"). This is what actually stops plan_week from scheduling sessions in that window, do not rely on remember alone for this. Call resume_training if they say they're back early.
 - Be efficient: a few targeted reads, then act/answer. You have at most 6 tool calls per turn.
 - Final messages are warm but concise, and sound like a human coach. NOT a stats readout. Translate the data into plain language ("you're a bit run-down", "you're fresh"); don't recite raw metrics like "CTL 7, ATL 14, TSB -7, readiness 57/100". Quote a number only when it's directly actionable (a target pace, a working weight). End with what you did or one clear next step.`;
 
@@ -92,32 +99,8 @@ const NATIVE_MAX_STEPS = 6;
 const PROTOCOL_MAX_STEPS = 6;
 const MAX_LLM_CALLS_PER_TURN = 12;
 
-function callBudget(max: number) {
-  let used = 0;
-  return {
-    spend(n = 1) { used += n; },
-    exhausted() { return used >= max; },
-    remaining() { return Math.max(0, max - used); },
-    used() { return used; },
-  };
-}
-
-// The JSON tool protocol occasionally leaks its envelope into the final reply
-// (fenced JSON, or {"action":"final","message":...} as raw text). Scrub it
-// server-side so leaked protocol never reaches the client or the saved thread.
-function cleanReply(text: string): string {
-  let t = text.trim();
-  const fence = t.match(/^```(?:json)?\s*([\s\S]*?)```$/i);
-  if (fence) t = fence[1].trim();
-  if (t.startsWith("{")) {
-    try {
-      const o = JSON.parse(t) as Record<string, unknown>;
-      const m = o.message ?? o.reply ?? o.final;
-      if (typeof m === "string" && m.trim()) return m.trim();
-    } catch { /* not JSON, keep as-is */ }
-  }
-  return t;
-}
+// callBudget/cleanReply live in _shared/coach_eval.ts (tested there) alongside
+// the other pure coach-quality helpers, instead of trapped here untested.
 
 // Tools that mutate the athlete's plan/calendar. The anti-stall guard uses this
 // to tell "the coach actually acted" from "the coach only talked about acting".
@@ -128,10 +111,14 @@ const WRITE_TOOLS = new Set([
   "set_goal_race",
   "set_rest_day",
   "make_easier",
+  "set_training_pause",
+  "resume_training",
   // Mutates the profile, not the calendar: counts as "acted" for the
   // anti-stall guard and write-dedup, but the CLIENT's write set deliberately
   // excludes it (no calendar result card for saving an FTP).
   "update_profile",
+  // Applied on the device, not the DB, but it's still "the coach acted".
+  "update_app_settings",
 ]);
 
 // The stall heuristic ("promised a plan change instead of calling the tool")
@@ -159,23 +146,9 @@ function waitUntil(p: Promise<unknown>) {
 // summary (see persistThread), so old context is COMPRESSED, not lost.
 const trimThread = (msgs: ChatMessage[]): ChatMessage[] => compressThread(msgs).kept;
 
-// Durable facts worth remembering tend to mention these. We only spend a token
-// budget on knowledge-extraction when the latest user turn plausibly carries one.
-const KNOWLEDGE_HINTS =
-  /\b(injur|hurt|pain|sore|tendin|strain|sprain|knee|shoulder|back|hip|ankle|wrist|elbow|equipment|dumbbell|barbell|kettlebell|machine|rack|gym|home|treadmill|don'?t have|no access|only have|prefer|hate|dislike|avoid|can'?t|cannot|unable|allerg|vegan|schedule|mornings?|evenings?|nights?|work|travel|busy|recover)/i;
-
-// First-person declaratives often carry durable preferences/constraints without
-// a hint keyword ("I only train twice a week", "my coach said no deadlifts").
-const SELF_STATEMENT =
-  /\b(i|my)\b.{0,40}\b(only|usually|always|never|tend to|can'?t|cannot|won'?t|prefer|like|love|hate|need|have to|train|do|avoid|stick to|coach|physio|doctor)\b/i;
-
-// Decide whether to run the (background, LLM-backed) knowledge maintainer: on a
-// keyword hint, on a first-person declarative, or periodically as a safety net
-// so an oddly-phrased durable fact still lands within a few turns.
-function shouldUpdateKnowledge(lastUser: string, userTurns: number): boolean {
-  return KNOWLEDGE_HINTS.test(lastUser) || SELF_STATEMENT.test(lastUser) ||
-    (userTurns > 0 && userTurns % 4 === 0);
-}
+// shouldUpdateKnowledge (+ its KNOWLEDGE_HINTS/SELF_STATEMENT regexes) lives in
+// _shared/coach_eval.ts (tested there) — decides whether to run the
+// background, LLM-backed knowledge maintainer this turn.
 
 const log = logger("coach-chat");
 
@@ -206,7 +179,6 @@ Deno.serve(async (req) => {
       .eq("id", userId)
       .single();
     const onboarding = (profile?.onboarding ?? {}) as Record<string, unknown>;
-    const existingKnowledge = (profile?.coach_knowledge ?? "") as string;
     const agentMemory = memoryFromProfile(profile);
 
     // Running summary of earlier turns archived out of the active window — lets
@@ -312,7 +284,7 @@ Deno.serve(async (req) => {
 - Name: ${profile?.display_name ?? "athlete"}; today is ${today}
 - Goal: ${onboarding.goal ?? "not set"}; experience: ${onboarding.experience ?? "unknown"}
 - Available days: ${(onboarding.days as string[] | undefined)?.join(", ") ?? "unknown"}; session length: ${onboarding.session_duration ?? "?"} min
-- Equipment: ${onboarding.equipment ?? "unknown"}; injuries: ${onboarding.injury_history ?? "none noted"}
+- Equipment: ${onboarding.equipment ?? "unknown"}; injuries: ${injuriesText(onboarding) || "none noted"}
 - Form/freshness: ${freshnessWord(ctl - atl)} (TSB ${(ctl - atl).toFixed(0)})
 - Recovery today: ${recoveryWord(recovery.band)} (${recovery.score}/100), trend ${recoveryTrendWord}; weekly load so far ~${weeklyTss} TSS, background only, don't quote it unless they ask
 - This week: ${adherenceLine}
@@ -344,6 +316,12 @@ Deno.serve(async (req) => {
 
       const runAgentic = async (onTool?: (name: string) => void) => {
         const toolsUsed: string[] = [];
+        // A remember call is a stronger signal a durable fact just changed than
+        // any regex on the user's message text — see rememberCalled below.
+        let rememberCalledThisTurn = false;
+        // update_app_settings changes ride back to the device with the reply
+        // (they live in the phone's DataStore, so only the app can apply them).
+        const settingsChanges: AppSettingChange[] = [];
         let provider: LlmProvider | string = chain[0] ?? "";
         // Token usage summed across every LLM call this turn made (native loop +
         // JSON-protocol steps + the anti-stall retry) → logged for cost tracking.
@@ -365,8 +343,21 @@ Deno.serve(async (req) => {
             if (prior) { log.warn("dedup_write", { tool: name }); return prior; }
           }
           toolsUsed.push(name);
+          if (name === "remember") rememberCalledThisTurn = true;
           try { onTool?.(name); } catch { /* never block on UI events */ }
-          const obs = executeTool(admin, userId, auth, name, targs);
+          // Device-applied settings: validate here, queue for the reply, and
+          // hand the model an observation it can report as done.
+          const obs = name === "update_app_settings"
+            ? (() => {
+              const { changes, rejected } = validateAppSettings(targs);
+              settingsChanges.push(...changes);
+              return Promise.resolve(JSON.stringify({
+                ok: changes.length > 0,
+                applied_on_device: changes,
+                ...(rejected.length ? { rejected } : {}),
+              }));
+            })()
+            : executeTool(admin, userId, auth, name, targs);
           if (writeKey) writeCache.set(writeKey, obs);
           return obs;
         };
@@ -496,10 +487,15 @@ Deno.serve(async (req) => {
             toolsUsed,
           }));
         }
-        return { replyText, toolsUsed, provider };
+        return { replyText, toolsUsed, provider, settingsChanges, rememberCalledThisTurn };
       };
 
-      const persistThread = async (replyText: string): Promise<string | null> => {
+      // Incognito turns leave no trace: no conversation row, no knowledge
+      // update, no summary. The reply itself still uses the full profile.
+      const incognito = body.incognito === true;
+
+      const persistThread = async (replyText: string, rememberCalled: boolean): Promise<string | null> => {
+        if (incognito) return null;
         const fullThread = [...messages, { role: "assistant", content: replyText }];
         let convId: string | null = body.conversationId ?? null;
         try {
@@ -518,9 +514,14 @@ Deno.serve(async (req) => {
         const bundle = { chain, resolveKey, resolveModel, resolveBaseUrl, hosted, pricing: profile };
         const lastUser = [...messages].reverse().find((m) => m.role === "user")?.content ?? "";
         const userTurns = (fullThread as ChatMessage[]).filter((m) => m.role === "user").length;
-        if (shouldUpdateKnowledge(lastUser, userTurns)) {
+        // A remember call this turn forces reconciliation too, regardless of
+        // whether the user's message text happens to match a hint/self-
+        // statement regex — otherwise a contradicting fact saved via `remember`
+        // can sit unreconciled in coach_knowledge (injected as "HARD RULES" into
+        // every future prompt) until an unrelated trigger next fires.
+        if (shouldUpdateKnowledge(lastUser, userTurns) || rememberCalled) {
           // Slow secondary LLM call — never block the response on it.
-          waitUntil(updateUserDoc(admin, userId, existingKnowledge, fullThread as ChatMessage[], bundle));
+          waitUntil(updateUserDoc(admin, userId, fullThread as ChatMessage[], bundle));
         }
         // Fold any turns now archived out of the active window into the running
         // summary — background, so the next turn stays coherent for free.
@@ -550,11 +551,17 @@ Deno.serve(async (req) => {
               try { controller.enqueue(encoder.encode(": ping\n\n")); } catch { /* disconnected */ }
             }, HEARTBEAT_MS);
             try {
-              const { replyText, toolsUsed, provider } = await runAgentic((name) => send({ tool: name }));
+              const { replyText, toolsUsed, provider, settingsChanges, rememberCalledThisTurn } = await runAgentic((name) => send({ tool: name }));
               send({ token: replyText });
               const saveAndFinish = (async () => {
-                const convId = await persistThread(replyText);
-                send({ done: true, conversation_id: convId, provider, tools_used: toolsUsed });
+                const convId = await persistThread(replyText, rememberCalledThisTurn);
+                send({
+                  done: true,
+                  conversation_id: convId,
+                  provider,
+                  tools_used: toolsUsed,
+                  ...(settingsChanges.length ? { settings_changes: settingsChanges } : {}),
+                });
                 try { controller.close(); } catch { /* already closed */ }
               })();
               waitUntil(saveAndFinish);
@@ -572,9 +579,15 @@ Deno.serve(async (req) => {
         });
       }
 
-      const { replyText, toolsUsed, provider } = await runAgentic();
-      const convId = await persistThread(replyText);
-      return json({ reply: replyText, conversation_id: convId, provider, tools_used: toolsUsed });
+      const { replyText, toolsUsed, provider, settingsChanges, rememberCalledThisTurn } = await runAgentic();
+      const convId = await persistThread(replyText, rememberCalledThisTurn);
+      return json({
+        reply: replyText,
+        conversation_id: convId,
+        provider,
+        tools_used: toolsUsed,
+        ...(settingsChanges.length ? { settings_changes: settingsChanges } : {}),
+      });
     }
 
     const outcome = await llmGenerateWithFallback(
@@ -616,7 +629,7 @@ Deno.serve(async (req) => {
       const userTurns = (fullThread as ChatMessage[]).filter((m) => m.role === "user").length;
       if (shouldUpdateKnowledge(lastUser, userTurns)) {
         // Slow secondary LLM call — don't block the reply on it.
-        waitUntil(updateUserDoc(admin, userId, existingKnowledge, fullThread as ChatMessage[], { chain, resolveKey, resolveModel, resolveBaseUrl, hosted, pricing: profile }));
+        waitUntil(updateUserDoc(admin, userId, fullThread as ChatMessage[], { chain, resolveKey, resolveModel, resolveBaseUrl, hosted, pricing: profile }));
       }
       return json({ reply: outcome.text, conversation_id: conversationId, provider: outcome.provider, estimated_cost_usd: cost });
     }

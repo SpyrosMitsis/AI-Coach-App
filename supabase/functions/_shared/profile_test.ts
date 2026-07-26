@@ -5,6 +5,8 @@ import {
   experienceBlock,
   experienceForSport,
   goalsText,
+  injuriesOf,
+  injuriesText,
   minutesForDate,
   profileFactsBlock,
 } from "./profile.ts";
@@ -81,6 +83,36 @@ Deno.test("profileFactsBlock: renders the static facts, empty when unset", () =>
   // Nothing set (and the default "General fitness" goal) => empty.
   assertEquals(profileFactsBlock({}), "");
   assertEquals(profileFactsBlock({}, "  "), "");
+});
+
+Deno.test("injuriesOf: structured `injuries` array wins over legacy injury_history", () => {
+  const o = {
+    injuries: [{ area: "Knee", severity: "moderate" }],
+    injury_history: "Shoulder (serious)", // stale legacy value, should be ignored
+  };
+  assertEquals(injuriesOf(o), [{ area: "Knee", severity: "moderate" }]);
+});
+
+Deno.test("injuriesOf: falls back to parsing legacy injury_history when injuries is unset", () => {
+  const o = { injury_history: "Knee (moderate), lower back" };
+  assertEquals(injuriesOf(o), [
+    { area: "Knee", severity: "moderate" },
+    { area: "lower back", severity: "" },
+  ]);
+});
+
+Deno.test("injuriesOf: empty/unset input yields no entries", () => {
+  assertEquals(injuriesOf({}), []);
+  assertEquals(injuriesOf({ injury_history: "" }), []);
+  assertEquals(injuriesOf({ injury_history: "   " }), []);
+});
+
+Deno.test("injuriesText: renders severity only when set", () => {
+  assertEquals(
+    injuriesText({ injuries: [{ area: "Knee", severity: "moderate" }, { area: "Wrist", severity: "" }] }),
+    "Knee (moderate); Wrist",
+  );
+  assertEquals(injuriesText({}), "");
 });
 
 // The "no em/en dashes" house rule applies to prompt-facing strings too.

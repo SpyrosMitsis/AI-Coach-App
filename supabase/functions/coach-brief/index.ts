@@ -16,9 +16,11 @@ import { llmGenerateWithFallback } from "../_shared/llm.ts";
 import { logLlmResult } from "../_shared/generation_log.ts";
 import { computeRecovery } from "../_shared/recovery.ts";
 import { BRIEF_SYSTEM, buildBriefPrompt, trainingPhase } from "../_shared/prompt.ts";
+import { computeBodyTrend } from "../_shared/body_trend.ts";
 import { memoryDocsBlock, memoryFromProfile } from "../_shared/agent_memory.ts";
 import { profileFactsBlock } from "../_shared/profile.ts";
 import { applyFallbackFitness } from "../_shared/load.ts";
+import { clipText, type DebriefEntry, fetchRecentDebriefs } from "../_shared/context.ts";
 
 const DAY = 86_400_000;
 const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
@@ -43,6 +45,7 @@ Deno.serve(async (req) => {
     const qDate = new URL(req.url).searchParams.get("date");
     const clientDate = [body?.date, qDate].find((d) => typeof d === "string" && ISO_DATE.test(d));
     const today = (clientDate as string | undefined) ?? new Date().toISOString().slice(0, 10);
+    const yesterday = new Date(new Date(today + "T12:00:00Z").getTime() - DAY).toISOString().slice(0, 10);
     const since14 = new Date(Date.now() - 14 * DAY).toISOString().slice(0, 10);
     const since7 = new Date(Date.now() - 7 * DAY).toISOString().slice(0, 10);
 
@@ -56,14 +59,17 @@ Deno.serve(async (req) => {
     // Opt-out: the briefing toggle defaults ON; only `briefing === false` disables.
     if (onboarding.briefing === false) return json({ brief: null, date: today, disabled: true });
 
-    const [{ data: wellness }, { data: activities }, { data: planned }] = await Promise.all([
+    const [{ data: wellness }, { data: activities }, { data: plannedRows }, debriefs] = await Promise.all([
       admin.from("wellness_checkins").select("date, energy, soreness, sleep_score, hrv_rmssd, resting_hr, zepp_sleep_minutes")
         .eq("user_id", userId).gte("date", since14).order("date", { ascending: false }),
       admin.from("completed_activities").select("date, type, tss, ctl, atl")
         .eq("user_id", userId).gte("date", since14).order("date", { ascending: true }),
-      admin.from("planned_workouts").select("type, completed, skipped, workout_json, created_at")
-        .eq("user_id", userId).eq("date", today),
+      admin.from("planned_workouts").select("date, type, completed, skipped, workout_json, created_at")
+        .eq("user_id", userId).gte("date", yesterday).lte("date", today),
+      fetchRecentDebriefs(admin, userId, yesterday, 4),
     ]);
+    const planned = (plannedRows ?? []).filter((p) => p.date === today);
+    const plannedYesterday = (plannedRows ?? []).filter((p) => p.date === yesterday && p.type !== "rest");
 
     // No intervals-provided CTL in the window? Fill estimated values from
     // stored TSS so Form still reads for athletes without intervals.icu.
@@ -115,6 +121,47 @@ Deno.serve(async (req) => {
     const objectiveData = recovery.hrv?.latest != null ||
       recovery.rhr?.latest != null || recovery.sleep?.hours != null;
 
+    // Measured execution: how yesterday's (or today's) session actually went.
+    // Coach-facing, so the label + the analyst's words only, never scores.
+    const debriefStr = (e: DebriefEntry | undefined): string | null => {
+      if (!e) return null;
+      const note = e.feedback ? `"${clipText(e.feedback, 200)}"` : null;
+      return e.label && note ? `${e.label}: ${note}` : e.label ?? note;
+    };
+    const yesterdayDebrief = debriefStr(debriefs.find((e) => e.date === yesterday));
+    const todayDebrief = debriefStr(debriefs.find((e) => e.date === today));
+    const looksLike = (plannedType: string, actualType: string | null | undefined): boolean => {
+      const a = (actualType ?? "").toLowerCase();
+      switch (plannedType) {
+        case "run": return a.includes("run") || a.includes("walk");
+        case "ride": return a.includes("ride") || a.includes("bike") || a.includes("cycl");
+        case "swim": return a.includes("swim");
+        case "strength": return a.includes("weight") || a.includes("strength") || a.includes("gym") || a === "workout";
+        default: return false;
+      }
+    };
+    const actsYesterday = acts.filter((a) => a.date === yesterday);
+    const yesterdayMissed = !yesterdayDebrief && plannedYesterday.some((p) =>
+      !p.completed && !p.skipped && !actsYesterday.some((a) => looksLike(p.type, a.type))
+    );
+
+    // Body-composition trend: only worth a line in a 2-sentence note when the
+    // athlete has a body goal AND there is a real slope. Best-effort, so a
+    // pre-migration DB just skips it.
+    let bodyTrendLine: string | null = null;
+    try {
+      const since90 = new Date(new Date(today + "T12:00:00Z").getTime() - 90 * DAY)
+        .toISOString().slice(0, 10);
+      const { data: bodyRows, error: bodyErr } = await admin.from("wellness_checkins")
+        .select("date, weight_kg, body_fat_pct, lean_mass_kg")
+        .eq("user_id", userId).gte("date", since90).lte("date", today).order("date", { ascending: true });
+      if (!bodyErr && bodyRows) {
+        const goals = ((onboarding.goals_by_sport as Record<string, string[]> | undefined)?.strength) ?? [];
+        const bt = computeBodyTrend(bodyRows, goals, today);
+        if (bt && bt.focus !== "general" && bt.onTrack !== null) bodyTrendLine = bt.summary;
+      }
+    } catch { /* columns not migrated yet */ }
+
     const userPrompt = buildBriefPrompt({
       name: (profile?.display_name as string) ?? "athlete",
       readiness: recovery.score,
@@ -127,6 +174,10 @@ Deno.serve(async (req) => {
       goal: (onboarding.goal as string) ?? "general fitness",
       weeklyLoadPct,
       objectiveData,
+      yesterdayDebrief,
+      todayDebrief,
+      yesterdayMissed,
+      bodyTrend: bodyTrendLine,
     });
     // Lead with the coach's soul/voice + durable knowledge so the note sounds
     // like a continuation of this relationship, not a generic tip.

@@ -29,8 +29,10 @@ import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.PushPin
+import androidx.compose.material.icons.filled.VisibilityOff
 import androidx.compose.material.icons.outlined.Delete
 import androidx.compose.material.icons.outlined.PushPin
+import androidx.compose.material.icons.outlined.VisibilityOff
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -128,7 +130,8 @@ internal fun friendlyToolProgress(tool: String): String = when (tool) {
     "make_easier" -> "Making the session easier…"
     "set_goal_race" -> "Setting your goal race…"
     "remember" -> "Noting that down…"
-    "update_profile" -> "Saving your numbers…"
+    "update_profile" -> "Updating your profile…"
+    "update_app_settings" -> "Updating your app settings…"
     else -> "Working…"
 }
 
@@ -205,7 +208,8 @@ private fun friendlyTools(tools: List<String>): String {
             "make_easier" -> "made the session easier"
             "set_goal_race" -> "set your goal race"
             "remember" -> "noted that for next time"
-            "update_profile" -> "saved your numbers"
+            "update_profile" -> "updated your profile"
+            "update_app_settings" -> "updated your app settings"
             else -> t
         }
     }
@@ -252,6 +256,15 @@ class CoachViewModel @Inject constructor(
         ),
     )
     private var conversationId: String? = null
+
+    // Incognito: this thread is never saved (server persists nothing, history
+    // never lists it). Toggling starts a fresh thread so the semantics are
+    // clean — a chat is either fully saved or fully ephemeral.
+    val incognito = MutableStateFlow(false)
+    fun toggleIncognito() {
+        incognito.value = !incognito.value
+        newChat(keepIncognito = true)
+    }
 
     // ---- typewriter reveal ---------------------------------------------------
     // The server sends the whole reply as ONE token event (true LLM streaming
@@ -471,6 +484,7 @@ class CoachViewModel @Inject constructor(
     /** Load a past conversation to read or continue it. */
     fun openConversation(c: com.workoutmaker.app.data.CoachConversation) {
         cancelReveal() // never type a stale reply into the newly opened thread
+        incognito.value = false // saved threads are by definition not incognito
         conversationId = c.id
         messages.value = listOf(ChatMessage("assistant", GREETING)) + c.messages
         banner.value = null
@@ -478,8 +492,9 @@ class CoachViewModel @Inject constructor(
     }
 
     /** Start a fresh thread. */
-    fun newChat() {
+    fun newChat(keepIncognito: Boolean = false) {
         cancelReveal()
+        if (!keepIncognito) incognito.value = false
         conversationId = null
         messages.value = listOf(ChatMessage("assistant", GREETING))
         banner.value = null
@@ -509,9 +524,14 @@ class CoachViewModel @Inject constructor(
                 gotReply = true
                 queueReveal(tok)
             }
+            suspend fun applySettings(changes: List<com.workoutmaker.app.data.ChatSettingChange>) {
+                if (changes.isEmpty()) return
+                val applied = repo.applyChatSettings(changes)
+                if (applied.isNotEmpty()) banner.value = "✓ Settings updated: " + applied.joinToString(", ")
+            }
             val streamed = runCatching {
                 repo.coachAgenticStream(
-                    history, conversationId,
+                    history, conversationId, incognito.value,
                     onTool = { advanceTool(it) },
                     onToken = { appendToken(it) },
                 )
@@ -521,19 +541,22 @@ class CoachViewModel @Inject constructor(
                 r.error?.let { err ->
                     if (!gotReply) messages.value = messages.value + ChatMessage("assistant", "⚠️ $err")
                 }
-                if (r.toolsUsed.isNotEmpty()) banner.value = "🔧 " + friendlyTools(r.toolsUsed)
+                applySettings(r.settingsChanges)
                 onToolsUsed(r.toolsUsed)
             }.onFailure {
                 if (!gotReply) {
                     // Stream transport failed — retry once over the plain endpoint.
                     runCatching {
                         repo.coachChat(
-                            CoachChatRequest(messages = history, mode = "chat", conversationId = conversationId, purpose = "setup"),
+                            CoachChatRequest(
+                                messages = history, mode = "chat", conversationId = conversationId,
+                                purpose = "setup", incognito = incognito.value,
+                            ),
                         )
                     }.onSuccess { reply ->
                         conversationId = reply.conversation_id ?: conversationId
                         appendToken(reply.reply ?: "(no reply)")
-                        if (reply.tools_used.isNotEmpty()) banner.value = "🔧 " + friendlyTools(reply.tools_used)
+                        applySettings(reply.settings_changes)
                         onToolsUsed(reply.tools_used)
                     }.onFailure { e2 ->
                         com.workoutmaker.app.util.AppLog.w("coach", "both transports failed", e2)
@@ -708,16 +731,25 @@ fun CoachScreen(vm: CoachViewModel = hiltViewModel(), onOpenCalendar: () -> Unit
     }
 
     Column(Modifier.fillMaxSize().padding(top = 8.dp)) {
+        val incognito by vm.incognito.collectAsStateSafe()
         Row(
             Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 14.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
             Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
-                com.workoutmaker.app.ui.components.SectionLabel("AI COACH")
+                com.workoutmaker.app.ui.components.SectionLabel(if (incognito) "AI COACH · INCOGNITO" else "AI COACH")
                 Text(
                     "Coach",
                     style = MaterialTheme.typography.headlineSmall,
                     fontWeight = FontWeight.Bold,
+                )
+            }
+            IconButton(onClick = { vm.toggleIncognito() }) {
+                Icon(
+                    if (incognito) Icons.Filled.VisibilityOff else Icons.Outlined.VisibilityOff,
+                    contentDescription = if (incognito) "Leave incognito" else "Incognito chat",
+                    tint = if (incognito) MaterialTheme.colorScheme.primary
+                    else MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }
             IconButton(onClick = { vm.openHistory() }) {
@@ -726,6 +758,14 @@ fun CoachScreen(vm: CoachViewModel = hiltViewModel(), onOpenCalendar: () -> Unit
             IconButton(onClick = { vm.newChat() }) {
                 Icon(Icons.Filled.Add, contentDescription = "New chat")
             }
+        }
+        if (incognito) {
+            Text(
+                "Incognito: this chat won't be saved to history or remembered by your coach.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(horizontal = 16.dp).padding(bottom = 6.dp),
+            )
         }
 
         Box(Modifier.weight(1f).fillMaxWidth()) {
@@ -740,7 +780,15 @@ fun CoachScreen(vm: CoachViewModel = hiltViewModel(), onOpenCalendar: () -> Unit
                 itemsIndexed(messages, key = { i, _ -> i }) { i, msg ->
                     // Consecutive assistant messages group under one avatar.
                     val prevRole = messages.getOrNull(i - 1)?.role
-                    Box(Modifier.animateItem()) { Bubble(msg, showAvatar = msg.role != prevRole) }
+                    // animateItem() smooths a settled bubble being replaced in place,
+                    // but on the CURRENTLY GROWING reply it animates the bubble's own
+                    // resize — its bounds lag the real size every tick, so the
+                    // overflow-based auto-scroll below (which reads those bounds)
+                    // keeps chasing a moving target and never truly pins to the
+                    // bottom while text is streaming in. Skip it on that one bubble.
+                    val isStreamingTail = revealing && i == messages.lastIndex && msg.role == "assistant"
+                    val itemModifier = if (isStreamingTail) Modifier else Modifier.animateItem()
+                    Box(itemModifier) { Bubble(msg, showAvatar = msg.role != prevRole) }
                 }
                 // A failed turn gets a one-tap retry directly under it.
                 val last = messages.lastOrNull()

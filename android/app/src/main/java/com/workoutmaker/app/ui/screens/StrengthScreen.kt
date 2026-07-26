@@ -121,17 +121,21 @@ internal fun fmtClock(totalSec: Long): String = com.workoutmaker.app.ui.componen
 internal fun trimKg(v: Double): String = com.workoutmaker.app.ui.components.fmtWeight(v)
 
 @Composable
-fun StrengthScreen(vm: StrengthViewModel = hiltViewModel(), onOpenHistory: () -> Unit = {}) {
+fun StrengthScreen(
+    vm: StrengthViewModel = hiltViewModel(),
+    onOpenHistory: () -> Unit = {},
+    onOpenStats: (String) -> Unit = {},
+    onOpenStatsPicker: () -> Unit = {},
+) {
     val nav by vm.nav.collectAsStateSafe()
     val pendingPlanned by vm.pendingPlannedStart.collectAsStateSafe()
     val pendingEdit by vm.pendingEditStart.collectAsStateSafe()
     LaunchedEffect(Unit) { vm.loadHome() }
-    when (val n = nav) {
-        is StrengthNav.Home -> StrengthHomeView(vm, onOpenHistory)
-        is StrengthNav.Active -> ActiveWorkoutView(vm)
+    when (nav) {
+        is StrengthNav.Home -> StrengthHomeView(vm, onOpenHistory, onOpenStatsPicker)
+        is StrengthNav.Active -> ActiveWorkoutView(vm, onOpenStats)
         is StrengthNav.Picker -> ExercisePickerView(vm)
-        is StrengthNav.Stats -> ExerciseStatsView(vm, n.exercise)
-        is StrengthNav.WorkoutDetail -> WorkoutDetailView(vm)
+        is StrengthNav.WorkoutDetail -> WorkoutDetailView(vm, onOpenStats)
         is StrengthNav.RateEffort -> RateEffortView(vm)
     }
 
@@ -178,7 +182,11 @@ fun StrengthScreen(vm: StrengthViewModel = hiltViewModel(), onOpenHistory: () ->
 // ---------------------------------------------------------------------------
 @OptIn(androidx.compose.foundation.ExperimentalFoundationApi::class)
 @Composable
-internal fun StrengthHomeView(vm: StrengthViewModel, onOpenHistory: () -> Unit = {}) {
+internal fun StrengthHomeView(
+    vm: StrengthViewModel,
+    onOpenHistory: () -> Unit = {},
+    onOpenStatsPicker: () -> Unit = {},
+) {
     val history by vm.history.collectAsStateSafe()
     val routines by vm.routines.collectAsStateSafe()
     val logged by vm.loggedExercises.collectAsStateSafe()
@@ -189,7 +197,6 @@ internal fun StrengthHomeView(vm: StrengthViewModel, onOpenHistory: () -> Unit =
     val pendingSync by vm.pendingSync.collectAsStateSafe()
     val editingRoutine by vm.editingRoutine.collectAsStateSafe()
     val todayPlanned by vm.todayPlanned.collectAsStateSafe()
-    var showStatsPicker by remember { mutableStateOf(false) }
 
     if (prs.isNotEmpty()) {
         val haptics = LocalHapticFeedback.current
@@ -203,20 +210,13 @@ internal fun StrengthHomeView(vm: StrengthViewModel, onOpenHistory: () -> Unit =
             onCancel = { vm.cancelEditRoutine() },
         )
     }
-    if (showStatsPicker) {
-        ExerciseStatsPickerDialog(
-            exercises = logged,
-            onPick = { showStatsPicker = false; vm.openStats(it) },
-            onDismiss = { showStatsPicker = false },
-        )
-    }
 
     ScreenScaffold(
         title = "Strength",
         subtitle = "${history.size} workouts logged",
         eyebrow = "STRENGTH LOG",
         actions = {
-            IconButton(onClick = { showStatsPicker = true }, enabled = logged.isNotEmpty()) {
+            IconButton(onClick = onOpenStatsPicker, enabled = logged.isNotEmpty()) {
                 Icon(Icons.Filled.BarChart, contentDescription = "Exercise stats")
             }
             IconButton(onClick = onOpenHistory) {
@@ -241,24 +241,27 @@ internal fun StrengthHomeView(vm: StrengthViewModel, onOpenHistory: () -> Unit =
             TodayPlannedCard(mod, pw, onStart = { vm.startPlannedFromHome(pw) })
         }
 
-        // Start actions: empty (primary) / repeat last / AI generate (ghost)
+        // Start actions: AI generate is the primary path; empty/repeat are the
+        // secondary "skip the AI" shortcuts.
+        Button(
+            onClick = { vm.generateAiLift() },
+            enabled = !loading,
+            modifier = mod.height(52.dp),
+            shape = RoundedCornerShape(12.dp),
+        ) { Icon(Icons.Filled.AutoAwesome, null); Text("  Generate today's lift with AI") }
         Row(mod, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            Button(onClick = { vm.startEmpty() }, modifier = Modifier.weight(1f).height(52.dp),
-                shape = RoundedCornerShape(12.dp)) {
+            GhostButton(onClick = { vm.startEmpty() }, modifier = Modifier.weight(1f).height(48.dp)) {
                 Icon(Icons.Filled.Add, null); Text("  Empty")
             }
-            GhostButton(onClick = { vm.startFromLastWorkout() }, modifier = Modifier.weight(1f).height(52.dp)) {
+            GhostButton(onClick = { vm.startFromLastWorkout() }, modifier = Modifier.weight(1f).height(48.dp)) {
                 Icon(Icons.Filled.Refresh, null); Text("  Repeat")
             }
         }
-        GhostButton(
-            onClick = { vm.generateAiLift() },
-            enabled = !loading,
-            modifier = mod.height(48.dp),
-        ) { Icon(Icons.Filled.AutoAwesome, null); Text("  Generate today's lift with AI") }
 
         // Weekly volume + balance (B5)
         report?.let { WeeklyVolumeCard(mod, it) }
+
+        SectionLabel("Or run your own plan", mod)
 
         SectionCard(mod, title = "Routines") {
             Text(
@@ -335,59 +338,6 @@ internal fun TodayPlannedCard(
             }
         }
     }
-}
-
-// Searchable picker behind the top-bar 📊 button — replaces the old
-// "Exercise stats" chip card. Tap an exercise to open its stats page.
-@Composable
-internal fun ExerciseStatsPickerDialog(
-    exercises: List<String>,
-    onPick: (String) -> Unit,
-    onDismiss: () -> Unit,
-) {
-    var query by remember { mutableStateOf("") }
-    val filtered = remember(exercises, query) {
-        if (query.isBlank()) exercises else exercises.filter { it.contains(query.trim(), ignoreCase = true) }
-    }
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        confirmButton = { TextButton(onClick = onDismiss) { Text("Close") } },
-        title = { Text("Exercise stats") },
-        text = {
-            Column {
-                OutlinedTextField(
-                    value = query, onValueChange = { query = it },
-                    modifier = Modifier.fillMaxWidth(), singleLine = true,
-                    label = { Text("Search exercises") },
-                    leadingIcon = { Icon(Icons.Filled.Search, null) },
-                    trailingIcon = {
-                        if (query.isNotBlank()) IconButton(onClick = { query = "" }) { Icon(Icons.Filled.Close, "Clear") }
-                    },
-                )
-                LazyColumn(Modifier.heightIn(max = 380.dp).padding(top = 8.dp)) {
-                    if (filtered.isEmpty()) {
-                        item {
-                            com.workoutmaker.app.ui.components.EmptyState(
-                                title = "No matches",
-                                subtitle = "Try a different search.",
-                                icon = Icons.Filled.Search,
-                            )
-                        }
-                    }
-                    items(filtered) { ex ->
-                        Row(
-                            Modifier.fillMaxWidth().clickable { onPick(ex) }.padding(vertical = 10.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                        ) {
-                            Icon(Icons.Filled.BarChart, null, Modifier.size(18.dp),
-                                tint = MaterialTheme.colorScheme.primary)
-                            Text("  $ex", style = MaterialTheme.typography.bodyLarge)
-                        }
-                    }
-                }
-            }
-        },
-    )
 }
 
 @Composable

@@ -101,6 +101,66 @@ Deno.test("fallback: all fail → throws with the attempt log", async () => {
   assert(String(err).includes("no api key configured"));
 });
 
+Deno.test("anthropic: jsonSchema forces a tool call and extracts its input as JSON text", async () => {
+  let seenBody: Record<string, unknown> = {};
+  const out = await withFetchStub(
+    () => {
+      return new Response(JSON.stringify({
+        content: [{ type: "tool_use", name: "emit_workout", input: { type: "run", title: "Easy 5k" } }],
+        usage: { input_tokens: 20, output_tokens: 8 },
+      }), { status: 200, headers: { "Content-Type": "application/json" } });
+    },
+    () => llmGenerateWithFallback(
+      ["anthropic"] as LlmProvider[],
+      {
+        prompt: "hi",
+        systemPrompt: "sys",
+        jsonSchema: { name: "emit_workout", schema: { type: "object", properties: {} } },
+      },
+      () => Promise.resolve("sk-ant-test"),
+    ),
+  );
+  assertEquals(out.provider, "anthropic");
+  assertEquals(JSON.parse(out.text), { type: "run", title: "Easy 5k" });
+
+  // Confirm the request itself carried the forced tool choice.
+  const orig = globalThis.fetch;
+  globalThis.fetch = ((_input: URL | Request | string, init?: RequestInit) => {
+    seenBody = JSON.parse(String(init?.body));
+    return Promise.resolve(new Response(JSON.stringify({
+      content: [{ type: "tool_use", name: "emit_workout", input: {} }],
+      usage: {},
+    }), { status: 200, headers: { "Content-Type": "application/json" } }));
+  }) as typeof fetch;
+  try {
+    await llmGenerateWithFallback(
+      ["anthropic"] as LlmProvider[],
+      { prompt: "hi", systemPrompt: "sys", jsonSchema: { name: "emit_workout", schema: { type: "object" } } },
+      () => Promise.resolve("sk-ant-test"),
+    );
+  } finally {
+    globalThis.fetch = orig;
+  }
+  assertEquals(seenBody.tool_choice, { type: "tool", name: "emit_workout" });
+  assertEquals((seenBody.tools as { name: string }[])[0].name, "emit_workout");
+});
+
+Deno.test("anthropic: without jsonSchema, falls back to plain text content blocks", async () => {
+  const out = await withFetchStub(
+    () =>
+      new Response(JSON.stringify({
+        content: [{ type: "text", text: "hello from claude" }],
+        usage: { input_tokens: 5, output_tokens: 3 },
+      }), { status: 200, headers: { "Content-Type": "application/json" } }),
+    () => llmGenerateWithFallback(
+      ["anthropic"] as LlmProvider[],
+      { prompt: "hi", systemPrompt: "sys" },
+      () => Promise.resolve("sk-ant-test"),
+    ),
+  );
+  assertEquals(out.text, "hello from claude");
+});
+
 Deno.test("openrouter: routes to its endpoint with attribution headers", async () => {
   let seenUrl = "";
   let seenHeaders: Headers | undefined;

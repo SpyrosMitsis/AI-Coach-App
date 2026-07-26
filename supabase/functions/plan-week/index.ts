@@ -20,16 +20,18 @@ import {
   trainingPhase,
   validateWeekPlan,
   WEEK_SYSTEM_PROMPT,
+  WEEK_TOOL_SCHEMA,
 } from "../_shared/prompt.ts";
 import { createEvent, deleteEvent, latestFitness } from "../_shared/intervals.ts";
 import { applyFallbackFitness } from "../_shared/load.ts";
 import { renderIntervalsWorkout } from "../_shared/intervals_workout.ts";
-import { adherenceBlock, executionBlock, goalBlock, intervalsPhysiology } from "../_shared/context.ts";
+import { adherenceBlock, calendarBlock, executionBlock, goalBlock, intervalsPhysiology } from "../_shared/context.ts";
 import {
   availabilityBlock,
   challengeBlock,
   experienceBlock,
   goalsText,
+  injuriesOf,
   profileFactsBlock,
   splitBlock,
   sportsBlock,
@@ -38,17 +40,16 @@ import {
 import { memoryDocsBlock, memoryFromProfile } from "../_shared/agent_memory.ts";
 import { exerciseCatalogBlock, registerUnknownExercises } from "../_shared/exercise_catalog.ts";
 import { isHardSession, type MainLift, muscleOf, reviewWorkout } from "../_shared/workout_review.ts";
+import { coerceForPause, computeDayList, computePeriodization, weekdayOf } from "../_shared/week_planning.ts";
 import type { LlmProvider, Workout } from "../_shared/types.ts";
 import type { SupabaseClient } from "jsr:@supabase/supabase-js@2";
 
 const DAY = 86_400_000;
-const WD = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
 const addDays = (iso: string, n: number) => {
   const d = new Date(iso + "T12:00:00");
   d.setDate(d.getDate() + n);
   return d.toISOString().slice(0, 10);
 };
-const weekdayOf = (iso: string) => WD[new Date(iso + "T12:00:00").getDay()];
 
 function nextMonday(): string {
   const today = new Date().toISOString().slice(0, 10);
@@ -61,7 +62,7 @@ const safeJson = (text: string): unknown => {
   try { return extractJson(text); } catch { return null; }
 };
 
-async function planForUser(admin: SupabaseClient, userId: string, start: string, shouldPush: boolean) {
+async function planForUser(admin: SupabaseClient, userId: string, start: string, shouldPush: boolean, calendarBusy: unknown = null) {
   const allDates = Array.from({ length: 7 }, (_, i) => addDays(start, i));
   const end = allDates[6];
   // Never touch days that have already happened: re-planning mid-week only
@@ -152,26 +153,17 @@ async function planForUser(admin: SupabaseClient, userId: string, start: string,
       .from("week_plans").select("start_date, focus")
       .eq("user_id", userId).lt("start_date", start)
       .order("start_date", { ascending: false }).limit(6);
-    let buildWeeks = 0;
-    for (const w of recentWeeks ?? []) {
-      if (/deload|recovery/i.test((w.focus ?? "") as string)) break;
-      buildWeeks++;
-    }
     const lastWeekStart = addDays(start, -7);
     const lastWeekTss = Math.round(
       acts28.filter((a) => (a.date ?? "") >= lastWeekStart && (a.date ?? "") < start)
         .reduce((s, a) => s + (a.tss ?? 0), 0),
     );
-    deloadDue = buildWeeks >= DELOAD_AFTER_WEEKS;
-    if (deloadDue) {
-      periodizationBlock =
-        `\n\nPERIODIZATION. DELOAD WEEK: ${buildWeeks} build weeks since the last deload. Make THIS a recovery/deload week, cut total volume ~40% (fewer sets / shorter sessions), keep a little intensity to stay sharp, and set "week_focus" to "Recovery/Deload".`;
-    } else {
-      const rampTss = lastWeekTss > 0 ? Math.round(lastWeekTss * 1.08) : Math.round(weeklyTssTarget);
-      const targetTss = availCeiling !== null ? Math.min(rampTss, availCeiling) : rampTss;
-      periodizationBlock =
-        `\n\nPERIODIZATION. BUILD WEEK ${buildWeeks + 1} of ~${DELOAD_AFTER_WEEKS}: progress gently on last week (~${lastWeekTss} TSS), aim for ~${targetTss} TSS via small volume/intensity increases, not a jump. Keep 80/20 and recovery spacing; a deload is due after ${DELOAD_AFTER_WEEKS} build weeks.`;
-    }
+    const periodization = computePeriodization(
+      (recentWeeks ?? []).map((w) => (w.focus ?? "") as string),
+      lastWeekTss, availCeiling, weeklyTssTarget, DELOAD_AFTER_WEEKS,
+    );
+    deloadDue = periodization.deloadDue;
+    periodizationBlock = periodization.block;
   }
 
   // The athlete's weekly_tss_target is a BASE for a normal build week. Two
@@ -189,14 +181,19 @@ async function planForUser(admin: SupabaseClient, userId: string, start: string,
     await adherenceBlock(admin, userId, since14, start, acts28) +
     await executionBlock(admin, userId, since14) +
     goalBlock(onboarding, weeksToGoal, phase, acts28) + lockedBlock +
+    calendarBlock(calendarBusy) +
     sportsBlock(sportsList) + splitBlock(splitStyle) + periodizationBlock +
     availabilityBlock(onboarding) + experienceBlock(onboarding) + challengeBlock(onboarding) +
     await exerciseCatalogBlock(admin, userId);
 
-  const dayList = dates.map((d) => ({
-    date: d, weekday: weekdayOf(d),
-    available: (availableDays.length === 0 ? true : availableDays.includes(weekdayOf(d))) && !lockedByDate.has(d),
-  }));
+  // An active training pause (set via the coach-chat set_training_pause tool)
+  // gets the SAME structural authority as locked days / weekday-recurring
+  // availability below — it feeds the `available` flag that the prompt
+  // already treats as authoritative, instead of relying on the model to
+  // resolve a free-text coach_knowledge note against a concrete date list.
+  const pausedUntil = (profile.training_paused_until as string | null) ?? null;
+  const pauseReason = (profile.training_pause_reason as string | null) ?? null;
+  const dayList = computeDayList(dates, availableDays, new Set(lockedByDate.keys()), pausedUntil);
 
   const userPrompt = buildWeekPrompt({
     startDate: start, dayList,
@@ -219,7 +216,19 @@ async function planForUser(admin: SupabaseClient, userId: string, start: string,
 
   let outcome;
   try {
-    outcome = await llmGenerateWithFallback(chain, { prompt: userPrompt, systemPrompt: WEEK_SYSTEM_PROMPT, hosted, feature: "plan" }, resolveKey, resolveModel, resolveBaseUrl);
+    outcome = await llmGenerateWithFallback(
+      chain,
+      {
+        prompt: userPrompt,
+        systemPrompt: WEEK_SYSTEM_PROMPT,
+        hosted,
+        feature: "plan",
+        jsonSchema: { name: "emit_week_plan", schema: WEEK_TOOL_SCHEMA },
+      },
+      resolveKey,
+      resolveModel,
+      resolveBaseUrl,
+    );
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
     await logFailure(chain[0] ?? null, null, msg);
@@ -229,7 +238,13 @@ async function planForUser(admin: SupabaseClient, userId: string, start: string,
   if (!v.ok) {
     const retry = await llmGenerateWithFallback(
       chain,
-      { prompt: `${userPrompt}\n\nYOUR PREVIOUS RESPONSE was invalid (${v.error}). Return ONLY corrected JSON.`, systemPrompt: WEEK_SYSTEM_PROMPT, hosted, feature: "plan" },
+      {
+        prompt: `${userPrompt}\n\nYOUR PREVIOUS RESPONSE was invalid (${v.error}). Return ONLY corrected JSON.`,
+        systemPrompt: WEEK_SYSTEM_PROMPT,
+        hosted,
+        feature: "plan",
+        jsonSchema: { name: "emit_week_plan", schema: WEEK_TOOL_SCHEMA },
+      },
       resolveKey,
       resolveModel,
       resolveBaseUrl,
@@ -266,7 +281,7 @@ async function planForUser(admin: SupabaseClient, userId: string, start: string,
   // context below is tracked ACROSS the planned week (it used to run on empty
   // inputs, so the progressive-overload floor, weekly-volume landmark, 48h
   // recovery and back-to-back-hard guards never fired at week scope).
-  const injuries = [onboarding.injury_history, profile.coach_knowledge].filter(Boolean).join("; ");
+  const injuries = injuriesOf(onboarding);
   const weekViolations: string[] = [];
 
   // --- strength/recovery seed from history (mirrors generate-workout) --------
@@ -330,6 +345,12 @@ async function planForUser(admin: SupabaseClient, userId: string, start: string,
     if (lockedByDate.has(date)) continue;
     let session = plan.days[i]?.session ??
       { type: "rest", title: "Rest day", duration_minutes: 0, tss_estimate: 0, rpe_target: 0, sections: [], coach_note: "Recovery." } as Workout;
+
+    // Deterministic guarantee on top of the "available" prompt signal above:
+    // even if the model still returned a real session for a paused date,
+    // force it to rest server-side. Closes the bug class regardless of how
+    // reliably any given model follows the prompt.
+    session = coerceForPause(session, date, pausedUntil, pauseReason);
 
     const muscleGroupsLast48h = [
       ...new Set(
@@ -447,7 +468,7 @@ Deno.serve(async (req) => {
     const userId = await getUserId(req);
     if (!userId) return json({ error: "unauthorized" }, 401);
     const start: string = body.start_date ?? new Date().toISOString().slice(0, 10);
-    const result = await planForUser(admin, userId, start, body.push ?? true);
+    const result = await planForUser(admin, userId, start, body.push ?? true, body.calendar_busy ?? null);
     return json(result);
   } catch (e) {
     return json({ error: e instanceof Error ? e.message : String(e) }, errorStatus(e));

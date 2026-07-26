@@ -12,6 +12,8 @@ import { adminClient, getUserId } from "../_shared/supabase.ts";
 import { computeRecovery } from "../_shared/recovery.ts";
 import { applyFallbackFitness } from "../_shared/load.ts";
 import { hostedLlm } from "../_shared/entitlement.ts";
+import { pickDebrief, type SessionDebrief } from "../_shared/debrief.ts";
+import { computeBodyTrend } from "../_shared/body_trend.ts";
 
 const DAY = 86_400_000;
 const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
@@ -145,6 +147,41 @@ Deno.serve(async (req) => {
       }
     } catch { /* column not migrated yet */ }
 
+    // Body-composition trend, read through the strength goals (build muscle →
+    // lean mass, lose fat → weight/fat). Best-effort: pre-migration selects
+    // error out and the key is simply omitted.
+    let bodyTrend: ReturnType<typeof computeBodyTrend> = null;
+    try {
+      const { data, error } = await admin.from("wellness_checkins")
+        .select("date, weight_kg, body_fat_pct, lean_mass_kg")
+        .eq("user_id", userId).gte("date", since90).lte("date", today).order("date", { ascending: true });
+      if (!error && data) {
+        const goals = ((profile?.onboarding as { goals_by_sport?: Record<string, string[]> })
+          ?.goals_by_sport?.strength) ?? [];
+        bodyTrend = computeBodyTrend(data, goals, today);
+      }
+    } catch { /* columns not migrated yet */ }
+
+    // --- session debrief (today's or yesterday's analyzed session) ----------
+    // Dedicated narrow query: analysis_json also lives on the wide activities
+    // rows, but only for rows we already fetch WITHOUT it (it carries series/
+    // splits and would bloat every dashboard load). Best-effort, max 2+2 rows.
+    let debrief: SessionDebrief | null = null;
+    try {
+      const sinceYesterday = new Date(anchorMs - DAY).toISOString().slice(0, 10);
+      const [{ data: analyzedActs }, { data: analyzedStrength }] = await Promise.all([
+        admin.from("completed_activities").select("id, date, type, analysis_json")
+          .eq("user_id", userId).not("analysis_json", "is", null)
+          .gte("date", sinceYesterday).lte("date", today)
+          .order("date", { ascending: false }).limit(2),
+        admin.from("strength_analyses").select("date, analysis_json")
+          .eq("user_id", userId)
+          .gte("date", sinceYesterday).lte("date", today)
+          .order("date", { ascending: false }).limit(2),
+      ]);
+      debrief = pickDebrief(analyzedActs ?? [], analyzedStrength ?? [], today);
+    } catch { /* table/column may not exist yet */ }
+
     // --- TSB sparkline (14d) -------------------------------------------------
     const tsbSparkline = acts
       .filter((a) => a.ctl != null && a.atl != null)
@@ -234,10 +271,12 @@ Deno.serve(async (req) => {
       recovery,
       recovery_synced_date: recoverySyncedDate,
       vo2max,
+      body_trend: bodyTrend,
       today_workout: todayWorkout,
       tsb_sparkline: tsbSparkline,
       weekly_load: { tss: Math.round(weeklyTss), target: targetWeeklyTss },
       week_review: weekReview,
+      debrief,
       active_llm_provider: profile?.active_llm_provider ?? "groq",
       goal,
       // Deployment capabilities — self-hosted stacks without the hosted LLM

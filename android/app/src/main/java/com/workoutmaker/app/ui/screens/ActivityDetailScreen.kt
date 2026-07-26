@@ -131,8 +131,13 @@ fun ActivityDetailScreen(activity: CompletedActivity, planned: PlannedWorkout?, 
                         val mv = activity.duration_seconds ?: 0
                         if (el - mv >= 60) add("Elapsed" to "${el / 60} min")
                     }
-                    activity.paceSecPerKm?.let { add("Avg pace" to "${fmtPaceSec(it)} /km") }
-                    activity.maxPaceSecPerKm?.let { add("Best pace" to "${fmtPaceSec(it)} /km") }
+                    if (activity.isSwim) {
+                        activity.paceSecPer100m?.let { add("Avg pace" to "${fmtPaceSec(it)} /100m") }
+                        activity.maxPaceSecPer100m?.let { add("Best pace" to "${fmtPaceSec(it)} /100m") }
+                    } else {
+                        activity.paceSecPerKm?.let { add("Avg pace" to "${fmtPaceSec(it)} /km") }
+                        activity.maxPaceSecPerKm?.let { add("Best pace" to "${fmtPaceSec(it)} /km") }
+                    }
                     activity.avg_hr?.let { add("Avg HR" to "$it bpm") }
                     activity.maxHr?.let { add("Max HR" to "$it bpm") }
                     activity.avgPower?.let { add("Avg power" to "$it W") }
@@ -210,7 +215,13 @@ class ActivityAnalysisViewModel @Inject constructor(
         error.value = null
         runCatching { repo.analyzeActivity(activityId, force) }
             .onSuccess { results.value = results.value + (activityId to it) }
-            .onFailure { error.value = it.message }
+            .onFailure {
+                com.workoutmaker.app.util.AppLog.w("analyze", "analyze-activity failed id=$activityId", it)
+                // Surface the server's own {"error": ...} text; the raw exception
+                // message carries the whole URL + headers and gets masked as the
+                // useless generic line.
+                error.value = com.workoutmaker.app.util.friendlyFnError(it)
+            }
         busy.value = null
     }
 
@@ -238,6 +249,22 @@ internal fun AnalysisScoreCard(
     val error by vm.error.collectAsStateSafe()
     val a = results[activity.id]
 
+    // Digest placeholders are fabricated client-side when a Home digest entry
+    // has no matching synced completed_activities row (HomeViewModel
+    // toCompleted). There is nothing in the DB to analyze, so offering the
+    // button just produced a guaranteed "activity not found".
+    if (activity.id.startsWith("digest:")) {
+        SectionCard {
+            SectionLabel("Workout analysis", color = MaterialTheme.colorScheme.primary)
+            Text(
+                "This session hasn't fully synced yet, so it can't be analyzed. Pull to refresh on Home and reopen it from Recent activities.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+        return
+    }
+
     // Display a background-computed analysis immediately, no button press needed.
     LaunchedEffect(activity.id) { vm.peek(activity.id) }
 
@@ -254,7 +281,7 @@ internal fun AnalysisScoreCard(
 
         if (a == null) {
             Text(
-                "See how well you stuck to the plan: an execution score, target vs actual pace, splits, and AI coach feedback.",
+                "Break the session down: pacing and splits, heart rate response, and AI coach feedback. Scored against your plan when a matching one exists.",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
@@ -331,15 +358,20 @@ private fun ActivityChartsSection(
     val a = results[activity.id] ?: return
     val series = a.series ?: return
 
+    // Strictly from the server's unit: old cached swim analyses hold sec/km
+    // values, so guessing /100m from the activity type would mislabel them.
+    // Re-analyze regenerates them in /100m.
+    val per100m = a.isPer100m
+    val paceUnit = if (per100m) "/100m" else "/km"
     if (series.pace.any { it != null }) {
         SectionCard {
             SectionLabel(
-                "Pace · /km" + (a.target?.takeIf { it.pace_lo != null && it.pace_hi != null }?.let { t ->
+                "Pace · $paceUnit" + (a.target?.takeIf { it.pace_lo != null && it.pace_hi != null }?.let { t ->
                     " · target ${t.zones} ${fmtPaceSec(t.pace_lo!!.toInt())}-${fmtPaceSec(t.pace_hi!!.toInt())}"
                 } ?: ""),
                 color = ChartPace,
             )
-            PaceChart(series, a.target)
+            PaceChart(series, a.target, per100m)
             Row(horizontalArrangement = Arrangement.spacedBy(14.dp)) {
                 LegendDotSmall("Actual pace", ChartPace)
                 if (a.target?.pace_lo != null) LegendDotSmall("Target band", MaterialTheme.colorScheme.secondary)
@@ -390,6 +422,7 @@ private fun SplitsCard(
     val results by vm.results.collectAsStateSafe()
     val a = results[activity.id] ?: return
     if (a.splits.isEmpty()) return
+    val per100m = a.isPer100m
     val banded = a.splits.count { it.in_band != null }
     val onTarget = a.splits.count { it.in_band == true }
     SectionCard {
@@ -398,17 +431,20 @@ private fun SplitsCard(
             color = mossAccent(),
         )
         a.splits.forEach { s ->
-            // Tint the pace by whether the km landed in the planned target band.
+            // Tint the pace by whether the split landed in the planned target band.
             val paceColor = when (s.in_band) {
                 true -> com.workoutmaker.app.ui.theme.BandGreen
                 false -> com.workoutmaker.app.ui.theme.BandAmber
                 null -> MaterialTheme.colorScheme.onSurface
             }
+            // Swim splits are 100 m each (km carries 0.1, 0.2, ...): label in metres.
+            val distLabel = if (per100m) "${Math.round(s.km * 1000)} m"
+            else "km ${if (s.km % 1.0 == 0.0) s.km.toInt().toString() else s.km.toString()}"
             Row(Modifier.fillMaxWidth().padding(vertical = 2.dp), verticalAlignment = Alignment.CenterVertically) {
-                Text("km ${if (s.km % 1.0 == 0.0) s.km.toInt().toString() else s.km.toString()}",
+                Text(distLabel,
                     Modifier.width(64.dp), style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant)
-                Text("${fmtPaceSec(s.sec)} /km", style = MaterialTheme.typography.bodyMedium, color = paceColor)
+                Text("${fmtPaceSec(s.sec)} ${if (per100m) "/100m" else "/km"}", style = MaterialTheme.typography.bodyMedium, color = paceColor)
                 s.in_band?.let { Text(if (it) "  ✓" else "  ✗", style = MaterialTheme.typography.bodySmall, color = paceColor) }
                 Spacer(Modifier.weight(1f))
                 s.avg_hr?.let {
@@ -516,12 +552,16 @@ private fun HrZoneCard(zoneTimes: List<Int>) {
 private fun PaceChart(
     series: com.workoutmaker.app.data.AnalysisSeries,
     target: com.workoutmaker.app.data.AnalysisTarget?,
+    per100m: Boolean = false,
 ) {
     val paces = series.pace.filterNotNull()
     if (paces.isEmpty()) return
     // Clamp the scale to a sensible window so one GPS blip doesn't flatten it.
-    val lo = paces.min().coerceAtLeast(120.0).let { minOf(it, target?.pace_lo ?: it) } - 10
-    val hi = paces.max().coerceAtMost(720.0).let { maxOf(it, target?.pace_hi ?: it) } + 10
+    // Swim paces live in sec/100m (roughly 1:00-4:00), not the run sec/km range.
+    val floor = if (per100m) 45.0 else 120.0
+    val ceil = if (per100m) 300.0 else 720.0
+    val lo = paces.min().coerceAtLeast(floor).let { minOf(it, target?.pace_lo ?: it) } - 10
+    val hi = paces.max().coerceAtMost(ceil).let { maxOf(it, target?.pace_hi ?: it) } + 10
     com.workoutmaker.app.ui.components.LineChart(
         t = series.t,
         values = series.pace,

@@ -106,7 +106,6 @@ supabase functions deploy            # deploys all functions
 | `sync-intervals`    | Cache activities + CTL/ATL/TSB (cron every 30 min)          |
 | `generate-workout`  | Full AI generation flow → planned_workouts → Intervals push |
 | `plan-week`         | Periodized 7-day microcycle in one shot (also the auto-plan cron) |
-| `plan-block`        | Multi-week periodized block toward the goal race            |
 | `coach-chat`        | Agentic coach: native tool calling + SSE streaming          |
 | `push-workout`      | Push an existing plan to the Intervals.icu calendar         |
 | `push-strength`     | Push a logged strength session to Intervals.icu             |

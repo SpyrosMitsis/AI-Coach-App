@@ -1,5 +1,6 @@
 package com.workoutmaker.app.ui.screens
 
+import com.workoutmaker.app.data.InjuryEntry
 import com.workoutmaker.app.data.Periodization
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
@@ -55,26 +56,48 @@ class PerformanceStepTest {
 
 class InjuryCycleTest {
     @Test
-    fun `tapping cycles through severities and off`() {
-        var s: String? = null
-        s = toggleInjury(s, "Knee");      assertEquals("Knee", s)
-        s = toggleInjury(s, "Knee");      assertEquals("Knee (mild)", s)
-        s = toggleInjury(s, "Knee");      assertEquals("Knee (moderate)", s)
-        s = toggleInjury(s, "Knee");      assertEquals("Knee (serious)", s)
-        s = toggleInjury(s, "Knee");      assertNull(s)
+    fun `area chip adds unqualified and removes regardless of severity`() {
+        var s = emptyList<InjuryEntry>()
+        s = toggleInjury(s, "Knee");      assertEquals(listOf(InjuryEntry(area = "Knee")), s)
+        s = toggleInjury(s, "Knee");      assertEquals(emptyList<InjuryEntry>(), s)
+        assertEquals(emptyList<InjuryEntry>(), toggleInjury(listOf(InjuryEntry("Knee", "serious")), "Knee"))
     }
 
     @Test
-    fun `other areas and free text survive the cycle`() {
-        val s = toggleInjury("Knee (mild), old ankle sprain from 2020", "Knee")
-        assertEquals("old ankle sprain from 2020, Knee (moderate)", s)
+    fun `severity chips set, change and clear the qualifier`() {
+        var s = listOf(InjuryEntry(area = "Knee"))
+        s = setInjurySeverity(s, "Knee", "mild");     assertEquals("mild", injurySeverity(s, "Knee"))
+        s = setInjurySeverity(s, "Knee", "serious");  assertEquals("serious", injurySeverity(s, "Knee"))
+        s = setInjurySeverity(s, "Knee", "");         assertEquals("", injurySeverity(s, "Knee"))
+    }
+
+    @Test
+    fun `other areas and free notes survive edits`() {
+        val base = listOf(InjuryEntry("Knee", "mild"), InjuryEntry(area = "", note = "old ankle sprain from 2020"))
+        val s = setInjurySeverity(base, "Knee", "moderate")
+        assertEquals("old ankle sprain from 2020", injuryNote(s))
+        assertEquals("moderate", injurySeverity(s, "Knee"))
+        val afterRemove = toggleInjury(base, "Knee")
+        assertEquals("old ankle sprain from 2020", injuryNote(afterRemove))
+        assertNull(injurySeverity(afterRemove, "Knee"))
     }
 
     @Test
     fun `severity reads back for the chips`() {
-        assertEquals("", injurySeverity("Knee", "Knee"))
-        assertEquals("moderate", injurySeverity("Lower back (moderate)", "Lower back"))
-        assertNull(injurySeverity("Knee", "Shoulder"))
+        assertEquals("", injurySeverity(listOf(InjuryEntry(area = "Knee")), "Knee"))
+        assertEquals("moderate", injurySeverity(listOf(InjuryEntry("Lower back", "moderate")), "Lower back"))
+        assertNull(injurySeverity(listOf(InjuryEntry(area = "Knee")), "Shoulder"))
+    }
+
+    @Test
+    fun `notes round-trip through withNote and injuryNote`() {
+        var s = listOf(InjuryEntry(area = "Knee"))
+        s = withNote(s, "twisted it hiking")
+        assertEquals("twisted it hiking", injuryNote(s))
+        assertEquals("Knee; twisted it hiking", injuriesSummary(s))
+        s = withNote(s, "")
+        assertEquals("", injuryNote(s))
+        assertEquals(1, s.size)
     }
 }
 

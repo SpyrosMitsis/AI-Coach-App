@@ -13,7 +13,7 @@
 // violations the caller can feed into the self-repair retry.
 // ============================================================================
 
-import type { Workout, WorkoutExercise } from "./types.ts";
+import type { InjuryEntry, Workout, WorkoutExercise } from "./types.ts";
 import { allowedCategories, categoryOfExercise, EXERCISE_CATALOG } from "./exercise_catalog.ts";
 import type { NextTarget } from "./progression.ts";
 
@@ -36,9 +36,11 @@ export interface ReviewContext {
   tsb: number;
   daysSinceLastHard: number;
   experience: string;
-  // Free-text injuries/constraints (onboarding.injury_history + coach_knowledge)
-  // — parsed into structured movement blocks by the safety engine below.
-  injuries?: string;
+  // Structured injuries (injuriesOf() in profile.ts — handles the legacy
+  // free-text fallback). coach_knowledge is intentionally NOT folded in here:
+  // it's unstructured prose covered by the prompt-level "avoid aggravating"
+  // instruction, not by this deterministic backstop.
+  injuries?: InjuryEntry[];
   // Today's recovery/readiness score (0-100). Low readiness + a hard session →
   // the intensity ceiling caps it deterministically (not just a flag).
   readiness?: number;
@@ -91,9 +93,18 @@ const SAFETY_RULES: SafetyRule[] = [
   },
 ];
 
-export function activeSafetyRules(injuries: string): SafetyRule[] {
-  if (!injuries || !injuries.trim()) return [];
-  return SAFETY_RULES.filter((r) => r.when.test(injuries));
+// A SafetyRule paired with the severity of the injury entry that triggered
+// it, so the caller can decide strip-vs-flag per match.
+export interface ActiveSafetyRule extends SafetyRule { severity: InjuryEntry["severity"] }
+
+export function activeSafetyRules(injuries: InjuryEntry[]): ActiveSafetyRule[] {
+  if (!injuries?.length) return [];
+  const out: ActiveSafetyRule[] = [];
+  for (const rule of SAFETY_RULES) {
+    const hit = injuries.find((i) => rule.when.test(i.area) || (i.note && rule.when.test(i.note)));
+    if (hit) out.push({ ...rule, severity: hit.severity });
+  }
+  return out;
 }
 
 // --- helpers (exported for the eval harness) -------------------------------
@@ -241,19 +252,21 @@ export function reviewWorkout(w: Workout, ctx: ReviewContext): ReviewResult {
   };
 
   // SAFETY FIRST — strip any contraindicated movement, whatever the type. The
-  // engine must never serve a movement that loads an active injury.
-  const rules = activeSafetyRules(ctx.injuries ?? "");
+  // engine must never serve a movement that loads an active injury. Severity
+  // gates strip-vs-flag: "mild" is a caution (left in, just flagged for the
+  // repair pass to see); unset/moderate/serious all hard-forbid, since the
+  // engine is a conservative backstop and an unknown severity should err safe.
+  const rules = activeSafetyRules(ctx.injuries ?? []);
   if (rules.length) {
     for (const sec of corrected.sections) {
       sec.exercises = sec.exercises.filter((ex) => {
         const hit = rules.find((r) => r.forbid.test(ex.name));
-        if (hit) {
-          const msg = `${ex.name}: contraindicated, ${hit.reason} (injury on file)`;
-          unsafe.push(msg);
-          violations.push(msg);
-          return false; // remove it
-        }
-        return true;
+        if (!hit) return true;
+        const msg = `${ex.name}: contraindicated, ${hit.reason} (injury on file)`;
+        violations.push(msg);
+        if (hit.severity === "mild") return true; // caution only, keep it
+        unsafe.push(msg);
+        return false; // remove it
       });
     }
     // Drop sections emptied by the safety strip.

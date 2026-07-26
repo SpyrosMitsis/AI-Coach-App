@@ -39,6 +39,66 @@ export const WORKOUT_JSON_SCHEMA = `{
   "coach_note": "string (1-2 sentence personalized explanation grounded in training science)"
 }`;
 
+// Real JSON Schema mirrors of WORKOUT_JSON_SCHEMA/WEEK_JSON_SCHEMA below, for
+// providers that support forcing schema-shaped output via native tool-calling
+// (see GenArgs.jsonSchema in llm.ts). Deliberately permissive, no "required" /
+// additionalProperties:false, to match workout_schema.ts's tolerant zod
+// coercion, this only needs to get the model to emit a matching JSON object,
+// not to replace the existing validation/repair layer.
+const EXERCISE_TOOL_SCHEMA = {
+  type: "object",
+  properties: {
+    name: { type: "string" },
+    sets: { type: "number" },
+    reps: { type: "string" },
+    weight_kg: { type: ["number", "null"] },
+    pace_zone: { type: ["string", "null"] },
+    hr_zone: { type: ["string", "null"] },
+    rest_seconds: { type: ["number", "null"] },
+    notes: { type: "string" },
+  },
+};
+
+const SECTION_TOOL_SCHEMA = {
+  type: "object",
+  properties: {
+    name: { type: "string" },
+    duration_minutes: { type: "number" },
+    exercises: { type: "array", items: EXERCISE_TOOL_SCHEMA },
+  },
+};
+
+export const WORKOUT_TOOL_SCHEMA = {
+  type: "object",
+  properties: {
+    type: { type: "string", enum: ["run", "ride", "swim", "strength", "rest"] },
+    title: { type: "string" },
+    duration_minutes: { type: "number" },
+    rpe_target: { type: "number" },
+    sections: { type: "array", items: SECTION_TOOL_SCHEMA },
+    coach_note: { type: "string" },
+  },
+};
+
+export const WEEK_TOOL_SCHEMA = {
+  type: "object",
+  properties: {
+    week_focus: { type: "string" },
+    rationale: { type: "string" },
+    days: {
+      type: "array",
+      items: {
+        type: "object",
+        properties: {
+          date: { type: "string" },
+          weekday: { type: "string" },
+          session: WORKOUT_TOOL_SCHEMA,
+        },
+      },
+    },
+  },
+};
+
 // Shared coaching knowledge injected into every system prompt.
 // Exported so the eval's LLM judge can grade generated training against the
 // app's OWN rules rather than the judge model's private opinion.
@@ -360,6 +420,26 @@ interface StrengthContext {
   durationNote: string;
   // Preferred split rotation ("Auto"/empty → coach decides freely).
   splitStyle?: string;
+  // Body composition when known — anchors relative-strength sanity checks and
+  // the loading of bodyweight movements. Omitted fields simply don't render.
+  body?: { weightKg?: number; heightCm?: number; bodyFatPct?: number } | null;
+  // Goal-aware body-composition trend sentence (body_trend.ts summary), so the
+  // coach sees the direction, not just today's number.
+  bodyTrend?: string | null;
+}
+
+/** "74 kg, 180 cm, BMI 22.8, ~15% body fat" or "" when nothing is known. */
+export function bodyLine(b?: { weightKg?: number; heightCm?: number; bodyFatPct?: number } | null): string {
+  if (!b) return "";
+  const parts: string[] = [];
+  if (b.weightKg && b.weightKg > 0) parts.push(`${b.weightKg} kg`);
+  if (b.heightCm && b.heightCm > 0) parts.push(`${b.heightCm} cm`);
+  if (b.weightKg && b.heightCm && b.weightKg > 0 && b.heightCm > 0) {
+    const bmi = b.weightKg / ((b.heightCm / 100) ** 2);
+    parts.push(`BMI ${bmi.toFixed(1)}`);
+  }
+  if (b.bodyFatPct && b.bodyFatPct > 0) parts.push(`~${b.bodyFatPct}% body fat`);
+  return parts.join(", ");
 }
 
 export function buildStrengthPrompt(c: StrengthContext): string {
@@ -384,12 +464,19 @@ export function buildStrengthPrompt(c: StrengthContext): string {
   const splitLine = c.splitStyle && !/^auto$/i.test(c.splitStyle)
     ? `\n- Strength split: the athlete follows a ${c.splitStyle} split. Choose TODAY's focus to CONTINUE that rotation, pick the part NOT trained in the last 48h (e.g. push→pull→legs, or upper→lower) and build the whole session around it.`
     : "";
+  const body = bodyLine(c.body);
+  const trendText = c.bodyTrend && c.bodyTrend.trim()
+    ? `\n- ${c.bodyTrend.trim()} Let this steer the session's bias: a lagging muscle goal favours more hypertrophy volume, an on-track cut protects strength with lower-volume heavy work.`
+    : "";
+  const bodyLineText = (body
+    ? `\n- Body: ${body}. Use it to sanity-check loads relative to bodyweight (a squat near 1.5x bodyweight is advanced territory) and to load bodyweight movements sensibly (pull-ups, dips and push-ups already move the athlete's own mass).`
+    : "") + trendText;
 
   return `Generate today's STRENGTH workout.
 
 ATHLETE CONTEXT
 - Goal: ${c.goal} → ${repGuide}
-- Experience: ${c.experience}
+- Experience: ${c.experience}${bodyLineText}
 - Training phase: ${c.phase}
 - Equipment available: ${c.equipment}${splitLine}
 - Muscle groups trained in last 48h (DO NOT load these hard, recovery): ${c.muscleGroupsLast48h.length ? c.muscleGroupsLast48h.join(", ") : "none"}
@@ -514,6 +601,8 @@ Rules:
 - Sound like a continuation of a real coaching relationship, not a generic tip.
 - If told the watch hasn't synced today's recovery data, say you're going off how
   they're feeling (not the numbers), don't state recovery as hard fact.
+- If told how a recent session actually went, weave that into today's note
+  instead of generic advice.
 Output ONLY the note text, nothing else.
 
 ${PUNCTUATION_RULE}`;
@@ -532,6 +621,15 @@ export interface BriefContext {
   // false → today's objective recovery (HRV/RHR/sleep) hasn't synced from the
   // watch; the readiness number leans on subjective wellness. Default true.
   objectiveData?: boolean;
+  // Measured plan-vs-actual debriefs (label + the analyst's short note, never
+  // raw scores) so the brief can connect yesterday's execution to today.
+  yesterdayDebrief?: string | null;
+  todayDebrief?: string | null;
+  // Yesterday had a non-rest planned session but no recorded activity.
+  yesterdayMissed?: boolean;
+  // Goal-aware body-composition trend sentence (body_trend.ts summary); only
+  // passed when the athlete has a body goal and enough scale data.
+  bodyTrend?: string | null;
 }
 
 // Plain-language translations of the load/recovery metrics, so prompts can lead
@@ -551,13 +649,26 @@ export function buildBriefPrompt(c: BriefContext): string {
   const readLine = noObjective
     ? `- Recovery: NO HRV/sleep synced from the watch today, readiness (${c.readiness}/100) is only their subjective feel. Go off how they're feeling, don't cite recovery as fact.`
     : `- Recovery/readiness: ${readWord} (${c.readiness}/100).`;
+  const extras: string[] = [];
+  if (c.yesterdayDebrief) {
+    extras.push(`- How yesterday's session actually went (measured vs plan): ${c.yesterdayDebrief}. Connect it to today's advice.`);
+  }
+  if (c.todayDebrief) {
+    extras.push(`- Today's session is done and analyzed: ${c.todayDebrief}. Acknowledge it briefly.`);
+  }
+  if (c.yesterdayMissed) {
+    extras.push(`- Yesterday's planned session shows no recorded activity. Don't scold, just fold it in.`);
+  }
+  if (c.bodyTrend && c.bodyTrend.trim()) {
+    extras.push(`- ${c.bodyTrend.trim()} Mention it only when it earns a place in today's note.`);
+  }
   return `Write today's note for ${c.name}.
 
 SIGNALS (for YOUR reasoning, interpret them, don't read them back):
 ${readLine}
 - Form/freshness: ${freshness} (TSB ${c.tsb.toFixed(0)}, ${c.tsbTrend}).
 - Today's plan: ${c.todayPlan}${c.todayDone ? ", already done" : ""}.
-- Training phase: ${c.phase}; goal: ${c.goal}.${c.weeklyLoadPct != null ? `\n- Weekly load so far: ~${c.weeklyLoadPct}% of target.` : ""}
+- Training phase: ${c.phase}; goal: ${c.goal}.${c.weeklyLoadPct != null ? `\n- Weekly load so far: ~${c.weeklyLoadPct}% of target.` : ""}${extras.length ? `\n${extras.join("\n")}` : ""}
 
 Write the 1-2 sentence note now.`;
 }

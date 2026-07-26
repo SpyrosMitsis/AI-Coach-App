@@ -30,7 +30,7 @@ object AppModule {
             supabaseUrl = backend.url,
             supabaseKey = backend.anonKey,
         ) {
-            // Multi-week block planning (plan-block) can run for a while; give
+            // A week's worth of AI planning (plan-week) can run for a while; give
             // function calls plenty of headroom over the ~10s default.
             requestTimeout = 150.seconds
             // requestTimeout alone is NOT enough: supabase-kt forwards it only to

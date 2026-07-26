@@ -69,6 +69,11 @@ class CheckinReminderWorker @AssistedInject constructor(
         }
         if (!fireNow) return Result.retry()
 
+        // Push last night's Health Connect data (HRV/RHR/sleep) BEFORE fetching
+        // the summary, so readiness reflects this morning even if the app hasn't
+        // been opened. After the fireNow gate so the 30-min retries don't re-sync.
+        runCatching { repo.syncHealth() }
+
         // Check-in still pending? Then the notification also asks for it.
         val answered = runCatching {
             repo.wellnessCheckin(today.toString())?.energy != null

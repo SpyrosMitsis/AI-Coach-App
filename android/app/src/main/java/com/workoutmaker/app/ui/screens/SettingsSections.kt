@@ -101,59 +101,26 @@ import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import javax.inject.Inject
 
-@OptIn(ExperimentalLayoutApi::class)
+// The one-page "Profile & week" grew too crowded, so it's now three pages
+// (About you / Sports & goals / Your training week). They all edit the same
+// TrainingProfile in the shared SettingsViewModel and each Save writes the
+// whole profile, so nothing is lost when hopping between pages mid-edit.
+
 @Composable
-internal fun ProfileSection(vm: SettingsViewModel) {
-    val profile by vm.profile.collectAsStateSafe()
+private fun SaveProfileButton(vm: SettingsViewModel) {
     val busy by vm.busy.collectAsStateSafe()
     val haptics = LocalHapticFeedback.current
-    SectionCard {
-        SportSelector(profile.sports) { s -> vm.updateProfile { it.copy(sports = it.sports.toggled(s)) } }
-        // Activity-first: each selected sport gets its own goal(s) + level (+ split for gym).
-        SPORTS.filter { profile.sports.contains(it) }.forEach { sport ->
-            SportGoalsLevel(
-                sport = sport,
-                goals = profile.goals_by_sport[sport].orEmpty(),
-                level = profile.experience_by_sport[sport],
-                splitStyle = profile.split_style,
-                onGoalToggle = { g -> vm.updateProfile { it.copy(goals_by_sport = it.goals_by_sport.toggleIn(sport, g)) } },
-                onLevel = { lvl -> vm.updateProfile { it.copy(experience_by_sport = it.experience_by_sport + (sport to lvl)) } },
-                onSplit = { s -> vm.updateProfile { it.copy(split_style = if (s == "Auto") null else s) } },
-            )
-        }
-        Text("Weekly availability", style = MaterialTheme.typography.labelLarge)
-        WeeklyAvailabilityEditor(profile.day_availability) { list -> vm.updateProfile { it.copy(day_availability = list) } }
-        if (sportNeedsEquipment(profile.sports)) {
-            EquipmentSelector(profile.equipment_list) { e -> vm.updateProfile { it.copy(equipment_list = it.equipment_list.toggled(e)) } }
-        }
-        // Periodization no longer rides inside the strength editor; everyone
-        // gets the control here, right after the availability that feeds it.
-        PeriodizationControl(
-            periodized = profile.periodized,
-            onChange = { p -> vm.updateProfile { it.copy(periodized = p) } },
-            weeklyTssTarget = profile.weekly_tss_target,
-        )
-        ToggleRow(
-            "Daily coach briefing",
-            "A short, human note from your coach at the top of Home each day. Costs one AI call per day; turn off to avoid any automatic spend.",
-            profile.briefing,
-        ) { checked -> vm.updateProfile { it.copy(briefing = checked) } }
-        if (profile.goal_date != null || profile.target_pace != null) {
-            Text(
-                buildString {
-                    append("Goal: ")
-                    append(profile.goal ?: "-")
-                    profile.goal_date?.let { append(" · $it") }
-                    profile.target_pace?.let { append(" · $it") }
-                    append("  (set in Goals & races below)")
-                },
-                style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-        }
-        OutlinedTextField(profile.injury_history ?: "", { v -> vm.updateProfile { it.copy(injury_history = v) } },
-            label = { Text("Injury history (optional)") }, modifier = Modifier.fillMaxWidth())
-        Button(onClick = { haptics.performHapticFeedback(HapticFeedbackType.LongPress); vm.saveProfile() }, enabled = !busy, modifier = Modifier.fillMaxWidth()) { Text("Save profile") }
-    }
+    Button(
+        onClick = { haptics.performHapticFeedback(HapticFeedbackType.LongPress); vm.saveProfile() },
+        enabled = !busy, modifier = Modifier.fillMaxWidth(),
+    ) { Text("Save profile") }
+}
+
+@Composable
+internal fun AboutYouSection(vm: SettingsViewModel, onOpenBodyHistory: () -> Unit) {
+    val profile by vm.profile.collectAsStateSafe()
+    // Injuries live on "Injuries & constraints", the briefing toggle on
+    // "Planning" — this page is purely who you are, physically.
     SectionCard(title = "About you") {
         OutlinedTextField(
             profile.display_name ?: "", { v -> vm.updateProfile { it.copy(display_name = v.ifBlank { null }) } },
@@ -171,22 +138,72 @@ internal fun ProfileSection(vm: SettingsViewModel) {
                 keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number), modifier = Modifier.weight(1f),
             )
             OutlinedTextField(
-                (profile.weight_kg?.toString() ?: ""), { v -> vm.updateProfile { it.copy(weight_kg = v.toIntOrNull()) } },
-                label = { Text("Weight kg") }, singleLine = true,
-                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number), modifier = Modifier.weight(1f),
-            )
-            OutlinedTextField(
                 (profile.height_cm?.toString() ?: ""), { v -> vm.updateProfile { it.copy(height_cm = v.toIntOrNull()) } },
                 label = { Text("Height cm") }, singleLine = true,
                 keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number), modifier = Modifier.weight(1f),
             )
         }
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            OutlinedTextField(
+                (profile.weight_kg?.toString() ?: ""), { v -> vm.updateProfile { it.copy(weight_kg = v.toIntOrNull()) } },
+                label = { Text("Weight kg") }, singleLine = true,
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number), modifier = Modifier.weight(1f),
+            )
+            OutlinedTextField(
+                (profile.body_fat_pct?.let { bf -> if (bf % 1.0 == 0.0) bf.toInt().toString() else bf.toString() } ?: ""),
+                { v -> vm.updateProfile { it.copy(body_fat_pct = v.toDoubleOrNull()?.takeIf { bf -> bf in 3.0..60.0 }) } },
+                label = { Text("Body fat %") }, singleLine = true,
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal), modifier = Modifier.weight(1f),
+            )
+        }
         Text(
-            "Normally read from your Intervals.icu profile (weight follows your latest wellness entry). Anything set here overrides it; leave blank to use Intervals.icu.",
+            "Normally read from your Intervals.icu profile; weight and body fat also sync from a Health Connect smart scale. Anything set here overrides those; leave blank to use the synced value.",
             style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
-        Button(onClick = { haptics.performHapticFeedback(HapticFeedbackType.LongPress); vm.saveProfile() }, enabled = !busy, modifier = Modifier.fillMaxWidth()) { Text("Save") }
+        TextButton(onClick = onOpenBodyHistory) { Text("Body trends →") }
     }
+    SaveProfileButton(vm)
+}
+
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+internal fun SportsGoalsSection(vm: SettingsViewModel) {
+    val profile by vm.profile.collectAsStateSafe()
+    SectionCard(title = "Your sports") {
+        SportSelector(profile.sports) { s -> vm.updateProfile { it.copy(sports = it.sports.toggled(s)) } }
+        // Activity-first: each selected sport gets its own goal(s) + level (+ split for gym).
+        SPORTS.filter { profile.sports.contains(it) }.forEach { sport ->
+            SportGoalsLevel(
+                sport = sport,
+                goals = profile.goals_by_sport[sport].orEmpty(),
+                level = profile.experience_by_sport[sport],
+                splitStyle = profile.split_style,
+                onGoalToggle = { g -> vm.updateProfile { it.copy(goals_by_sport = it.goals_by_sport.toggleIn(sport, g)) } },
+                onLevel = { lvl -> vm.updateProfile { it.copy(experience_by_sport = it.experience_by_sport + (sport to lvl)) } },
+                onSplit = { s -> vm.updateProfile { it.copy(split_style = if (s == "Auto") null else s) } },
+            )
+        }
+    }
+    if (sportNeedsEquipment(profile.sports)) {
+        SectionCard(title = "Equipment") {
+            EquipmentSelector(profile.equipment_list) { e -> vm.updateProfile { it.copy(equipment_list = it.equipment_list.toggled(e)) } }
+        }
+    }
+    SaveProfileButton(vm)
+}
+
+@Composable
+internal fun TrainingWeekSection(vm: SettingsViewModel) {
+    val profile by vm.profile.collectAsStateSafe()
+    SectionCard(title = "Your week") {
+        WeeklyAvailabilityEditor(profile.day_availability) { list -> vm.updateProfile { it.copy(day_availability = list) } }
+        PeriodizationControl(
+            periodized = profile.periodized,
+            onChange = { p -> vm.updateProfile { it.copy(periodized = p) } },
+            weeklyTssTarget = profile.weekly_tss_target,
+        )
+    }
+    SaveProfileButton(vm)
 }
 
 @OptIn(ExperimentalLayoutApi::class)
@@ -218,7 +235,7 @@ internal fun WorkoutDefaultsSection(vm: SettingsViewModel) {
         }
         Text("Base weight the plate calculator subtracts.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
     }
-    SectionCard {
+    SectionCard(title = "Display") {
         ToggleRow("Keep screen on during workouts", "Stops the display sleeping while you train.", s.keepScreenOn) { vm.setKeepScreenOn(it) }
     }
 }
@@ -230,24 +247,19 @@ internal fun PlanningSection(vm: SettingsViewModel) {
     val profile by vm.profile.collectAsStateSafe()
     val busy by vm.busy.collectAsStateSafe()
     val haptics = LocalHapticFeedback.current
-    SectionCard {
+    SectionCard(title = "Automatic coaching") {
         ToggleRow("Auto-plan next week", "Every Sunday the AI lays out your week and (if connected) pushes it to your watch.", autoPlan) { vm.setAutoPlan(it) }
-    }
-    SectionCard(title = "Challenge level") {
-        Text(
-            "A standing bias on how hard sessions feel. The coach still adapts to your daily readiness on top of this.",
-            style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
-        )
-        FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-            listOf("Easier" to "easier", "Standard" to null, "Harder" to "harder").forEach { (label, value) ->
-                FilterChip(
-                    selected = profile.challenge == value,
-                    onClick = { vm.updateProfile { it.copy(challenge = value) } },
-                    label = { Text(label) },
-                )
-            }
+        HorizontalDivider(color = MaterialTheme.colorScheme.surfaceContainerHigh)
+        // Saved immediately — a toggle that silently needs a Save button reads
+        // as broken. (Moved here from Profile: it's coach behavior, not identity.)
+        ToggleRow(
+            "Daily coach briefing",
+            "A short, human note from your coach at the top of Home each day. Costs one AI call per day; turn off to avoid any automatic spend.",
+            profile.briefing,
+        ) { checked ->
+            vm.updateProfile { it.copy(briefing = checked) }
+            vm.saveProfile()
         }
-        Button(onClick = { vm.saveProfile() }, enabled = !busy, modifier = Modifier.fillMaxWidth()) { Text("Save") }
     }
     SectionCard(title = "Weekly load target") {
         // The same effort chips onboarding offers: fractions of the athlete's
@@ -272,8 +284,26 @@ internal fun PlanningSection(vm: SettingsViewModel) {
         )
         Text("Guides how much training load the weekly planner aims for. Leave blank to auto-estimate.",
             style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-        Button(onClick = { haptics.performHapticFeedback(HapticFeedbackType.LongPress); vm.saveProfile() }, enabled = !busy, modifier = Modifier.fillMaxWidth()) { Text("Save") }
     }
+    SectionCard(title = "Challenge level") {
+        Text(
+            "A standing bias on how hard sessions feel. The coach still adapts to your daily readiness on top of this.",
+            style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+            listOf("Easier" to "easier", "Standard" to null, "Harder" to "harder").forEach { (label, value) ->
+                FilterChip(
+                    selected = profile.challenge == value,
+                    onClick = { vm.updateProfile { it.copy(challenge = value) } },
+                    label = { Text(label) },
+                )
+            }
+        }
+    }
+    Button(
+        onClick = { haptics.performHapticFeedback(HapticFeedbackType.LongPress); vm.saveProfile() },
+        enabled = !busy, modifier = Modifier.fillMaxWidth(),
+    ) { Text("Save") }
 }
 
 // "What your coach knows about you" — the three coach-memory documents in one
@@ -288,7 +318,17 @@ internal fun KnowledgeSection(vm: SettingsViewModel) {
     val soul by vm.soul.collectAsStateSafe()
     val soulStatus by vm.soulStatus.collectAsStateSafe()
     val busy by vm.busy.collectAsStateSafe()
-    SectionCard {
+    val profile by vm.profile.collectAsStateSafe()
+    // Same structured editor onboarding uses; edits profile.injuries.
+    SectionCard(title = "Injuries") {
+        Text(
+            "Areas the coach avoids loading. It picks safer alternatives and respects the severity you set.",
+            style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        InjuryEditor(profile.injuries) { v -> vm.updateProfile { it.copy(injuries = v) } }
+        Button(onClick = { vm.saveProfile() }, enabled = !busy, modifier = Modifier.fillMaxWidth()) { Text("Save injuries") }
+    }
+    SectionCard(title = "Hard rules") {
         Text(
             "Durable facts your coach must respect on every plan, e.g. \"left knee, avoid deep lunges\", " +
                 "\"no leg press machine\", \"only dumbbells at home\", \"hate burpees\". The coach chat updates this " +
@@ -303,7 +343,7 @@ internal fun KnowledgeSection(vm: SettingsViewModel) {
         Button(onClick = { vm.saveKnowledge() }, enabled = !busy, modifier = Modifier.fillMaxWidth()) { Text("Save knowledge") }
         knowledgeStatus?.let { Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.primary) }
     }
-    SectionCard {
+    SectionCard(title = "Coach's notes") {
         Text(
             "Your coach's running notes, durable patterns it has learned from your sessions, " +
                 "feedback and PRs (e.g. how you respond to volume, recurring soreness, what motivates you). " +
@@ -322,7 +362,7 @@ internal fun KnowledgeSection(vm: SettingsViewModel) {
         }
         memoryStatus?.let { Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.primary) }
     }
-    SectionCard {
+    SectionCard(title = "Coach's identity") {
         Text(
             "Your coach's soul, who it is to you: its voice, coaching philosophy, and the " +
                 "story of how you two train together. It deepens slowly on its own; you rarely need to " +
@@ -588,6 +628,51 @@ internal fun ConnectionsSection(vm: SettingsViewModel) {
             modifier = Modifier.fillMaxWidth(),
         ) { Text("Open Health Connect (manage permissions)") }
         healthStatus?.let { Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.primary) }
+    }
+    SectionCard(title = "Device calendar") {
+        val s by vm.appSettings.collectAsStateSafe()
+        val calendarStatus by vm.calendarStatus.collectAsStateSafe()
+        val readPermLauncher = androidx.activity.compose.rememberLauncherForActivityResult(
+            androidx.activity.result.contract.ActivityResultContracts.RequestPermission(),
+        ) { granted ->
+            if (granted) vm.setCalendarRead(true)
+            else vm.setCalendarStatus("Permission denied. Grant calendar access in system settings to use this.")
+        }
+        val writePermLauncher = androidx.activity.compose.rememberLauncherForActivityResult(
+            androidx.activity.result.contract.ActivityResultContracts.RequestPermission(),
+        ) { granted ->
+            if (granted) vm.setCalendarWrite(true)
+            else vm.setCalendarStatus("Permission denied. Grant calendar access in system settings to use this.")
+        }
+        Text(
+            "Connects training to real life. Works with any calendar synced to this phone (Google, Outlook…). " +
+                "For planning, only busy TIMES are used; event titles never leave your phone.",
+            style = MaterialTheme.typography.bodySmall,
+        )
+        ToggleRow(
+            "Plan around my calendar",
+            "The planner reads your busy times and puts long or hard sessions on your free days.",
+            s.calendarRead,
+        ) { on ->
+            when {
+                !on -> vm.setCalendarRead(false)
+                vm.calendarReadGranted() -> vm.setCalendarRead(true)
+                else -> readPermLauncher.launch(android.Manifest.permission.READ_CALENDAR)
+            }
+        }
+        HorizontalDivider(color = MaterialTheme.colorScheme.surfaceContainerHigh)
+        ToggleRow(
+            "Show workouts in my calendar",
+            "Planned sessions appear as all-day entries on the day, no clock time, no reminders.",
+            s.calendarWrite,
+        ) { on ->
+            when {
+                !on -> vm.setCalendarWrite(false)
+                vm.calendarWriteGranted() -> vm.setCalendarWrite(true)
+                else -> writePermLauncher.launch(android.Manifest.permission.WRITE_CALENDAR)
+            }
+        }
+        calendarStatus?.let { Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.primary) }
     }
 }
 

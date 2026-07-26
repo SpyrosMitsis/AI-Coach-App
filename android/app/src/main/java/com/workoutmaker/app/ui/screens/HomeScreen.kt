@@ -104,6 +104,17 @@ class HomeViewModel @Inject constructor(
     // otherwise. load(), not refresh(): no need to force an Intervals re-sync.
     init {
         viewModelScope.launch { planChanges.changes.collect { load() } }
+        // Debrief notification tapped: resolve the activity and open its detail
+        // overlay (MainScaffold has already navigated to the Home tab).
+        viewModelScope.launch {
+            com.workoutmaker.app.data.NotificationDeepLinks.openActivity.collect { link ->
+                val (id, date) = link ?: return@collect
+                com.workoutmaker.app.data.NotificationDeepLinks.openActivity.value = null
+                runCatching { repo.completedActivities(date) }.getOrNull()
+                    ?.firstOrNull { it.id == id }
+                    ?.let { openedActivity.value = it }
+            }
+        }
     }
 
     val summary = MutableStateFlow<DailySummary?>(null)
@@ -206,6 +217,14 @@ class HomeViewModel @Inject constructor(
         // separately so it never holds up the dashboard; cached per-day.
         if (viewingToday) {
             viewModelScope.launch {
+                // First brief of the day = the day's ONE LLM generation. Push last
+                // night's Health Connect data first (and refresh the summary so
+                // the ring matches what the brief saw); a cached brief skips all
+                // of this and the open stays as cheap as before.
+                if (!repo.hasCachedBrief()) {
+                    runCatching { repo.syncHealth() }
+                    runCatching { repo.dailySummary(date) }.onSuccess { summary.value = it }
+                }
                 runCatching { repo.coachBrief() }
                     .onSuccess { brief.value = it }
                     .onFailure { com.workoutmaker.app.util.AppLog.w("home", "coachBrief failed", it) }
@@ -306,6 +325,27 @@ class HomeViewModel @Inject constructor(
     }
     fun closeActivity() { openedActivity.value = null }
     fun closeStrength() { openedStrength.value = null }
+
+    // Tapping the Home "Session debrief" card opens the SAME detail page as the
+    // recent-activities list: full analysis + coach feedback for endurance, the
+    // merged logged+watch page for strength.
+    fun openDebrief(d: com.workoutmaker.app.data.SessionDebrief) = viewModelScope.launch {
+        if (d.kind == "strength") {
+            val zone = java.time.ZoneId.systemDefault()
+            val logged = runCatching { strength.recentWorkouts(500) }.getOrNull()?.firstOrNull { w ->
+                java.time.Instant.ofEpochMilli(w.startedAt).atZone(zone).toLocalDate().toString() == d.date
+            } ?: return@launch
+            val sets = runCatching { strength.setsForWorkout(logged.id) }.getOrNull().orEmpty()
+            val watch = runCatching { repo.completedActivities(d.date) }.getOrNull().orEmpty()
+                .firstOrNull { c -> c.date == d.date && looksLike("strength", c.type) }
+            openedStrength.value = StrengthDetail(logged, sets, watch)
+            return@launch
+        }
+        val id = d.activity_id ?: return@launch
+        runCatching { repo.completedActivities(d.date) }.getOrNull()
+            ?.firstOrNull { it.id == id }
+            ?.let { openedActivity.value = it }
+    }
 
     private fun com.workoutmaker.app.data.IntervalsActivity.toCompleted() =
         com.workoutmaker.app.data.CompletedActivity(
@@ -906,7 +946,56 @@ fun HomeScreen(
             }
         }
 
+        // How the latest session (today's or yesterday's) actually went — the
+        // analyzer's verdict, one tap from the full breakdown. Server-picked;
+        // absent whenever nothing recent has an analysis.
+        s.debrief?.let { d -> SessionDebriefCard(mod, d) { vm.openDebrief(d) } }
+
         fitness?.let { f -> FitnessSection(mod, f, onOpenActivity = { vm.openActivity(it) }) }
+    }
+}
+
+// Compact planned-vs-actual card: the analysis label as the verdict headline,
+// the coach's note underneath, whole card tappable into the activity detail.
+@Composable
+private fun SessionDebriefCard(
+    mod: Modifier,
+    d: com.workoutmaker.app.data.SessionDebrief,
+    onOpen: () -> Unit,
+) {
+    val today = java.time.LocalDate.now().toString()
+    val whenLabel = if (d.date == today) "today" else "yesterday"
+    val sport = d.type?.takeIf { it.isNotBlank() }?.lowercase() ?: "session"
+    SectionCard(mod.clickable(onClick = onOpen), title = "Session debrief") {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                Text(
+                    d.label?.replaceFirstChar { it.uppercase() } ?: "Analyzed",
+                    style = MaterialTheme.typography.titleSmall,
+                    fontWeight = androidx.compose.ui.text.font.FontWeight.SemiBold,
+                    color = MaterialTheme.colorScheme.primary,
+                )
+                d.feedback?.takeIf { it.isNotBlank() }?.let {
+                    Text(
+                        it,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 2,
+                        overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
+                    )
+                }
+                Text(
+                    "Your $sport $whenLabel · tap for the full breakdown",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            Icon(
+                Icons.Filled.KeyboardArrowRight,
+                contentDescription = "Open activity",
+                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
     }
 }
 

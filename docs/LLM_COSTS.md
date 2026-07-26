@@ -168,11 +168,6 @@ closer to $0.007.
 At `HOSTED_USER_DAILY_USD=0.25` that's ~3 agentic turns a day, and the $2 monthly
 bound is the real backstop.
 
-> **Watch `plan-block`**: it fans out one `plan-week` per week, up to 16, and
-> concurrently. At the `plan` budget a 16-week block is ~$0.5 hosted and will trip
-> the daily cap partway through. The quota gate stops it; the user sees a partial
-> block.
-
 ---
 
 ## Seeing where the money goes

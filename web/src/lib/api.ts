@@ -111,12 +111,6 @@ export const api = {
   planWeek: (startDate?: string) =>
     invoke<{ planned?: number; week?: unknown; error?: string }>("plan-week", { start_date: startDate }),
 
-  planBlock: (opts?: { startDate?: string; weeks?: number; pushWeeks?: number }) =>
-    invoke<{ weeks: number; weeks_planned: number; pushed_weeks: number; start_date: string; end_date: string }>(
-      "plan-block",
-      { start_date: opts?.startDate, weeks: opts?.weeks, push_weeks: opts?.pushWeeks },
-    ),
-
   pushWorkout: (workout_id: string) =>
     invoke<{ ok: boolean; intervals_event_id: string }>("push-workout", { workout_id }),
 

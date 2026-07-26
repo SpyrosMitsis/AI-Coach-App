@@ -26,12 +26,14 @@ import {
   SYSTEM_PROMPT,
   trainingPhase,
   validateWorkout,
+  WORKOUT_TOOL_SCHEMA,
 } from "../_shared/prompt.ts";
 import { createEvent, deleteEvent, latestFitness } from "../_shared/intervals.ts";
 import { applyFallbackFitness } from "../_shared/load.ts";
 import { renderIntervalsWorkout } from "../_shared/intervals_workout.ts";
 import {
   adherenceBlock,
+  calendarBlock,
   executionBlock,
   goalBlock,
   intervalsPhysiology,
@@ -52,7 +54,8 @@ import {
 import { type MainLift, reviewWorkout } from "../_shared/workout_review.ts";
 import { nextTarget } from "../_shared/progression.ts";
 import { defaultHrZones } from "../_shared/zones.ts";
-import { challengeBlock, experienceForSport, goalsText, minutesForDate, profileFactsBlock } from "../_shared/profile.ts";
+import { bodyComposition, challengeBlock, experienceForSport, goalsText, injuriesOf, minutesForDate, profileFactsBlock } from "../_shared/profile.ts";
+import { computeBodyTrend } from "../_shared/body_trend.ts";
 
 const DAY = 86_400_000;
 const daysBetween = (a: string, b: Date) => Math.floor((b.getTime() - new Date(a).getTime()) / DAY);
@@ -348,6 +351,20 @@ Deno.serve(async (req) => {
       const equipmentList = Array.isArray(onboarding.equipment_list)
         ? (onboarding.equipment_list as string[]).filter((e) => typeof e === "string" && e.trim())
         : [];
+      // Goal-aware body-composition trend (build muscle / lose fat / recomp).
+      // Best-effort: pre-migration DBs error on the select and skip the line.
+      let bodyTrendLine: string | null = null;
+      try {
+        const since90 = new Date(new Date(date + "T12:00:00Z").getTime() - 90 * DAY)
+          .toISOString().slice(0, 10);
+        const { data: bodyRows, error: bodyErr } = await admin.from("wellness_checkins")
+          .select("date, weight_kg, body_fat_pct, lean_mass_kg")
+          .eq("user_id", userId).gte("date", since90).lte("date", date).order("date", { ascending: true });
+        if (!bodyErr && bodyRows) {
+          const goals = ((onboarding.goals_by_sport as Record<string, string[]> | undefined)?.strength) ?? [];
+          bodyTrendLine = computeBodyTrend(bodyRows, goals, date)?.summary || null;
+        }
+      } catch { /* columns not migrated yet */ }
       userPrompt = buildStrengthPrompt({
         muscleGroupsLast48h,
         weeklySetsByMuscle,
@@ -360,6 +377,8 @@ Deno.serve(async (req) => {
         mainLifts,
         durationNote,
         splitStyle: onboarding.split_style as string | undefined,
+        body: bodyComposition(onboarding),
+        bodyTrend: bodyTrendLine,
       });
       // Pin exercise names to the loggable catalog (+ the athlete's customs).
       userPrompt += await exerciseCatalogBlock(admin, userId);
@@ -461,6 +480,9 @@ Deno.serve(async (req) => {
       userPrompt += await adherenceBlock(admin, userId, since14, date, acts28);
       userPrompt += await executionBlock(admin, userId, since14);
       userPrompt += goalBlock(onboarding, weeksToGoal, phase, acts28);
+      // Today's busy windows (derived on-device from the athlete's calendar) —
+      // a packed day should get a shorter session, not a heroic one.
+      userPrompt += calendarBlock(body.calendar_busy ?? null);
       if (type === "run") {
         const lat = typeof body.lat === "number" ? body.lat : profile.last_lat;
         const lon = typeof body.lon === "number" ? body.lon : profile.last_lon;
@@ -502,7 +524,14 @@ Return the revised workout as JSON only, same schema.`;
     try {
       outcome = await llmGenerateWithFallback(
         chain,
-        { prompt: userPrompt, systemPrompt: SYSTEM_PROMPT, temperature: 0.4, hosted, feature: "workout" },
+        {
+          prompt: userPrompt,
+          systemPrompt: SYSTEM_PROMPT,
+          temperature: 0.4,
+          hosted,
+          feature: "workout",
+          jsonSchema: { name: "emit_workout", schema: WORKOUT_TOOL_SCHEMA },
+        },
         resolveKey,
         resolveModel,
         resolveBaseUrl,
@@ -540,7 +569,7 @@ Return the revised workout as JSON only, same schema.`;
         const repairPrompt =
           `${userPrompt}\n\nYOUR PREVIOUS RESPONSE could not be parsed/validated (${parseError}). ` +
           `Return ONLY a corrected JSON object that exactly matches the schema, no prose, no code fences.`;
-        const retry = await llmGenerateWithFallback(chain, { prompt: repairPrompt, systemPrompt: SYSTEM_PROMPT, temperature: 0.4, hosted, feature: "workout" }, resolveKey, resolveModel, resolveBaseUrl);
+        const retry = await llmGenerateWithFallback(chain, { prompt: repairPrompt, systemPrompt: SYSTEM_PROMPT, temperature: 0.4, hosted, feature: "workout", jsonSchema: { name: "emit_workout", schema: WORKOUT_TOOL_SCHEMA } }, resolveKey, resolveModel, resolveBaseUrl);
         const v2 = validateWorkout(extractJson(retry.text));
         if (v2.ok && v2.workout) {
           validated = v2.workout;
@@ -582,8 +611,9 @@ Return the revised workout as JSON only, same schema.`;
       tsb: fitness.tsb,
       daysSinceLastHard,
       experience: experienceForSport(onboarding, type),
-      // Structured safety: injuries on file + durable coach constraints.
-      injuries: [onboarding.injury_history, profile.coach_knowledge].filter(Boolean).join("; "),
+      // Structured safety: injuries on file (coach_knowledge is separate free
+      // text, covered by the prompt-level instruction, not this backstop).
+      injuries: injuriesOf(onboarding),
       // Deterministic intensity ceiling + equipment hard-filter.
       readiness: recovery.score,
       equipment: onboarding.equipment as string | undefined,
@@ -597,7 +627,14 @@ Return the revised workout as JSON only, same schema.`;
           `return ONLY corrected JSON matching the schema:\n- ${review.violations.join("\n- ")}`;
         const retry = await llmGenerateWithFallback(
           chain,
-          { prompt: fixPrompt, systemPrompt: SYSTEM_PROMPT, temperature: 0.4, hosted, feature: "workout" },
+          {
+            prompt: fixPrompt,
+            systemPrompt: SYSTEM_PROMPT,
+            temperature: 0.4,
+            hosted,
+            feature: "workout",
+            jsonSchema: { name: "emit_workout", schema: WORKOUT_TOOL_SCHEMA },
+          },
           resolveKey,
           resolveModel,
           resolveBaseUrl,

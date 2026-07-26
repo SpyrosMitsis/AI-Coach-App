@@ -8,6 +8,7 @@ import type { SupabaseClient } from "jsr:@supabase/supabase-js@2";
 import { computeRecovery } from "./recovery.ts";
 import { freshnessWord, recoveryWord } from "./prompt.ts";
 import { applyFallbackFitness } from "./load.ts";
+import { injuriesText } from "./profile.ts";
 
 const DAY = 86400000;
 const iso = (d: number) => new Date(d).toISOString().slice(0, 10);
@@ -111,6 +112,22 @@ export const TOOL_CATALOG: ToolDef[] = [
     description: "Regenerate a day's workout noticeably easier, lower intensity and volume, aerobic/recovery focus. Use when the athlete feels rough or wants to back off without skipping entirely.",
   },
   {
+    name: "set_training_pause", kind: "act", args: "{ until_date: 'YYYY-MM-DD', reason?: string }",
+    schema: {
+      type: "object",
+      properties: {
+        until_date: { type: "string", description: "Last day of the pause (inclusive), YYYY-MM-DD; training resumes the day after" },
+        reason: { type: "string", description: "Why, e.g. 'travel to Italy', 'flu', 'work crunch'" },
+      },
+      required: ["until_date"],
+    },
+    description: "Pause all training through a date (inclusive) — travel, illness, work crunch. Clears upcoming unlocked planned sessions in that window and stops plan_week from scheduling more until then. Use whenever the athlete says they're stopping/pausing training for a stretch WITH a return date.",
+  },
+  {
+    name: "resume_training", kind: "act", args: "{}", schema: NO_ARGS,
+    description: "End an active training pause early. Use if the athlete says they're back / resuming sooner than the pause's original end date.",
+  },
+  {
     name: "set_goal_race", kind: "act", args: "{ name: string, date: 'YYYY-MM-DD', target_pace?: string }",
     schema: {
       type: "object",
@@ -131,23 +148,105 @@ export const TOOL_CATALOG: ToolDef[] = [
   {
     name: "update_profile",
     kind: "act",
-    args: "{ ftp?: number, lthr?: number, threshold_pace_per_km?: 'm:ss', css_per_100m?: 'm:ss', weekly_tss_target?: number }",
+    args: "{ display_name?: string, sex?: 'male'|'female', birth_year?: number, ftp?: number, lthr?: number, threshold_pace_per_km?: 'm:ss', css_per_100m?: 'm:ss', weekly_tss_target?: number, weight_kg?: number, height_cm?: number, body_fat_pct?: number, session_duration?: number }",
     schema: {
       type: "object",
       properties: {
+        display_name: { type: "string", description: "What the coach should call the athlete (their name)" },
+        sex: { type: "string", enum: ["male", "female"], description: "Biological sex, for zones/demographics" },
+        birth_year: { type: "number", description: "Year of birth, like 1992" },
         ftp: { type: "number", description: "Cycling FTP in watts (50-600)" },
         lthr: { type: "number", description: "Lactate threshold heart rate in bpm (120-210)" },
         threshold_pace_per_km: { type: "string", description: "Run threshold pace per km, like 4:45" },
         css_per_100m: { type: "string", description: "Swim critical pace per 100m, like 1:55" },
         weekly_tss_target: { type: "number", description: "Weekly training load target in TSS (100-1000)" },
+        weight_kg: { type: "number", description: "Bodyweight in kg (30-250)" },
+        height_cm: { type: "number", description: "Height in cm (120-230)" },
+        body_fat_pct: { type: "number", description: "Body fat percentage (3-60)" },
+        session_duration: { type: "number", description: "Typical session length in minutes (15-300)" },
       },
     },
     description:
-      "Save the athlete's performance numbers when they mention them in conversation (a new FTP test, " +
-      "a threshold pace, a swim CSS, a weekly load target). Better numbers make every generated workout " +
-      "more accurate, so save them whenever the athlete states one. Only include fields the athlete gave.",
+      "Save the athlete's profile facts and numbers when they state them in conversation: their name, " +
+      "sex, birth year, a new FTP test, a threshold pace, a swim CSS, a weekly load target, bodyweight, " +
+      "body fat, a preferred session length. This is the SAME profile the Settings screens edit, so a " +
+      "saved change shows up there too. Only include fields the athlete gave.",
+  },
+  {
+    name: "update_app_settings",
+    kind: "act",
+    args: "{ theme?: 'system'|'dark'|'light', palette?: string, units?: 'kg'|'lb', rest_timer_seconds?: number, keep_screen_on?: boolean, morning_notification?: boolean, rest_vibrate?: boolean, rest_notify?: boolean }",
+    schema: {
+      type: "object",
+      properties: {
+        theme: { type: "string", enum: ["system", "dark", "light"], description: "App theme" },
+        palette: {
+          type: "string",
+          enum: ["serene", "ember", "tidal", "nocturne", "bloom", "solstice"],
+          description: "Colour palette",
+        },
+        units: { type: "string", enum: ["kg", "lb"], description: "Weight units" },
+        rest_timer_seconds: { type: "number", description: "Default strength rest timer in seconds (0-600)" },
+        keep_screen_on: { type: "boolean", description: "Keep the screen awake during a gym session" },
+        morning_notification: { type: "boolean", description: "Morning readiness notification" },
+        rest_vibrate: { type: "boolean", description: "Vibrate when the rest timer ends" },
+        rest_notify: { type: "boolean", description: "Notify when the rest timer ends" },
+      },
+    },
+    description:
+      "Change the athlete's app settings on their phone: theme, colour palette, weight units, default " +
+      "rest timer, keep-screen-on, morning readiness notification, rest-timer alerts. The change is " +
+      "applied on the device when your reply arrives; report it as done. Sensitive settings (API keys, " +
+      "account, data export) cannot be changed from chat, point the athlete to Settings for those.",
   },
 ];
+
+// ---------------------------------------------------------------------------
+// update_app_settings validation. The tool's effect happens ON THE DEVICE (the
+// settings live in the phone's DataStore, not the DB), so the server only
+// validates against this whitelist and ships normalized {key, value-as-string}
+// pairs back with the reply. Anything not listed here is rejected, which is the
+// "safe subset" guarantee: chat can never touch keys, account or data actions.
+// ---------------------------------------------------------------------------
+
+export interface AppSettingChange {
+  key: string;
+  value: string;
+}
+
+const SETTING_RULES: Record<string, (v: unknown) => string | null> = {
+  theme: (v) => (typeof v === "string" && ["system", "dark", "light"].includes(v.toLowerCase()) ? v.toLowerCase() : null),
+  palette: (v) =>
+    typeof v === "string" && ["serene", "ember", "tidal", "nocturne", "bloom", "solstice"].includes(v.toLowerCase())
+      ? v.toLowerCase()
+      : null,
+  units: (v) => (typeof v === "string" && ["kg", "lb"].includes(v.toLowerCase()) ? v.toLowerCase() : null),
+  rest_timer_seconds: (v) =>
+    typeof v === "number" && Number.isFinite(v) && v >= 0 && v <= 600 ? String(Math.round(v)) : null,
+  keep_screen_on: (v) => (typeof v === "boolean" ? String(v) : null),
+  morning_notification: (v) => (typeof v === "boolean" ? String(v) : null),
+  rest_vibrate: (v) => (typeof v === "boolean" ? String(v) : null),
+  rest_notify: (v) => (typeof v === "boolean" ? String(v) : null),
+};
+
+/** Validate an update_app_settings call into device-ready changes + rejections. */
+export function validateAppSettings(
+  args: Record<string, unknown>,
+): { changes: AppSettingChange[]; rejected: string[] } {
+  const changes: AppSettingChange[] = [];
+  const rejected: string[] = [];
+  for (const [key, value] of Object.entries(args)) {
+    const rule = SETTING_RULES[key];
+    if (!rule) {
+      rejected.push(`${key}: not a setting chat may change`);
+      continue;
+    }
+    const normalized = rule(value);
+    if (normalized === null) rejected.push(`${key}: invalid value`);
+    else changes.push({ key, value: normalized });
+  }
+  return { changes, rejected };
+}
 
 /** Tool definitions in the shape native tool-calling APIs expect. */
 export function nativeToolDefs(): { name: string; description: string; input_schema: Record<string, unknown> }[] {
@@ -253,18 +352,23 @@ export async function executeTool(
       }
       case "get_profile": {
         const { data: p } = await admin.from("user_profiles")
-          .select("display_name, onboarding, coach_knowledge").eq("id", userId).single();
+          .select("display_name, onboarding, coach_knowledge, training_paused_until, training_pause_reason")
+          .eq("id", userId).single();
         const o = (p?.onboarding ?? {}) as Record<string, unknown>;
         const { data: races } = await admin.from("races")
           .select("name, date, priority, sport, distance, target").eq("user_id", userId).order("date");
+        const pausedUntil = p?.training_paused_until as string | null;
         return JSON.stringify({
           goal: o.goal, goal_date: o.goal_date, experience: o.experience,
           days: o.days, session_min: o.session_duration, equipment: o.equipment,
-          injuries: o.injury_history, lthr: o.lthr, ftp: o.ftp, threshold_pace: o.threshold_pace_per_km,
+          injuries: injuriesText(o), lthr: o.lthr, ftp: o.ftp, threshold_pace: o.threshold_pace_per_km,
           target_pace: o.target_pace, goals: races ?? [], known: p?.coach_knowledge ?? "",
           // Richer onboarding: per-activity goals + experience, per-day availability.
           training_goals: o.goals, goals_by_sport: o.goals_by_sport,
           experience_by_sport: o.experience_by_sport, availability: o.day_availability,
+          // Active training pause (set_training_pause), null when there isn't one.
+          training_paused_until: pausedUntil && pausedUntil >= iso(Date.now()) ? pausedUntil : null,
+          training_pause_reason: p?.training_pause_reason ?? null,
         });
       }
       case "get_readiness": {
@@ -339,6 +443,35 @@ export async function executeTool(
         }
         return JSON.stringify({ ok: true, date: d, cleared });
       }
+      case "set_training_pause": {
+        const until = String(args.until_date ?? "");
+        if (!/^\d{4}-\d{2}-\d{2}$/.test(until)) return "error: until_date (YYYY-MM-DD) is required";
+        const today = iso(Date.now());
+        if (until < today) return "error: until_date is in the past";
+        const reason = typeof args.reason === "string" && args.reason.trim() ? args.reason.trim().slice(0, 200) : null;
+        await admin.from("user_profiles").update({
+          training_paused_until: until,
+          training_pause_reason: reason,
+        }).eq("id", userId);
+        // Clear upcoming unlocked, incomplete sessions in the pause window now —
+        // plan_week will also respect the pause on its own next run, but this
+        // makes the calendar reflect it immediately.
+        const { data: rows } = await admin.from("planned_workouts")
+          .select("id, type").eq("user_id", userId).gte("date", today).lte("date", until)
+          .eq("completed", false).eq("locked", false).neq("type", "rest");
+        let cleared = 0;
+        for (const row of rows ?? []) {
+          await callFunction(auth, "delete-workout", { workout_id: row.id });
+          cleared++;
+        }
+        return JSON.stringify({ ok: true, until_date: until, reason, cleared });
+      }
+      case "resume_training": {
+        await admin.from("user_profiles").update({
+          training_paused_until: null, training_pause_reason: null,
+        }).eq("id", userId);
+        return JSON.stringify({ ok: true });
+      }
       case "make_easier": {
         const r = await callFunction(auth, "generate-workout", {
           date: args.date, type: "auto",
@@ -381,6 +514,22 @@ export async function executeTool(
         const updates: Record<string, unknown> = {};
         const rejected: string[] = [];
         const num = (v: unknown) => typeof v === "number" && Number.isFinite(v) ? v : null;
+        if (args.display_name !== undefined) {
+          const name = String(args.display_name).trim().slice(0, 40);
+          if (name) updates.display_name = name;
+          else rejected.push("display_name must not be empty");
+        }
+        if (args.sex !== undefined) {
+          const s = String(args.sex).trim().toLowerCase();
+          if (s === "male" || s === "female") updates.sex = s;
+          else rejected.push("sex must be male or female");
+        }
+        const by = num(args.birth_year);
+        if (args.birth_year !== undefined) {
+          const maxYear = new Date().getFullYear() - 5;
+          if (by !== null && by >= 1900 && by <= maxYear) updates.birth_year = Math.round(by);
+          else rejected.push(`birth_year must be 1900-${maxYear}`);
+        }
         const ftp = num(args.ftp);
         if (args.ftp !== undefined) {
           if (ftp !== null && ftp >= 50 && ftp <= 600) updates.ftp = Math.round(ftp);
@@ -406,12 +555,37 @@ export async function executeTool(
           if (tss !== null && tss >= 100 && tss <= 1000) updates.weekly_tss_target = Math.round(tss);
           else rejected.push("weekly_tss_target must be 100-1000");
         }
+        const weight = num(args.weight_kg);
+        if (args.weight_kg !== undefined) {
+          if (weight !== null && weight >= 30 && weight <= 250) updates.weight_kg = Math.round(weight);
+          else rejected.push("weight_kg must be 30-250");
+        }
+        const height = num(args.height_cm);
+        if (args.height_cm !== undefined) {
+          if (height !== null && height >= 120 && height <= 230) updates.height_cm = Math.round(height);
+          else rejected.push("height_cm must be 120-230");
+        }
+        const bf = num(args.body_fat_pct);
+        if (args.body_fat_pct !== undefined) {
+          if (bf !== null && bf >= 3 && bf <= 60) updates.body_fat_pct = Math.round(bf * 10) / 10;
+          else rejected.push("body_fat_pct must be 3-60");
+        }
+        const dur = num(args.session_duration);
+        if (args.session_duration !== undefined) {
+          if (dur !== null && dur >= 15 && dur <= 300) updates.session_duration = Math.round(dur);
+          else rejected.push("session_duration must be 15-300 minutes");
+        }
         if (Object.keys(updates).length === 0) {
           return `error: nothing to save${rejected.length ? ` (${rejected.join("; ")})` : ""}`;
         }
         const { data: p } = await admin.from("user_profiles").select("onboarding").eq("id", userId).single();
         const o = (p?.onboarding ?? {}) as Record<string, unknown>;
-        await admin.from("user_profiles").update({ onboarding: { ...o, ...updates } }).eq("id", userId);
+        await admin.from("user_profiles").update({
+          onboarding: { ...o, ...updates },
+          // Mirror the name to the top-level column, exactly like the app's
+          // saveProfile — the backend and Settings read it from there.
+          ...(typeof updates.display_name === "string" ? { display_name: updates.display_name } : {}),
+        }).eq("id", userId);
         return JSON.stringify({ ok: true, saved: updates, ...(rejected.length ? { rejected } : {}) });
       }
       case "remember": {
@@ -419,10 +593,18 @@ export async function executeTool(
         if (!fact) return "error: fact is empty";
         const { data: p } = await admin.from("user_profiles").select("coach_knowledge").eq("id", userId).single();
         const prev = (p?.coach_knowledge ?? "") as string;
+        const normalized = (s: string) => s.trim().toLowerCase().replace(/^-\s*/, "");
+        const lines = prev.trim() ? prev.trim().split("\n") : [];
+        const isDuplicate = lines.some((l) => normalized(l) === normalized(fact));
+        if (isDuplicate) return JSON.stringify({ ok: true, remembered: fact, duplicate: true });
         const next = (prev.trim() ? prev.trim() + "\n" : "") + `- ${fact}`;
         await admin.from("user_profiles").update({ coach_knowledge: next }).eq("id", userId);
         return JSON.stringify({ ok: true, remembered: fact });
       }
+      case "update_app_settings":
+        // Executed by coach-chat itself (the changes ride back to the device);
+        // reaching here means a caller without that channel invoked it.
+        return "error: update_app_settings is only available in chat";
       default:
         return `error: unknown tool "${name}"`;
     }

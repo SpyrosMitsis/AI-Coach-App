@@ -66,8 +66,6 @@ verify_jwt = true
 verify_jwt = true
 [functions.plan-week]
 verify_jwt = true
-[functions.plan-block]
-verify_jwt = true
 [functions.delete-workout]
 verify_jwt = true
 [functions.delete-account]

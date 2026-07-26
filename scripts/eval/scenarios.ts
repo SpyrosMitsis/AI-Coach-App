@@ -414,6 +414,60 @@ function workoutScenarios(): Scenario[] {
       }),
       meta: { sport: "strength", experience: "Intermediate", tsb: 2, readiness: 75 },
     },
+    // ------------------------------------------------------------------
+    // Body-composition A/B. Each pair is byte-identical except the prompt's
+    // Body line (74 kg / 180 cm / ~15% bf), and both arms score against the
+    // same ReviewContext — so any delta in violations or judge quality is
+    // attributable to the body data alone. meta.body_metrics splits the arms
+    // in the notebook. The bodyweight-equipment pair is where body data
+    // should matter MOST (pull-ups/dips load the athlete's own mass).
+    // ------------------------------------------------------------------
+    ...(() => {
+      const SAM_BODY = { weightKg: 74, heightCm: 180, bodyFatPct: 15 };
+      const arm = (
+        equipLabel: string,
+        equipment: string,
+        lifts: typeof MAIN_LIFTS,
+        withBody: boolean,
+      ): Scenario => ({
+        name: `strength/ab-body/${equipLabel}/${withBody ? "with" : "without"}`,
+        kind: "workout",
+        catches:
+          "A/B: does bodyweight/BMI/body fat in the strength prompt change prescription quality? " +
+          "Compare arms on violations + judge (meta.body_metrics).",
+        tier: "full",
+        systemPrompt: SYSTEM_PROMPT,
+        userPrompt: buildStrengthPrompt({
+          muscleGroupsLast48h: [],
+          weeklySetsByMuscle: { Chest: 6, Back: 6, Quads: 8 },
+          equipment,
+          experience: "Intermediate",
+          goal: "Hybrid athlete",
+          soreness: 2,
+          phase: "Base (aerobic volume, strides, general strength)",
+          mainLifts: lifts,
+          durationNote: DURATION_NOTE,
+          splitStyle: "Upper / lower",
+          body: withBody ? SAM_BODY : null,
+        }),
+        ctx: baseReviewCtx({ equipment, mainLifts: lifts }),
+        meta: {
+          sport: "strength",
+          experience: "Intermediate",
+          equipment,
+          tsb: 2,
+          readiness: 75,
+          body_metrics: withBody,
+          ab_pair: `strength/ab-body/${equipLabel}`,
+        },
+      });
+      return [
+        arm("full-gym", "Full gym", MAIN_LIFTS, false),
+        arm("full-gym", "Full gym", MAIN_LIFTS, true),
+        arm("bodyweight", "Bodyweight only", [], false),
+        arm("bodyweight", "Bodyweight only", [], true),
+      ];
+    })(),
     {
       name: "run/int/wrecked",
       kind: "workout",

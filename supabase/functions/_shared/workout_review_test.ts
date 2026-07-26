@@ -2,7 +2,8 @@
 // vibe into invariants. Run: `deno test supabase/functions/_shared/workout_review_test.ts`
 import { assert, assertEquals } from "jsr:@std/assert@1";
 import { validateWorkout } from "./workout_schema.ts";
-import { computeTss, isHardSession, type ReviewContext, reviewWorkout } from "./workout_review.ts";
+import { activeSafetyRules, computeTss, isHardSession, type ReviewContext, reviewWorkout } from "./workout_review.ts";
+import type { InjuryEntry } from "./types.ts";
 
 const EMPTY_CTX: ReviewContext = {
   mainLifts: [],
@@ -229,7 +230,8 @@ Deno.test("a contraindicated movement is stripped + marked unsafe", () => {
       { name: "Leg Press", sets: 3, reps: "10", weight_kg: 200, muscle: "Quads", notes: "" },
     ])],
   });
-  const r = reviewWorkout(w, { ...EMPTY_CTX, injuries: "Lower back disc herniation — be careful" });
+  const injuries: InjuryEntry[] = [{ area: "Lower back", severity: "serious", note: "disc herniation" }];
+  const r = reviewWorkout(w, { ...EMPTY_CTX, injuries });
   assert(r.unsafe.some((v) => v.includes("Deadlift")));
   const names = r.corrected.sections.flatMap((s) => s.exercises.map((e) => e.name));
   assert(!names.includes("Deadlift"), "deadlift should be removed");
@@ -245,6 +247,59 @@ Deno.test("no injury on file leaves the movement in place", () => {
   const r = reviewWorkout(w, EMPTY_CTX);
   assertEquals(r.unsafe, []);
   assertEquals(r.corrected.sections[0].exercises[0].name, "Deadlift");
+});
+
+Deno.test("a mild injury flags the movement but does not strip it", () => {
+  const w = mk({
+    sections: [strengthSection([
+      { name: "Deadlift", sets: 3, reps: "5", weight_kg: 140, muscle: "Back", notes: "" },
+    ])],
+  });
+  const injuries: InjuryEntry[] = [{ area: "Lower back", severity: "mild" }];
+  const r = reviewWorkout(w, { ...EMPTY_CTX, injuries });
+  assertEquals(r.unsafe, []);
+  assert(r.violations.some((v) => v.includes("Deadlift") && v.includes("contraindicated")));
+  const names = r.corrected.sections.flatMap((s) => s.exercises.map((e) => e.name));
+  assert(names.includes("Deadlift"), "mild severity should keep the movement, just flagged");
+});
+
+Deno.test("an unqualified (unset) severity errs safe and strips like serious", () => {
+  const w = mk({
+    sections: [strengthSection([
+      { name: "Deadlift", sets: 3, reps: "5", weight_kg: 140, muscle: "Back", notes: "" },
+    ])],
+  });
+  const injuries: InjuryEntry[] = [{ area: "Lower back", severity: "" }];
+  const r = reviewWorkout(w, { ...EMPTY_CTX, injuries });
+  assert(r.unsafe.some((v) => v.includes("Deadlift")));
+});
+
+Deno.test("moderate severity strips like serious", () => {
+  const w = mk({
+    sections: [strengthSection([
+      { name: "Deadlift", sets: 3, reps: "5", weight_kg: 140, muscle: "Back", notes: "" },
+    ])],
+  });
+  const injuries: InjuryEntry[] = [{ area: "Lower back", severity: "moderate" }];
+  const r = reviewWorkout(w, { ...EMPTY_CTX, injuries });
+  assert(r.unsafe.some((v) => v.includes("Deadlift")));
+});
+
+Deno.test("activeSafetyRules matches on the structured area field", () => {
+  const rules = activeSafetyRules([{ area: "Knee", severity: "serious" }]);
+  assert(rules.length > 0);
+  assert(rules.every((r) => r.forbid.test("Pistol Squat")));
+});
+
+Deno.test("activeSafetyRules also matches a rule pattern in the free-text note", () => {
+  // Freeform notes (Android's NOTE_AREA-style entries) still reach the engine
+  // even when `area` itself doesn't name a body part.
+  const rules = activeSafetyRules([{ area: "", severity: "moderate", note: "old knee injury from skiing" }]);
+  assert(rules.length > 0);
+});
+
+Deno.test("activeSafetyRules ignores an empty injuries list", () => {
+  assertEquals(activeSafetyRules([]), []);
 });
 
 // --- determinism / idempotency ---------------------------------------------
