@@ -24,6 +24,7 @@ import java.time.LocalDate
 import java.time.ZoneId
 import javax.inject.Inject
 import javax.inject.Singleton
+import androidx.health.connect.client.records.Record
 
 /** A day's wellness snapshot read from Health Connect. All fields are optional. */
 data class HealthSnapshot(
@@ -149,7 +150,7 @@ class HealthConnectManager @Inject constructor(
 
     // Full paged read: readRecords caps a page at ~1000 records, and a year of
     // daily-scale data brushes against that.
-    private suspend fun <T : androidx.health.connect.client.records.Record> readAllRecords(
+    private suspend fun <T : Record> readAllRecords(
         cls: kotlin.reflect.KClass<T>,
         window: TimeRangeFilter,
     ): List<T> {

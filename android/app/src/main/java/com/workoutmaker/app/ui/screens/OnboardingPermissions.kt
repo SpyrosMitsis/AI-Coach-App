@@ -33,6 +33,19 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.workoutmaker.app.ui.components.GhostButton
 import com.workoutmaker.app.ui.components.SectionCard
+import android.app.AlarmManager
+import android.content.pm.PackageManager
+import android.os.Build
+import android.provider.Settings
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.runtime.DisposableEffect
+import androidx.compose.ui.platform.LocalContext
+import androidx.core.content.ContextCompat
+import androidx.health.connect.client.PermissionController
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
 
 /**
  * Onboarding's permissions step. Every OS permission this app can ever ask for,
@@ -47,48 +60,48 @@ import com.workoutmaker.app.ui.components.SectionCard
  */
 @Composable
 internal fun StepPermissions(vm: OnboardingViewModel) {
-    val context = androidx.compose.ui.platform.LocalContext.current
+    val context = LocalContext.current
 
     // Grants happen outside Compose (system dialogs, Settings screens), so the
     // cards re-read their state on every resume and after each launcher result.
     var refresh by remember { mutableIntStateOf(0) }
-    val lifecycleOwner = androidx.lifecycle.compose.LocalLifecycleOwner.current
-    androidx.compose.runtime.DisposableEffect(lifecycleOwner) {
-        val obs = androidx.lifecycle.LifecycleEventObserver { _, event ->
-            if (event == androidx.lifecycle.Lifecycle.Event.ON_RESUME) refresh++
+    val lifecycleOwner = LocalLifecycleOwner.current
+    DisposableEffect(lifecycleOwner) {
+        val obs = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_RESUME) refresh++
         }
         lifecycleOwner.lifecycle.addObserver(obs)
         onDispose { lifecycleOwner.lifecycle.removeObserver(obs) }
     }
 
-    val notifLauncher = androidx.activity.compose.rememberLauncherForActivityResult(
-        androidx.activity.result.contract.ActivityResultContracts.RequestPermission(),
+    val notifLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestPermission(),
     ) { refresh++ }
-    val healthLauncher = androidx.activity.compose.rememberLauncherForActivityResult(
-        androidx.health.connect.client.PermissionController.createRequestPermissionResultContract(),
+    val healthLauncher = rememberLauncherForActivityResult(
+        PermissionController.createRequestPermissionResultContract(),
     ) { refresh++ }
-    val calReadLauncher = androidx.activity.compose.rememberLauncherForActivityResult(
-        androidx.activity.result.contract.ActivityResultContracts.RequestPermission(),
+    val calReadLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestPermission(),
     ) { granted -> if (granted) vm.setCalendarRead(true); refresh++ }
-    val calWriteLauncher = androidx.activity.compose.rememberLauncherForActivityResult(
-        androidx.activity.result.contract.ActivityResultContracts.RequestPermission(),
+    val calWriteLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestPermission(),
     ) { granted -> if (granted) vm.setCalendarWrite(true); refresh++ }
-    val locLauncher = androidx.activity.compose.rememberLauncherForActivityResult(
-        androidx.activity.result.contract.ActivityResultContracts.RequestPermission(),
+    val locLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestPermission(),
     ) { refresh++ }
 
-    fun granted(perm: String) = androidx.core.content.ContextCompat.checkSelfPermission(context, perm) ==
-        android.content.pm.PackageManager.PERMISSION_GRANTED
+    fun granted(perm: String) = ContextCompat.checkSelfPermission(context, perm) ==
+        PackageManager.PERMISSION_GRANTED
 
     val notifGranted = remember(refresh) {
-        android.os.Build.VERSION.SDK_INT < 33 || granted(android.Manifest.permission.POST_NOTIFICATIONS)
+        Build.VERSION.SDK_INT < 33 || granted(android.Manifest.permission.POST_NOTIFICATIONS)
     }
     val locGranted = remember(refresh) { granted(android.Manifest.permission.ACCESS_COARSE_LOCATION) }
     val calRead = remember(refresh) { vm.calendarReadGranted() }
     val calWrite = remember(refresh) { vm.calendarWriteGranted() }
     val exactGranted = remember(refresh) {
-        if (android.os.Build.VERSION.SDK_INT < 31) true
-        else context.getSystemService(android.app.AlarmManager::class.java)?.canScheduleExactAlarms() ?: false
+        if (Build.VERSION.SDK_INT < 31) true
+        else context.getSystemService(AlarmManager::class.java)?.canScheduleExactAlarms() ?: false
     }
     // Health Connect answers asynchronously; treat "unknown" as not-granted so
     // the card never claims a grant it hasn't confirmed.
@@ -133,7 +146,7 @@ internal fun StepPermissions(vm: OnboardingViewModel) {
                 onClick = {
                     runCatching {
                         context.startActivity(
-                            Intent(android.provider.Settings.ACTION_REQUEST_SCHEDULE_EXACT_ALARM),
+                            Intent(Settings.ACTION_REQUEST_SCHEDULE_EXACT_ALARM),
                         )
                     }
                 },

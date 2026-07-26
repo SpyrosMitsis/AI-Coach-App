@@ -52,6 +52,8 @@ import androidx.hilt.navigation.compose.hiltViewModel
 import com.workoutmaker.app.ui.collectAsStateSafe
 import com.workoutmaker.app.ui.components.ScreenScaffold
 import com.workoutmaker.app.ui.components.SectionCard
+import com.workoutmaker.app.ui.components.LocalAppSnackbar
+import com.workoutmaker.app.ui.components.friendlyError
 
 // Grouped by INTENT, in the order a user reasons: who I am (everything the
 // coach knows about the athlete, in one place), how it plans, phone/app
@@ -89,11 +91,11 @@ internal val SETTINGS_GROUPS = listOf(
 fun SettingsScreen(vm: SettingsViewModel = hiltViewModel(), onOpenBodyHistory: () -> Unit = {}) {
     LaunchedEffect(Unit) { vm.load() }
     // Save confirmations / errors go to the one app-wide snackbar.
-    val snackbar = com.workoutmaker.app.ui.components.LocalAppSnackbar.current
+    val snackbar = LocalAppSnackbar.current
     val saveStatus by vm.saveStatus.collectAsStateSafe()
     LaunchedEffect(saveStatus) {
         val s = saveStatus ?: return@LaunchedEffect
-        snackbar?.show(if (s.startsWith("✓")) s else com.workoutmaker.app.ui.components.friendlyError(s))
+        snackbar?.show(if (s.startsWith("✓")) s else friendlyError(s))
         vm.saveStatus.value = null
     }
     var open by rememberSaveable { mutableStateOf<String?>(null) }

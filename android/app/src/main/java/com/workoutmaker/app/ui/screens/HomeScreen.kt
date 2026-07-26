@@ -70,14 +70,82 @@ import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.launch
 import javax.inject.Inject
+import android.content.pm.PackageManager
+import android.os.Build
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
+import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Surface
+import androidx.compose.runtime.DisposableEffect
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.StrokeJoin
+import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextDecoration
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.window.Dialog
+import androidx.core.content.ContextCompat
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
+import com.workoutmaker.app.data.AppPreferences
+import com.workoutmaker.app.data.CompletedActivity
+import com.workoutmaker.app.data.FitnessPoint
+import com.workoutmaker.app.data.FitnessSummary
+import com.workoutmaker.app.data.GoalProgress
+import com.workoutmaker.app.data.IntervalsActivity
+import com.workoutmaker.app.data.IntervalsStats
+import com.workoutmaker.app.data.LocationProvider
+import com.workoutmaker.app.data.NotificationDeepLinks
+import com.workoutmaker.app.data.PlanChangeBus
+import com.workoutmaker.app.data.RecoveryDriver
+import com.workoutmaker.app.data.RecoveryTrend
+import com.workoutmaker.app.data.SessionDebrief
+import com.workoutmaker.app.data.TrainingProfile
+import com.workoutmaker.app.data.WeekReview
+import com.workoutmaker.app.data.WellnessCheckin
+import com.workoutmaker.app.data.WorkoutFeedback
+import com.workoutmaker.app.data.WorkoutSection
+import com.workoutmaker.app.data.Zones
+import com.workoutmaker.app.strength.SetEntity
+import com.workoutmaker.app.strength.StrengthRepository
+import com.workoutmaker.app.strength.WorkoutEntity
+import com.workoutmaker.app.ui.components.DetailOverlay
+import com.workoutmaker.app.ui.components.EmptyState
+import com.workoutmaker.app.ui.components.LocalAppSnackbar
+import com.workoutmaker.app.ui.components.friendlyError
+import com.workoutmaker.app.ui.theme.amberAccent
+import com.workoutmaker.app.util.AppLog
+import java.time.Instant
+import java.time.LocalDate
+import java.time.LocalTime
+import java.time.YearMonth
+import java.time.ZoneId
+import java.time.format.DateTimeFormatter
+import java.time.temporal.ChronoUnit
+import kotlinx.serialization.json.JsonPrimitive
 
 @HiltViewModel
 class HomeViewModel @Inject constructor(
     private val repo: WorkoutRepository,
-    private val strength: com.workoutmaker.app.strength.StrengthRepository,
-    private val location: com.workoutmaker.app.data.LocationProvider,
-    private val prefs: com.workoutmaker.app.data.AppPreferences,
-    planChanges: com.workoutmaker.app.data.PlanChangeBus,
+    private val strength: StrengthRepository,
+    private val location: LocationProvider,
+    private val prefs: AppPreferences,
+    planChanges: PlanChangeBus,
 ) : ViewModel() {
     // Onboarding skippers land here with an empty profile and every workout is
     // generated from guesses. Nudge until the profile is minimally usable
@@ -103,9 +171,9 @@ class HomeViewModel @Inject constructor(
         // Debrief notification tapped: resolve the activity and open its detail
         // overlay (MainScaffold has already navigated to the Home tab).
         viewModelScope.launch {
-            com.workoutmaker.app.data.NotificationDeepLinks.openActivity.collect { link ->
+            NotificationDeepLinks.openActivity.collect { link ->
                 val (id, date) = link ?: return@collect
-                com.workoutmaker.app.data.NotificationDeepLinks.openActivity.value = null
+                NotificationDeepLinks.openActivity.value = null
                 runCatching { repo.completedActivities(date) }.getOrNull()
                     ?.firstOrNull { it.id == id }
                     ?.let { openedActivity.value = it }
@@ -114,9 +182,9 @@ class HomeViewModel @Inject constructor(
     }
 
     val summary = MutableStateFlow<DailySummary?>(null)
-    val fitness = MutableStateFlow<com.workoutmaker.app.data.IntervalsStats?>(null)
+    val fitness = MutableStateFlow<IntervalsStats?>(null)
     // Thresholds for turning a planned step's zone into a concrete target range.
-    val profile = MutableStateFlow<com.workoutmaker.app.data.TrainingProfile?>(null)
+    val profile = MutableStateFlow<TrainingProfile?>(null)
     val loading = MutableStateFlow(true)
     // A pull-to-refresh in progress — distinct from `loading` because it first
     // forces an Intervals.icu re-sync (which can take a few seconds) before the
@@ -131,7 +199,7 @@ class HomeViewModel @Inject constructor(
     val offline = MutableStateFlow(false)
 
     // Today's wellness check-in (null until loaded; energy == null → unanswered).
-    val wellnessToday = MutableStateFlow<com.workoutmaker.app.data.WellnessCheckin?>(null)
+    val wellnessToday = MutableStateFlow<WellnessCheckin?>(null)
     val wellnessLoaded = MutableStateFlow(false)
     val wellnessBusy = MutableStateFlow(false)
 
@@ -147,11 +215,11 @@ class HomeViewModel @Inject constructor(
     // Home can page back through past days to see that day's dashboard as it was
     // (readiness, planned/completed workout, load). Capped at today — no future.
     // Today-only controls (wellness check-in, generate, RPE) hide on past days.
-    val selectedDate = MutableStateFlow(java.time.LocalDate.now())
-    val isViewingToday get() = selectedDate.value == java.time.LocalDate.now()
+    val selectedDate = MutableStateFlow(LocalDate.now())
+    val isViewingToday get() = selectedDate.value == LocalDate.now()
 
-    fun goToDay(date: java.time.LocalDate) {
-        val capped = if (date.isAfter(java.time.LocalDate.now())) java.time.LocalDate.now() else date
+    fun goToDay(date: LocalDate) {
+        val capped = if (date.isAfter(LocalDate.now())) LocalDate.now() else date
         if (capped == selectedDate.value) return
         selectedDate.value = capped
         // A different day's data is unrelated to what's on screen — clear it so we
@@ -165,16 +233,16 @@ class HomeViewModel @Inject constructor(
     }
     fun prevDay() = goToDay(selectedDate.value.minusDays(1))
     fun nextDay() = goToDay(selectedDate.value.plusDays(1))
-    fun goToToday() = goToDay(java.time.LocalDate.now())
+    fun goToToday() = goToDay(LocalDate.now())
 
     // Dates that have a completed activity — drawn as dots in the calendar picker
     // so it's obvious which past days have something to look at. Loaded once.
-    val markedDates = MutableStateFlow<Set<java.time.LocalDate>>(emptySet())
+    val markedDates = MutableStateFlow<Set<LocalDate>>(emptySet())
     private fun loadMarks() = viewModelScope.launch {
-        val from = java.time.LocalDate.now().minusDays(400).toString()
+        val from = LocalDate.now().minusDays(400).toString()
         runCatching { repo.completedActivities(from) }.onSuccess { acts ->
             markedDates.value = acts
-                .mapNotNull { runCatching { java.time.LocalDate.parse(it.date) }.getOrNull() }
+                .mapNotNull { runCatching { LocalDate.parse(it.date) }.getOrNull() }
                 .toSet()
         }
     }
@@ -182,7 +250,7 @@ class HomeViewModel @Inject constructor(
     fun load() = viewModelScope.launch {
         loading.value = true
         val date = selectedDate.value
-        val viewingToday = date == java.time.LocalDate.now()
+        val viewingToday = date == LocalDate.now()
         runCatching { repo.dailySummary(date) }
             .onSuccess {
                 summary.value = it
@@ -223,14 +291,14 @@ class HomeViewModel @Inject constructor(
                 }
                 runCatching { repo.coachBrief() }
                     .onSuccess { brief.value = it }
-                    .onFailure { com.workoutmaker.app.util.AppLog.w("home", "coachBrief failed", it) }
+                    .onFailure { AppLog.w("home", "coachBrief failed", it) }
             }
             viewModelScope.launch {
-                val now = java.time.LocalDate.now()
+                val now = LocalDate.now()
                 val monday = now.minusDays((now.dayOfWeek.value - 1).toLong())
                 runCatching { repo.weekReview(monday.toString()) }
                     .onSuccess { weekReviewNote.value = it }
-                    .onFailure { com.workoutmaker.app.util.AppLog.w("home", "weekReview failed", it) }
+                    .onFailure { AppLog.w("home", "weekReview failed", it) }
             }
         }
         if (markedDates.value.isEmpty()) loadMarks()
@@ -262,8 +330,8 @@ class HomeViewModel @Inject constructor(
 
     fun saveWellness(energy: Int, soreness: Int) = viewModelScope.launch {
         wellnessBusy.value = true
-        val checkin = com.workoutmaker.app.data.WellnessCheckin(
-            date = java.time.LocalDate.now().toString(),
+        val checkin = WellnessCheckin(
+            date = LocalDate.now().toString(),
             energy = energy, soreness = soreness,
         )
         runCatching { repo.upsertWellness(checkin) }
@@ -282,28 +350,28 @@ class HomeViewModel @Inject constructor(
     // CompletedActivity (rich Intervals data) so it opens the SAME detail page
     // used by Calendar/History. Falls back to the thin digest if the synced row
     // isn't found (e.g. very recent activity not yet in completed_activities).
-    val openedActivity = MutableStateFlow<com.workoutmaker.app.data.CompletedActivity?>(null)
+    val openedActivity = MutableStateFlow<CompletedActivity?>(null)
 
     // A strength session is logged in-app AND (usually) recorded on the watch. When
     // one is tapped, we open the SAME unified detail page the Calendar uses, which
     // merges the logged sets with the watch recording — instead of the watch-only
     // endurance page that ignores everything that was lifted.
     data class StrengthDetail(
-        val workout: com.workoutmaker.app.strength.WorkoutEntity,
-        val sets: List<com.workoutmaker.app.strength.SetEntity>,
-        val watch: com.workoutmaker.app.data.CompletedActivity?,
+        val workout: WorkoutEntity,
+        val sets: List<SetEntity>,
+        val watch: CompletedActivity?,
     )
     val openedStrength = MutableStateFlow<StrengthDetail?>(null)
 
-    fun openActivity(a: com.workoutmaker.app.data.IntervalsActivity) = viewModelScope.launch {
-        val from = java.time.LocalDate.now().minusDays(120).toString()
+    fun openActivity(a: IntervalsActivity) = viewModelScope.launch {
+        val from = LocalDate.now().minusDays(120).toString()
         val completed = runCatching { repo.completedActivities(from) }.getOrNull().orEmpty()
 
         // Strength path: if an in-app strength session was logged on this date, open
         // the merged detail (logged + watch) rather than the watch-only one.
-        val zone = java.time.ZoneId.systemDefault()
+        val zone = ZoneId.systemDefault()
         val logged = runCatching { strength.recentWorkouts(500) }.getOrNull()?.firstOrNull { w ->
-            java.time.Instant.ofEpochMilli(w.startedAt).atZone(zone).toLocalDate().toString() == a.date
+            Instant.ofEpochMilli(w.startedAt).atZone(zone).toLocalDate().toString() == a.date
         }
         if (logged != null) {
             val sets = runCatching { strength.setsForWorkout(logged.id) }.getOrNull().orEmpty()
@@ -325,11 +393,11 @@ class HomeViewModel @Inject constructor(
     // Tapping the Home "Session debrief" card opens the SAME detail page as the
     // recent-activities list: full analysis + coach feedback for endurance, the
     // merged logged+watch page for strength.
-    fun openDebrief(d: com.workoutmaker.app.data.SessionDebrief) = viewModelScope.launch {
+    fun openDebrief(d: SessionDebrief) = viewModelScope.launch {
         if (d.kind == "strength") {
-            val zone = java.time.ZoneId.systemDefault()
+            val zone = ZoneId.systemDefault()
             val logged = runCatching { strength.recentWorkouts(500) }.getOrNull()?.firstOrNull { w ->
-                java.time.Instant.ofEpochMilli(w.startedAt).atZone(zone).toLocalDate().toString() == d.date
+                Instant.ofEpochMilli(w.startedAt).atZone(zone).toLocalDate().toString() == d.date
             } ?: return@launch
             val sets = runCatching { strength.setsForWorkout(logged.id) }.getOrNull().orEmpty()
             val watch = runCatching { repo.completedActivities(d.date) }.getOrNull().orEmpty()
@@ -343,8 +411,8 @@ class HomeViewModel @Inject constructor(
             ?.let { openedActivity.value = it }
     }
 
-    private fun com.workoutmaker.app.data.IntervalsActivity.toCompleted() =
-        com.workoutmaker.app.data.CompletedActivity(
+    private fun IntervalsActivity.toCompleted() =
+        CompletedActivity(
             id = "digest:$date:$name",
             intervals_id = "digest",
             type = type.ifBlank { null },
@@ -354,7 +422,7 @@ class HomeViewModel @Inject constructor(
             avg_hr = avg_hr,
             tss = tss,
             data_json = if (name.isNotBlank()) {
-                kotlinx.serialization.json.JsonObject(mapOf("name" to kotlinx.serialization.json.JsonPrimitive(name)))
+                kotlinx.serialization.json.JsonObject(mapOf("name" to JsonPrimitive(name)))
             } else {
                 null
             },
@@ -377,7 +445,7 @@ class HomeViewModel @Inject constructor(
         val base = summary.value?.today_workout?.workout_json ?: return@launch
         adjusting.value = true
         runCatching {
-            repo.adjustWorkout(base, instruction, java.time.LocalDate.now().toString())
+            repo.adjustWorkout(base, instruction, LocalDate.now().toString())
         }.onFailure { error.value = it.message }
         adjusting.value = false
         load()
@@ -390,7 +458,7 @@ class HomeViewModel @Inject constructor(
         generating.value = true
         runCatching {
             if (base != null && tweak.isNotBlank()) {
-                repo.adjustWorkout(base, tweak, java.time.LocalDate.now().toString())
+                repo.adjustWorkout(base, tweak, LocalDate.now().toString())
             } else {
                 val loc = location.lastKnown()
                 repo.generateWorkout(GenerateRequest(type = "auto", lat = loc?.first, lon = loc?.second))
@@ -404,13 +472,13 @@ class HomeViewModel @Inject constructor(
     fun submitFeedback(difficulty: String, rpe: Int?) = viewModelScope.launch {
         if (!submittingFeedback.compareAndSet(false, true)) return@launch
         val today = summary.value?.today_workout
-        val date = java.time.LocalDate.now().toString()
+        val date = LocalDate.now().toString()
         runCatching {
             if (today?.id != null) {
                 repo.markPlannedComplete(today.id, date, completed = true, difficulty = difficulty, rpe = rpe)
             } else {
                 repo.submitFeedback(
-                    com.workoutmaker.app.data.WorkoutFeedback(date = date, completed = true, actual_rpe = rpe, difficulty = difficulty),
+                    WorkoutFeedback(date = date, completed = true, actual_rpe = rpe, difficulty = difficulty),
                 )
             }
         }.onSuccess {
@@ -424,7 +492,7 @@ class HomeViewModel @Inject constructor(
     fun skipToday() = viewModelScope.launch {
         if (!submittingFeedback.compareAndSet(false, true)) return@launch
         val today = summary.value?.today_workout ?: run { submittingFeedback.value = false; return@launch }
-        val date = java.time.LocalDate.now().toString()
+        val date = LocalDate.now().toString()
         runCatching { repo.markPlannedComplete(today.id, date, completed = false, difficulty = null, rpe = null) }
             .onSuccess { feedbackStatus.value = null; repo.refreshMemory(); load() }
             .onFailure { feedbackStatus.value = it.message }
@@ -439,7 +507,7 @@ class HomeViewModel @Inject constructor(
     }
 }
 
-@OptIn(androidx.compose.foundation.layout.ExperimentalLayoutApi::class)
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 fun HomeScreen(
     onOpenRecoveryHistory: () -> Unit = {},
@@ -465,19 +533,19 @@ fun HomeScreen(
 
     // Transient confirmations ("✓ Marked done") and action errors surface through
     // the one app-wide snackbar instead of an easy-to-miss inline status line.
-    val snackbar = com.workoutmaker.app.ui.components.LocalAppSnackbar.current
-    androidx.compose.runtime.LaunchedEffect(feedbackStatus) {
+    val snackbar = LocalAppSnackbar.current
+    LaunchedEffect(feedbackStatus) {
         val s = feedbackStatus ?: return@LaunchedEffect
-        snackbar?.show(if (s.startsWith("✓") || s.startsWith("⟳")) s else com.workoutmaker.app.ui.components.friendlyError(s))
+        snackbar?.show(if (s.startsWith("✓") || s.startsWith("⟳")) s else friendlyError(s))
         vm.feedbackStatus.value = null
     }
 
     // Reload on every resume (delivered once on first composition too) so a
     // dashboard left open overnight doesn't keep showing yesterday's workout.
-    val lifecycleOwner = androidx.lifecycle.compose.LocalLifecycleOwner.current
-    androidx.compose.runtime.DisposableEffect(lifecycleOwner) {
-        val obs = androidx.lifecycle.LifecycleEventObserver { _, event ->
-            if (event == androidx.lifecycle.Lifecycle.Event.ON_RESUME) vm.load()
+    val lifecycleOwner = LocalLifecycleOwner.current
+    DisposableEffect(lifecycleOwner) {
+        val obs = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_RESUME) vm.load()
         }
         lifecycleOwner.lifecycle.addObserver(obs)
         onDispose { lifecycleOwner.lifecycle.removeObserver(obs) }
@@ -485,15 +553,15 @@ fun HomeScreen(
 
     // Ask once for notification permission (Android 13+) — without it the
     // morning check-in and evening feedback reminders can never appear.
-    val context = androidx.compose.ui.platform.LocalContext.current
-    val notifLauncher = androidx.activity.compose.rememberLauncherForActivityResult(
-        androidx.activity.result.contract.ActivityResultContracts.RequestPermission(),
+    val context = LocalContext.current
+    val notifLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestPermission(),
     ) { /* reminders simply stay silent if denied */ }
     LaunchedEffect(Unit) {
-        if (android.os.Build.VERSION.SDK_INT >= 33 &&
-            androidx.core.content.ContextCompat.checkSelfPermission(
+        if (Build.VERSION.SDK_INT >= 33 &&
+            ContextCompat.checkSelfPermission(
                 context, android.Manifest.permission.POST_NOTIFICATIONS,
-            ) != android.content.pm.PackageManager.PERMISSION_GRANTED
+            ) != PackageManager.PERMISSION_GRANTED
         ) {
             notifLauncher.launch(android.Manifest.permission.POST_NOTIFICATIONS)
         }
@@ -501,8 +569,8 @@ fun HomeScreen(
 
     // Ask for coarse location only when first generating (for weather); proceed
     // regardless of the answer.
-    val locLauncher = androidx.activity.compose.rememberLauncherForActivityResult(
-        androidx.activity.result.contract.ActivityResultContracts.RequestPermission(),
+    val locLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestPermission(),
     ) { vm.generate() }
     fun startGenerate() {
         if (vm.hasLocation()) vm.generate()
@@ -510,13 +578,13 @@ fun HomeScreen(
     }
 
     val selectedDate by vm.selectedDate.collectAsStateSafe()
-    val isToday = selectedDate == java.time.LocalDate.now()
-    val dateStr = selectedDate.format(java.time.format.DateTimeFormatter.ofPattern("EEE, d MMM"))
+    val isToday = selectedDate == LocalDate.now()
+    val dateStr = selectedDate.format(DateTimeFormatter.ofPattern("EEE, d MMM"))
     val lastSyncAt by vm.lastSyncAt.collectAsStateSafe()
     val offline by vm.offline.collectAsStateSafe()
-    fun hhmm(epoch: Long) = java.time.Instant.ofEpochMilli(epoch)
-        .atZone(java.time.ZoneId.systemDefault()).toLocalDateTime()
-        .format(java.time.format.DateTimeFormatter.ofPattern("HH:mm"))
+    fun hhmm(epoch: Long) = Instant.ofEpochMilli(epoch)
+        .atZone(ZoneId.systemDefault()).toLocalDateTime()
+        .format(DateTimeFormatter.ofPattern("HH:mm"))
     val syncNote = when {
         !isToday -> "$dateStr · history"
         offline -> "$dateStr · offline" +
@@ -525,7 +593,7 @@ fun HomeScreen(
         else -> dateStr
     }
     // "Today" / "Yesterday" / "N days ago" headline for the page.
-    val daysBack = java.time.temporal.ChronoUnit.DAYS.between(selectedDate, java.time.LocalDate.now())
+    val daysBack = ChronoUnit.DAYS.between(selectedDate, LocalDate.now())
     val titleLabel = when (daysBack) {
         0L -> "Today"
         1L -> "Yesterday"
@@ -536,7 +604,7 @@ fun HomeScreen(
     val openedStrength by vm.openedStrength.collectAsStateSafe()
     openedStrength?.let { d ->
         BackHandler { vm.closeStrength() }
-        com.workoutmaker.app.ui.components.DetailOverlay {
+        DetailOverlay {
             StrengthSessionDetailScreen(
                 w = d.workout,
                 sets = d.sets,
@@ -550,7 +618,7 @@ fun HomeScreen(
     val openedActivity by vm.openedActivity.collectAsStateSafe()
     openedActivity?.let { act ->
         BackHandler { vm.closeActivity() }
-        com.workoutmaker.app.ui.components.DetailOverlay {
+        DetailOverlay {
             ActivityDetailScreen(act, planned = null) { vm.closeActivity() }
         }
         return
@@ -603,7 +671,7 @@ fun HomeScreen(
         if (s == null) {
             SectionCard(mod, title = "Couldn't load today") {
                 Text(
-                    error?.let { com.workoutmaker.app.ui.components.friendlyError(it) }
+                    error?.let { friendlyError(it) }
                         ?: "Check your connection and try again.",
                     style = MaterialTheme.typography.bodyMedium,
                 )
@@ -635,7 +703,7 @@ fun HomeScreen(
         // whole readiness read is then running blind on the objective signals.
         val staleDays = s.recovery_synced_date?.let {
             runCatching {
-                java.time.temporal.ChronoUnit.DAYS.between(java.time.LocalDate.parse(it), java.time.LocalDate.now())
+                ChronoUnit.DAYS.between(LocalDate.parse(it), LocalDate.now())
             }.getOrNull()
         }
         val isStale = isToday && (s.recovery_synced_date == null || (staleDays != null && staleDays >= 2L))
@@ -644,7 +712,7 @@ fun HomeScreen(
         val showSetupNudge by vm.showSetupNudge.collectAsStateSafe()
         if (showSetupNudge) {
             SectionCard(mod) {
-                com.workoutmaker.app.ui.components.SectionLabel("FINISH SETUP")
+                SectionLabel("FINISH SETUP")
                 Text(
                     "Your coach is running on guesses. Two minutes of setup, your sports, week and goals, makes every workout yours.",
                     style = MaterialTheme.typography.bodyMedium,
@@ -668,7 +736,7 @@ fun HomeScreen(
                         Text(
                             readinessHeadline(band),
                             style = MaterialTheme.typography.titleMedium,
-                            fontWeight = androidx.compose.ui.text.font.FontWeight.SemiBold,
+                            fontWeight = FontWeight.SemiBold,
                             color = readinessColor(band),
                         )
                         InfoIcon("Recovery & readiness", Metrics.RECOVERY)
@@ -685,9 +753,9 @@ fun HomeScreen(
             brief?.takeIf { it.isNotBlank() }?.let { QuoteBlock(it) }
 
             // Drill-in toggle. Collapsed by default — the signals are one tap away.
-            androidx.compose.material3.TextButton(
+            TextButton(
                 onClick = { showDetails = !showDetails },
-                contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 4.dp, vertical = 2.dp),
+                contentPadding = PaddingValues(horizontal = 4.dp, vertical = 2.dp),
             ) {
                 Text(if (showDetails) "Hide details" else "Details", style = MaterialTheme.typography.labelLarge)
                 Icon(
@@ -702,7 +770,7 @@ fun HomeScreen(
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     // Why the score is what it is — compact chips ("HRV ↑", "Sleep ↓").
                     rec?.drivers?.takeIf { it.isNotEmpty() }?.let { ds ->
-                        androidx.compose.foundation.layout.FlowRow(
+                        FlowRow(
                             horizontalArrangement = Arrangement.spacedBy(6.dp),
                             verticalArrangement = Arrangement.spacedBy(6.dp),
                         ) { ds.forEach { RecoveryDriverChip(it) } }
@@ -751,14 +819,14 @@ fun HomeScreen(
                     // Utility actions — manual entry (today only) + the trends screen.
                     Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                         if (isToday) {
-                            androidx.compose.material3.TextButton(
+                            TextButton(
                                 onClick = { showManualEntry = true },
-                                contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 4.dp, vertical = 2.dp),
+                                contentPadding = PaddingValues(horizontal = 4.dp, vertical = 2.dp),
                             ) { Text("Log manually", style = MaterialTheme.typography.labelLarge) }
                         }
-                        androidx.compose.material3.TextButton(
+                        TextButton(
                             onClick = onOpenRecoveryHistory,
-                            contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 4.dp, vertical = 2.dp),
+                            contentPadding = PaddingValues(horizontal = 4.dp, vertical = 2.dp),
                         ) { Text("Trends →", style = MaterialTheme.typography.labelLarge) }
                     }
                 }
@@ -773,8 +841,8 @@ fun HomeScreen(
                     !isToday -> "Recovery data through ${friendlyDate(synced)}"
                     else -> {
                         val days = runCatching {
-                            java.time.temporal.ChronoUnit.DAYS.between(
-                                java.time.LocalDate.parse(synced), java.time.LocalDate.now(),
+                            ChronoUnit.DAYS.between(
+                                LocalDate.parse(synced), LocalDate.now(),
                             )
                         }.getOrNull()
                         when {
@@ -805,7 +873,7 @@ fun HomeScreen(
         // object — so the card waits for this morning's sync instead of firing at
         // midnight on yesterday's data.
         val sleptToday = rec?.sleep?.hours != null
-        val pastFallback = java.time.LocalTime.now() >= java.time.LocalTime.of(11, 0)
+        val pastFallback = LocalTime.now() >= LocalTime.of(11, 0)
         if (isToday && wellnessLoaded && wellnessToday?.energy == null && (sleptToday || pastFallback)) {
             WellnessCheckinCard(mod, busy = wellnessBusy) { e, sore -> vm.saveWellness(e, sore) }
         }
@@ -824,7 +892,7 @@ fun HomeScreen(
                     w.title,
                     style = MaterialTheme.typography.titleMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    textDecoration = androidx.compose.ui.text.style.TextDecoration.LineThrough,
+                    textDecoration = TextDecoration.LineThrough,
                 )
                 Text(
                     if (isToday) "Skipped, rest matters too. The plan will adapt and rebuild gradually."
@@ -839,7 +907,7 @@ fun HomeScreen(
                 return@SectionCard
             }
             if (w != null) WorkoutDetail(w, profile)
-            else com.workoutmaker.app.ui.components.EmptyState(
+            else EmptyState(
                 title = if (isToday) "No workout planned yet" else "Nothing was planned",
                 subtitle = if (isToday) "Generate one below, or ask your coach to plan your day."
                 else "No workout was on the plan for this day.",
@@ -853,7 +921,7 @@ fun HomeScreen(
                 // regenerates WITH whatever you typed (no separate "Adjust").
                 var instruction by rememberSaveable { mutableStateOf("") }
                 if (w != null) {
-                    androidx.compose.material3.OutlinedTextField(
+                    OutlinedTextField(
                         value = instruction,
                         onValueChange = { instruction = it },
                         modifier = Modifier.fillMaxWidth(),
@@ -956,10 +1024,10 @@ fun HomeScreen(
 @Composable
 private fun SessionDebriefCard(
     mod: Modifier,
-    d: com.workoutmaker.app.data.SessionDebrief,
+    d: SessionDebrief,
     onOpen: () -> Unit,
 ) {
-    val today = java.time.LocalDate.now().toString()
+    val today = LocalDate.now().toString()
     val whenLabel = if (d.date == today) "today" else "yesterday"
     val sport = d.type?.takeIf { it.isNotBlank() }?.lowercase() ?: "session"
     SectionCard(mod.clickable(onClick = onOpen), title = "Session debrief") {
@@ -968,7 +1036,7 @@ private fun SessionDebriefCard(
                 Text(
                     d.label?.replaceFirstChar { it.uppercase() } ?: "Analyzed",
                     style = MaterialTheme.typography.titleSmall,
-                    fontWeight = androidx.compose.ui.text.font.FontWeight.SemiBold,
+                    fontWeight = FontWeight.SemiBold,
                     color = MaterialTheme.colorScheme.primary,
                 )
                 d.feedback?.takeIf { it.isNotBlank() }?.let {
@@ -977,7 +1045,7 @@ private fun SessionDebriefCard(
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         maxLines = 2,
-                        overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
+                        overflow = TextOverflow.Ellipsis,
                     )
                 }
                 Text(
@@ -1006,7 +1074,7 @@ private fun ManualRecoveryDialog(onDismiss: () -> Unit, onSave: (Double?, Int?, 
     val rhrVal = rhr.trim().toIntOrNull()
     val sleepMin = sleepH.trim().toDoubleOrNull()?.let { (it * 60).roundToInt() }
     val canSave = hrvVal != null || rhrVal != null || sleepMin != null
-    androidx.compose.material3.AlertDialog(
+    AlertDialog(
         onDismissRequest = onDismiss,
         title = { Text("Log recovery manually") },
         text = {
@@ -1015,28 +1083,28 @@ private fun ManualRecoveryDialog(onDismiss: () -> Unit, onSave: (Double?, Int?, 
                     "Fill in what you know, leave the rest blank. Saved for today.",
                     style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
-                androidx.compose.material3.OutlinedTextField(
+                OutlinedTextField(
                     value = hrv, onValueChange = { hrv = it }, label = { Text("HRV (ms)") },
                     singleLine = true, modifier = Modifier.fillMaxWidth(),
-                    keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(keyboardType = androidx.compose.ui.text.input.KeyboardType.Decimal),
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
                 )
-                androidx.compose.material3.OutlinedTextField(
+                OutlinedTextField(
                     value = rhr, onValueChange = { rhr = it }, label = { Text("Resting HR (bpm)") },
                     singleLine = true, modifier = Modifier.fillMaxWidth(),
-                    keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(keyboardType = androidx.compose.ui.text.input.KeyboardType.Number),
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
                 )
-                androidx.compose.material3.OutlinedTextField(
+                OutlinedTextField(
                     value = sleepH, onValueChange = { sleepH = it }, label = { Text("Sleep (hours, e.g. 7.5)") },
                     singleLine = true, modifier = Modifier.fillMaxWidth(),
-                    keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(keyboardType = androidx.compose.ui.text.input.KeyboardType.Decimal),
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
                 )
             }
         },
         confirmButton = {
-            androidx.compose.material3.TextButton(onClick = { onSave(hrvVal, rhrVal, sleepMin) }, enabled = canSave) { Text("Save") }
+            TextButton(onClick = { onSave(hrvVal, rhrVal, sleepMin) }, enabled = canSave) { Text("Save") }
         },
         dismissButton = {
-            androidx.compose.material3.TextButton(onClick = onDismiss) { Text("Cancel") }
+            TextButton(onClick = onDismiss) { Text("Cancel") }
         },
     )
 }
@@ -1081,7 +1149,7 @@ private fun WellnessScale(label: String, low: String, high: String, selected: In
                     Modifier
                         .weight(1f)
                         .size(width = 0.dp, height = 48.dp)
-                        .background(bg, androidx.compose.foundation.shape.RoundedCornerShape(8.dp))
+                        .background(bg, RoundedCornerShape(8.dp))
                         .clickable(onClickLabel = "Set $label to $n of 5") {
                             haptics.performHapticFeedback(HapticFeedbackType.LongPress)
                             onSelect(n)
@@ -1103,12 +1171,12 @@ private fun WellnessScale(label: String, low: String, high: String, selected: In
     }
 }
 
-@OptIn(androidx.compose.foundation.layout.ExperimentalLayoutApi::class)
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun FitnessSection(
     mod: Modifier,
-    f: com.workoutmaker.app.data.IntervalsStats,
-    onOpenActivity: (com.workoutmaker.app.data.IntervalsActivity) -> Unit = {},
+    f: IntervalsStats,
+    onOpenActivity: (IntervalsActivity) -> Unit = {},
 ) {
     if (!f.connected) {
         SectionCard(mod, title = "Fitness (Intervals.icu)") {
@@ -1119,7 +1187,7 @@ private fun FitnessSection(
     }
     if (f.error != null) {
         SectionCard(mod, title = "Fitness (Intervals.icu)") {
-            Text(com.workoutmaker.app.ui.components.friendlyError(f.error), style = MaterialTheme.typography.bodySmall,
+            Text(friendlyError(f.error), style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.error)
         }
         return
@@ -1151,7 +1219,7 @@ private fun FitnessSection(
             SectionLabel("Form (TSB) · now ${"%+.0f".format(latest.tsb)}", color = MaterialTheme.colorScheme.onSurfaceVariant)
             FormChart(f.fitness, Modifier.fillMaxWidth())
             SectionLabel("Tap a point for its date & value", color = MaterialTheme.colorScheme.onSurfaceVariant)
-            androidx.compose.foundation.layout.FlowRow(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+            FlowRow(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                 FORM_ZONES.forEach { z -> LegendDot(z.label, z.color) }
             }
         }
@@ -1195,7 +1263,7 @@ private fun FitnessSection(
 // a well-established overload proxy, plus the 7-day CTL ramp. Flags when you're
 // building too fast (injury risk) or detraining.
 @Composable
-private fun LoadGuard(s: com.workoutmaker.app.data.FitnessSummary) {
+private fun LoadGuard(s: FitnessSummary) {
     if (s.ctl < 1.0) return // not enough data to judge
     val ratio = s.atl / s.ctl
     val (color, headline, detail) = when {
@@ -1203,10 +1271,10 @@ private fun LoadGuard(s: com.workoutmaker.app.data.FitnessSummary) {
             MaterialTheme.colorScheme.error, "High overload risk",
             "Fatigue is well above your fitness (ratio %.2f). Take easy days, an injury/illness spike zone.".format(ratio))
         ratio >= 1.3 || s.ramp >= 8 -> Triple(
-            com.workoutmaker.app.ui.theme.amberAccent(), "Ramping fast",
+            amberAccent(), "Ramping fast",
             "Building quickly (ratio %.2f, ramp %+.1f). Fine short-term; don't hold it for many weeks.".format(ratio, s.ramp))
         ratio < 0.8 && s.ramp < 0 -> Triple(
-            com.workoutmaker.app.ui.theme.amberAccent(), "Detraining / very fresh",
+            amberAccent(), "Detraining / very fresh",
             "Load is low relative to fitness (ratio %.2f). Good for a taper; otherwise add volume.".format(ratio))
         else -> Triple(
             MaterialTheme.colorScheme.primary, "Load well managed",
@@ -1214,11 +1282,11 @@ private fun LoadGuard(s: com.workoutmaker.app.data.FitnessSummary) {
     }
     Row(
         Modifier.fillMaxWidth().padding(top = 8.dp)
-            .background(color.copy(alpha = 0.15f), androidx.compose.foundation.shape.RoundedCornerShape(12.dp))
+            .background(color.copy(alpha = 0.15f), RoundedCornerShape(12.dp))
             .padding(12.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        Box(Modifier.size(10.dp).background(color, androidx.compose.foundation.shape.CircleShape))
+        Box(Modifier.size(10.dp).background(color, CircleShape))
         Column(Modifier.padding(start = 10.dp)) {
             Text(headline, style = MaterialTheme.typography.titleSmall, color = color)
             Text(detail, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
@@ -1238,7 +1306,7 @@ private fun FitnessStat(label: String, value: String, sub: String, color: Color)
 @Composable
 private fun LegendDot(label: String, color: Color) {
     Row(verticalAlignment = Alignment.CenterVertically) {
-        Box(Modifier.size(10.dp).background(color, androidx.compose.foundation.shape.CircleShape))
+        Box(Modifier.size(10.dp).background(color, CircleShape))
         Text("  $label", style = MaterialTheme.typography.labelSmall)
     }
 }
@@ -1247,7 +1315,7 @@ private fun LegendDot(label: String, color: Color) {
 private fun tsbColor(tsb: Double): Color = when {
     tsb > 5 -> MaterialTheme.colorScheme.primary
     tsb < -20 -> MaterialTheme.colorScheme.error
-    tsb < -10 -> com.workoutmaker.app.ui.theme.amberAccent()
+    tsb < -10 -> amberAccent()
     else -> MaterialTheme.colorScheme.primary
 }
 
@@ -1289,14 +1357,14 @@ private val FORM_ZONES = listOf(
 // bottom panel of Intervals.icu's fitness page). Bands are translucent so the
 // line reads clearly on top.
 @Composable
-private fun FormChart(points: List<com.workoutmaker.app.data.FitnessPoint>, modifier: Modifier) {
+private fun FormChart(points: List<FitnessPoint>, modifier: Modifier) {
     val grid = MaterialTheme.colorScheme.surfaceVariant
     val marker = MaterialTheme.colorScheme.onSurface
     val last = points.last()
     // Tap a point to pin its date + TSB; tap it again (or another) to move/clear.
     var selected by remember(points) { mutableStateOf<Int?>(null) }
     val gutterDp = 30.dp
-    androidx.compose.foundation.Canvas(
+    Canvas(
         modifier
             .size(width = 0.dp, height = 130.dp)
             .fillMaxWidth()
@@ -1332,13 +1400,13 @@ private fun FormChart(points: List<com.workoutmaker.app.data.FitnessPoint>, modi
             if (yL > yU) {
                 drawRect(
                     z.color.copy(alpha = 0.30f),
-                    topLeft = androidx.compose.ui.geometry.Offset(gutterLeft, yU),
-                    size = androidx.compose.ui.geometry.Size(plotW, yL - yU),
+                    topLeft = Offset(gutterLeft, yU),
+                    size = Size(plotW, yL - yU),
                 )
             }
         }
         // Zero baseline + axis numbers (in the left gutter).
-        drawLine(grid, androidx.compose.ui.geometry.Offset(gutterLeft, y(0.0)), androidx.compose.ui.geometry.Offset(w, y(0.0)), strokeWidth = 2f)
+        drawLine(grid, Offset(gutterLeft, y(0.0)), Offset(w, y(0.0)), strokeWidth = 2f)
         chartLabel("${top.toInt()}", gutterLeft - 6f, y(top) + 9.sp.toPx() * 0.6f, alignRight = true)
         chartLabel("0", gutterLeft - 6f, y(0.0) - 3f, alignRight = true)
         chartLabel("${bottom.toInt()}", gutterLeft - 6f, h - 2f, alignRight = true)
@@ -1369,10 +1437,10 @@ private fun FormChart(points: List<com.workoutmaker.app.data.FitnessPoint>, modi
                 val mid = v0 + (v1 - v0) * (ta + tb) / 2
                 drawLine(
                     zoneColorOf(mid),
-                    androidx.compose.ui.geometry.Offset((x0 + (x1 - x0) * ta).toFloat(), y(v0 + (v1 - v0) * ta)),
-                    androidx.compose.ui.geometry.Offset((x0 + (x1 - x0) * tb).toFloat(), y(v0 + (v1 - v0) * tb)),
+                    Offset((x0 + (x1 - x0) * ta).toFloat(), y(v0 + (v1 - v0) * ta)),
+                    Offset((x0 + (x1 - x0) * tb).toFloat(), y(v0 + (v1 - v0) * tb)),
                     strokeWidth = 3.5f,
-                    cap = androidx.compose.ui.graphics.StrokeCap.Round,
+                    cap = StrokeCap.Round,
                 )
             }
         }
@@ -1383,8 +1451,8 @@ private fun FormChart(points: List<com.workoutmaker.app.data.FitnessPoint>, modi
             val p = points[sel]
             val px = x(sel)
             val py = y(p.tsb)
-            drawLine(marker.copy(alpha = 0.4f), androidx.compose.ui.geometry.Offset(px, 0f), androidx.compose.ui.geometry.Offset(px, h), strokeWidth = 1.5f)
-            drawCircle(marker, radius = 4f, center = androidx.compose.ui.geometry.Offset(px, py))
+            drawLine(marker.copy(alpha = 0.4f), Offset(px, 0f), Offset(px, h), strokeWidth = 1.5f)
+            drawCircle(marker, radius = 4f, center = Offset(px, py))
             val txt = "${p.date.takeLast(5)} · ${"%+.0f".format(p.tsb)}"
             val nearRight = px > size.width * 0.6f
             chartLabel(txt, if (nearRight) px - 6f else px + 6f, (y(top) + 9.sp.toPx()).coerceAtLeast(11.sp.toPx()), alignRight = nearRight, color = marker)
@@ -1393,12 +1461,12 @@ private fun FormChart(points: List<com.workoutmaker.app.data.FitnessPoint>, modi
 }
 
 @Composable
-private fun FitnessChart(points: List<com.workoutmaker.app.data.FitnessPoint>, modifier: Modifier) {
+private fun FitnessChart(points: List<FitnessPoint>, modifier: Modifier) {
     val ctlColor = MaterialTheme.colorScheme.primary
     val atlColor = MaterialTheme.colorScheme.secondary
     val grid = MaterialTheme.colorScheme.surfaceVariant
     val last = points.last()
-    androidx.compose.foundation.Canvas(modifier.size(width = 0.dp, height = 150.dp).fillMaxWidth()) {
+    Canvas(modifier.size(width = 0.dp, height = 150.dp).fillMaxWidth()) {
         val maxV = (points.maxOf { maxOf(it.ctl, it.atl) }).coerceAtLeast(1.0)
         val w = size.width
         val gutterLeft = 34.dp.toPx() // room for the value axis on the left
@@ -1412,7 +1480,7 @@ private fun FitnessChart(points: List<com.workoutmaker.app.data.FitnessPoint>, m
         // Value scale: gridlines + numbers at max / half / 0 (TSS/day load).
         hGridLine(y(maxV), gutterLeft, w)
         hGridLine(y(maxV / 2), gutterLeft, w)
-        drawLine(grid, androidx.compose.ui.geometry.Offset(gutterLeft, h), androidx.compose.ui.geometry.Offset(w, h), strokeWidth = 2f)
+        drawLine(grid, Offset(gutterLeft, h), Offset(w, h), strokeWidth = 2f)
         chartLabel("${maxV.toInt()}", gutterLeft - 6f, y(maxV) + 9.sp.toPx() * 0.5f, alignRight = true)
         chartLabel("${(maxV / 2).toInt()}", gutterLeft - 6f, y(maxV / 2) + 9.sp.toPx() * 0.35f, alignRight = true)
         chartLabel("0", gutterLeft - 6f, h - 2f, alignRight = true)
@@ -1420,8 +1488,8 @@ private fun FitnessChart(points: List<com.workoutmaker.app.data.FitnessPoint>, m
         chartLabel(points.first().date.takeLast(5), gutterLeft, size.height - 2f)
         chartLabel(last.date.takeLast(5), w, size.height - 2f, alignRight = true)
 
-        fun line(sel: (com.workoutmaker.app.data.FitnessPoint) -> Double, color: Color) {
-            val path = androidx.compose.ui.graphics.Path()
+        fun line(sel: (FitnessPoint) -> Double, color: Color) {
+            val path = Path()
             points.forEachIndexed { i, p ->
                 val px = x(i)
                 val py = y(sel(p))
@@ -1430,10 +1498,10 @@ private fun FitnessChart(points: List<com.workoutmaker.app.data.FitnessPoint>, m
             fillUnderLine(path, color, h, 0f, x(0), x(points.size - 1))
             drawPath(
                 path, color,
-                style = androidx.compose.ui.graphics.drawscope.Stroke(
+                style = Stroke(
                     width = 3.5f,
-                    cap = androidx.compose.ui.graphics.StrokeCap.Round,
-                    join = androidx.compose.ui.graphics.StrokeJoin.Round,
+                    cap = StrokeCap.Round,
+                    join = StrokeJoin.Round,
                 ),
             )
         }
@@ -1446,24 +1514,24 @@ private fun FitnessChart(points: List<com.workoutmaker.app.data.FitnessPoint>, m
 // with a completed activity get a dot; today and the selected day are marked.
 @Composable
 private fun DayPickerDialog(
-    selected: java.time.LocalDate,
-    marked: Set<java.time.LocalDate>,
-    onPick: (java.time.LocalDate) -> Unit,
+    selected: LocalDate,
+    marked: Set<LocalDate>,
+    onPick: (LocalDate) -> Unit,
     onToday: () -> Unit,
     onDismiss: () -> Unit,
 ) {
-    val today = java.time.LocalDate.now()
-    var month by remember { mutableStateOf(java.time.YearMonth.from(selected)) }
-    val canGoNextMonth = month.isBefore(java.time.YearMonth.from(today))
-    androidx.compose.ui.window.Dialog(onDismissRequest = onDismiss) {
-        androidx.compose.material3.Surface(
-            shape = androidx.compose.foundation.shape.RoundedCornerShape(22.dp),
+    val today = LocalDate.now()
+    var month by remember { mutableStateOf(YearMonth.from(selected)) }
+    val canGoNextMonth = month.isBefore(YearMonth.from(today))
+    Dialog(onDismissRequest = onDismiss) {
+        Surface(
+            shape = RoundedCornerShape(22.dp),
             color = MaterialTheme.colorScheme.surfaceContainer,
         ) {
             Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
                 // Header: Today shortcut · month nav · close.
                 Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                    androidx.compose.material3.TextButton(onClick = onToday) {
+                    TextButton(onClick = onToday) {
                         Text("TODAY", color = MaterialTheme.colorScheme.primary,
                             style = MaterialTheme.typography.labelLarge)
                     }
@@ -1472,9 +1540,9 @@ private fun DayPickerDialog(
                         Icon(Icons.AutoMirrored.Filled.KeyboardArrowLeft, contentDescription = "Previous month")
                     }
                     Text(
-                        month.format(java.time.format.DateTimeFormatter.ofPattern("MMMM yyyy")).uppercase(),
+                        month.format(DateTimeFormatter.ofPattern("MMMM yyyy")).uppercase(),
                         style = MaterialTheme.typography.titleSmall,
-                        fontWeight = androidx.compose.ui.text.font.FontWeight.SemiBold,
+                        fontWeight = FontWeight.SemiBold,
                     )
                     IconButton(onClick = { if (canGoNextMonth) month = month.plusMonths(1) }, enabled = canGoNextMonth) {
                         Icon(
@@ -1489,7 +1557,7 @@ private fun DayPickerDialog(
                 // Weekday header (Sunday-first, matching the grid).
                 Row(Modifier.fillMaxWidth()) {
                     listOf("SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT").forEach { d ->
-                        Text(d, Modifier.weight(1f), textAlign = androidx.compose.ui.text.style.TextAlign.Center,
+                        Text(d, Modifier.weight(1f), textAlign = TextAlign.Center,
                             style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                     }
                 }
@@ -1521,7 +1589,7 @@ private fun DayPickerDialog(
 
 @Composable
 private fun DayCell(
-    day: java.time.LocalDate,
+    day: LocalDate,
     inMonth: Boolean,
     isToday: Boolean,
     isSelected: Boolean,
@@ -1533,7 +1601,7 @@ private fun DayCell(
     Column(
         modifier
             .aspectRatio(1f)
-            .clip(androidx.compose.foundation.shape.CircleShape)
+            .clip(CircleShape)
             .clickable(enabled = !isFuture, onClick = onClick),
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.Center,
@@ -1541,14 +1609,14 @@ private fun DayCell(
         Box(
             Modifier
                 .size(34.dp)
-                .clip(androidx.compose.foundation.shape.CircleShape)
+                .clip(CircleShape)
                 .background(if (isSelected) MaterialTheme.colorScheme.primary else Color.Transparent),
             contentAlignment = Alignment.Center,
         ) {
             Text(
                 "${day.dayOfMonth}",
                 style = MaterialTheme.typography.bodyMedium,
-                fontWeight = if (isToday || isSelected) androidx.compose.ui.text.font.FontWeight.Bold else androidx.compose.ui.text.font.FontWeight.Normal,
+                fontWeight = if (isToday || isSelected) FontWeight.Bold else FontWeight.Normal,
                 color = when {
                     isSelected -> MaterialTheme.colorScheme.onPrimary
                     isFuture || !inMonth -> MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.4f)
@@ -1560,7 +1628,7 @@ private fun DayCell(
         // Activity dot under days with a completed session (hidden on the
         // selected day, where it'd clash with the filled circle).
         Box(
-            Modifier.size(5.dp).clip(androidx.compose.foundation.shape.CircleShape)
+            Modifier.size(5.dp).clip(CircleShape)
                 .background(if (marked && !isSelected) MaterialTheme.colorScheme.primary else Color.Transparent),
         )
     }
@@ -1570,7 +1638,7 @@ private fun DayCell(
 // vs last week, the sport split, and the standout session. The coach-voice take
 // lives in the briefing at the top; this is the at-a-glance scoreboard.
 @Composable
-private fun WeekReviewCard(mod: Modifier, wr: com.workoutmaker.app.data.WeekReview, note: String? = null) {
+private fun WeekReviewCard(mod: Modifier, wr: WeekReview, note: String? = null) {
     fun sportLabel(s: String) = when (s) {
         "run" -> "Run"; "ride" -> "Ride"; "swim" -> "Swim"; "strength" -> "Strength"; else -> "Other"
     }
@@ -1613,11 +1681,11 @@ private fun WeekReviewCard(mod: Modifier, wr: com.workoutmaker.app.data.WeekRevi
 }
 
 @Composable
-private fun GoalCard(mod: Modifier, g: com.workoutmaker.app.data.GoalProgress) {
+private fun GoalCard(mod: Modifier, g: GoalProgress) {
     SectionCard(mod, title = "Goal · ${g.goal}") {
         // Prefer an exact day countdown when we have the race date.
         val days = g.goal_date?.let {
-            runCatching { java.time.temporal.ChronoUnit.DAYS.between(java.time.LocalDate.now(), java.time.LocalDate.parse(it)) }.getOrNull()
+            runCatching { ChronoUnit.DAYS.between(LocalDate.now(), LocalDate.parse(it)) }.getOrNull()
         }
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
             Column {
@@ -1659,7 +1727,7 @@ private fun PhaseStrip(current: String) {
             }
             Column(Modifier.weight(1f), horizontalAlignment = Alignment.CenterHorizontally) {
                 Box(Modifier.fillMaxWidth().size(width = 0.dp, height = 6.dp)
-                    .background(c, androidx.compose.foundation.shape.RoundedCornerShape(3.dp)))
+                    .background(c, RoundedCornerShape(3.dp)))
                 Text(p, style = MaterialTheme.typography.labelSmall,
                     color = if (active) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant)
             }
@@ -1682,7 +1750,7 @@ internal fun rpeWord(n: Int): String = when {
 internal fun RpeBars(selected: Int?, onSelect: (Int) -> Unit) {
     // Capture theme colors here (a local fun can't invoke composables).
     val easy = MaterialTheme.colorScheme.primary
-    val mid = com.workoutmaker.app.ui.theme.amberAccent()
+    val mid = amberAccent()
     val hard = MaterialTheme.colorScheme.error
     fun barColor(n: Int) = when {
         n <= 5 -> easy
@@ -1705,7 +1773,7 @@ internal fun RpeBars(selected: Int?, onSelect: (Int) -> Unit) {
                 Modifier
                     .weight(1f)
                     .size(width = 0.dp, height = (10 + n * 3).dp)
-                    .background(bg, androidx.compose.foundation.shape.RoundedCornerShape(3.dp))
+                    .background(bg, RoundedCornerShape(3.dp))
                     .clickable(onClickLabel = "RPE $n, ${rpeWord(n)}") {
                         haptics.performHapticFeedback(HapticFeedbackType.LongPress)
                         onSelect(n)
@@ -1719,14 +1787,14 @@ internal fun RpeBars(selected: Int?, onSelect: (Int) -> Unit) {
 fun ReadinessRing(score: Int, band: String) {
     val color = when (band) {
         "green" -> MaterialTheme.colorScheme.primary
-        "amber" -> com.workoutmaker.app.ui.theme.amberAccent()
+        "amber" -> amberAccent()
         else -> MaterialTheme.colorScheme.error
     }
     val track = MaterialTheme.colorScheme.surfaceVariant
     Box(Modifier.size(88.dp), Alignment.Center) {
-        androidx.compose.foundation.Canvas(Modifier.size(88.dp)) {
-            drawArc(track, -90f, 360f, false, style = androidx.compose.ui.graphics.drawscope.Stroke(width = 18f))
-            drawArc(color, -90f, 360f * (score / 100f), false, style = androidx.compose.ui.graphics.drawscope.Stroke(width = 18f, cap = androidx.compose.ui.graphics.StrokeCap.Round))
+        Canvas(Modifier.size(88.dp)) {
+            drawArc(track, -90f, 360f, false, style = Stroke(width = 18f))
+            drawArc(color, -90f, 360f * (score / 100f), false, style = Stroke(width = 18f, cap = StrokeCap.Round))
         }
         Text("$score", fontSize = 24.sp, color = MaterialTheme.colorScheme.onSurface)
     }
@@ -1752,7 +1820,7 @@ private fun MetricRow(label: String, value: String, trailing: @Composable () -> 
 // then running blind on objective signals, so it shouldn't look business-as-usual.
 @Composable
 private fun RecoveryStaleBanner(syncedDate: String?) {
-    val color = com.workoutmaker.app.ui.theme.amberAccent()
+    val color = amberAccent()
     val msg = if (syncedDate == null) {
         "No recovery data has synced yet. Pull down to sync your watch."
     } else {
@@ -1761,11 +1829,11 @@ private fun RecoveryStaleBanner(syncedDate: String?) {
     }
     Row(
         Modifier.fillMaxWidth()
-            .background(color.copy(alpha = 0.15f), androidx.compose.foundation.shape.RoundedCornerShape(12.dp))
+            .background(color.copy(alpha = 0.15f), RoundedCornerShape(12.dp))
             .padding(12.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        Box(Modifier.size(10.dp).background(color, androidx.compose.foundation.shape.CircleShape))
+        Box(Modifier.size(10.dp).background(color, CircleShape))
         Text(
             msg,
             Modifier.padding(start = 10.dp),
@@ -1777,7 +1845,7 @@ private fun RecoveryStaleBanner(syncedDate: String?) {
 
 // One readiness driver as a tinted pill ("HRV ↑", "Sleep ↓"); colour = tone.
 @Composable
-private fun RecoveryDriverChip(d: com.workoutmaker.app.data.RecoveryDriver) {
+private fun RecoveryDriverChip(d: RecoveryDriver) {
     val color = when (d.tone) {
         "good" -> MaterialTheme.colorScheme.primary
         "bad" -> MaterialTheme.colorScheme.error
@@ -1786,7 +1854,7 @@ private fun RecoveryDriverChip(d: com.workoutmaker.app.data.RecoveryDriver) {
     val arrow = when (d.dir) { "up" -> "↑"; "down" -> "↓"; else -> "→" }
     Box(
         Modifier
-            .background(color.copy(alpha = 0.13f), androidx.compose.foundation.shape.RoundedCornerShape(8.dp))
+            .background(color.copy(alpha = 0.13f), RoundedCornerShape(8.dp))
             .padding(horizontal = 8.dp, vertical = 4.dp),
     ) {
         Text("${d.label} $arrow", style = MaterialTheme.typography.labelMedium, color = color)
@@ -1796,7 +1864,7 @@ private fun RecoveryDriverChip(d: com.workoutmaker.app.data.RecoveryDriver) {
 // "2026-06-28" → "28 Jun"; falls back to the raw string if unparseable.
 private fun friendlyDate(iso: String): String =
     runCatching {
-        java.time.LocalDate.parse(iso).format(java.time.format.DateTimeFormatter.ofPattern("d MMM"))
+        LocalDate.parse(iso).format(DateTimeFormatter.ofPattern("d MMM"))
     }.getOrDefault(iso)
 
 // 7.5 → "7h 30m", 8.083 → "8h 05m".
@@ -1806,7 +1874,7 @@ private fun hoursToHm(hours: Double): String {
 }
 
 @Composable
-private fun TrendBadge(t: com.workoutmaker.app.data.RecoveryTrend, higherIsBetter: Boolean) {
+private fun TrendBadge(t: RecoveryTrend, higherIsBetter: Boolean) {
     val pct = (t.deltaPct * 100).roundToInt()
     val good = if (higherIsBetter) pct >= 0 else pct <= 0
     val arrow = if (pct > 0) "↑" else if (pct < 0) "↓" else "→"
@@ -1820,16 +1888,16 @@ private fun TrendBadge(t: com.workoutmaker.app.data.RecoveryTrend, higherIsBette
 @Composable
 private fun readinessColor(band: String) = when (band) {
     "green" -> MaterialTheme.colorScheme.primary
-    "amber" -> com.workoutmaker.app.ui.theme.amberAccent()
+    "amber" -> amberAccent()
     else -> MaterialTheme.colorScheme.error
 }
 
 @Composable
-fun WorkoutDetail(w: Workout, profile: com.workoutmaker.app.data.TrainingProfile? = null) {
-    val thresholdSecPerKm = profile?.threshold_pace_per_km?.let { com.workoutmaker.app.data.Zones.parsePace(it) }
+fun WorkoutDetail(w: Workout, profile: TrainingProfile? = null) {
+    val thresholdSecPerKm = profile?.threshold_pace_per_km?.let { Zones.parsePace(it) }
     val lthr = profile?.lthr
     Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-        Text(w.title, style = MaterialTheme.typography.titleMedium, fontWeight = androidx.compose.ui.text.font.FontWeight.SemiBold)
+        Text(w.title, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
         ChipRow(
             listOfNotNull(
                 w.type.takeIf { it.isNotBlank() },
@@ -1859,44 +1927,44 @@ fun WorkoutDetail(w: Workout, profile: com.workoutmaker.app.data.TrainingProfile
 
 @Composable
 private fun WorkoutSectionItem(
-    section: com.workoutmaker.app.data.WorkoutSection,
+    section: WorkoutSection,
     thresholdSecPerKm: Int? = null,
     lthr: Int? = null,
 ) {
     // Total work time for the section (duration-based steps × their repeats).
     val sectionSec = section.exercises.sumOf { ex ->
-        (com.workoutmaker.app.data.Zones.parseDurationSec(ex.reps) ?: 0) * ex.sets.coerceAtLeast(1)
+        (Zones.parseDurationSec(ex.reps) ?: 0) * ex.sets.coerceAtLeast(1)
     }
     Row(verticalAlignment = Alignment.Top) {
         Box(
             Modifier.size(30.dp)
-                .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.16f), androidx.compose.foundation.shape.CircleShape),
+                .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.16f), CircleShape),
             contentAlignment = Alignment.Center,
         ) {
             Text(
                 section.name.trim().firstOrNull()?.uppercase() ?: "•",
                 style = MaterialTheme.typography.labelMedium,
                 color = MaterialTheme.colorScheme.primary,
-                fontWeight = androidx.compose.ui.text.font.FontWeight.Bold,
+                fontWeight = FontWeight.Bold,
             )
         }
         Column(Modifier.padding(start = 12.dp)) {
             Text(
                 section.name + if (sectionSec > 0) "  ·  ${com.workoutmaker.app.data.Zones.fmtDurationShort(sectionSec)}" else "",
                 style = MaterialTheme.typography.titleSmall,
-                fontWeight = androidx.compose.ui.text.font.FontWeight.SemiBold,
+                fontWeight = FontWeight.SemiBold,
             )
             section.exercises.forEach { ex ->
-                val durSec = com.workoutmaker.app.data.Zones.parseDurationSec(ex.reps)
+                val durSec = Zones.parseDurationSec(ex.reps)
                 val zoneLabel = (ex.pace_zone ?: ex.hr_zone)?.let { z ->
-                    com.workoutmaker.app.data.Zones.zoneNum(z)?.let { "Z$it" }
+                    Zones.zoneNum(z)?.let { "Z$it" }
                 }
                 if (durSec != null || zoneLabel != null) {
                     // Endurance step: "5× · 3 min · Z4 · 4:15–4:30 /km".
-                    val target = com.workoutmaker.app.data.Zones.targetRange(ex.pace_zone, ex.hr_zone, thresholdSecPerKm, lthr)
+                    val target = Zones.targetRange(ex.pace_zone, ex.hr_zone, thresholdSecPerKm, lthr)
                     val meta = listOfNotNull(
                         "${ex.sets}×".takeIf { ex.sets > 1 },
-                        durSec?.let { com.workoutmaker.app.data.Zones.fmtDurationShort(it) },
+                        durSec?.let { Zones.fmtDurationShort(it) },
                         zoneLabel,
                         target,
                     ).joinToString(" · ")

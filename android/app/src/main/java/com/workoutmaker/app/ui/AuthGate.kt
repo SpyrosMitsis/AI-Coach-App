@@ -32,6 +32,8 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.launch
 import javax.inject.Inject
+import com.workoutmaker.app.ui.screens.OnboardingScreen
+import com.workoutmaker.app.ui.screens.OnboardingViewModel
 
 // Supabase auth errors are terse and technical. Translate the common ones.
 internal fun friendlyAuthError(t: Throwable): String {
@@ -198,16 +200,16 @@ private fun CenteredSpinner() {
 @Composable
 private fun OnboardingGate(
     content: @Composable () -> Unit,
-    vm: com.workoutmaker.app.ui.screens.OnboardingViewModel = hiltViewModel(),
+    vm: OnboardingViewModel = hiltViewModel(),
 ) {
     // Keyed on the signed-in user: an account switch in the same process (e.g.
     // sign out then sign up) must re-run the scope guard + onboarding check
     // instead of serving the previous user's cached answer.
-    androidx.compose.runtime.LaunchedEffect(vm.currentUserId()) { vm.recheck() }
+    LaunchedEffect(vm.currentUserId()) { vm.recheck() }
     val complete by vm.complete.collectAsStateSafe()
     when (complete) {
         true -> content()
-        false -> com.workoutmaker.app.ui.screens.OnboardingScreen(vm)
+        false -> OnboardingScreen(vm)
         null -> CenteredSpinner()
     }
 }

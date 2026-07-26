@@ -17,6 +17,7 @@ import android.os.Vibrator
 import android.os.VibratorManager
 import androidx.core.app.NotificationCompat
 import com.workoutmaker.app.data.RestChime
+import java.time.LocalDateTime
 
 object Notifications {
     const val CH_TIMER = "rest_timer"
@@ -27,7 +28,7 @@ object Notifications {
     // Time-aware greeting so a reminder that fires late never says "Good
     // morning" at 3pm. A few variants per slot, rotated by day of year, keep
     // the daily notification from reading word-for-word identical.
-    fun greeting(now: java.time.LocalDateTime = java.time.LocalDateTime.now()): String {
+    fun greeting(now: LocalDateTime = LocalDateTime.now()): String {
         val pool = when (now.hour) {
             in 0..11 -> listOf("Good morning", "Morning", "New day")
             in 12..16 -> listOf("Good afternoon", "Afternoon", "Midday check")
@@ -140,7 +141,7 @@ fun playCountdownTick(ctx: Context) {
     runCatching {
         val gen = ToneGenerator(AudioManager.STREAM_MUSIC, 45)
         gen.startTone(ToneGenerator.TONE_PROP_ACK, 60)
-        android.os.Handler(ctx.mainLooper).postDelayed({ runCatching { gen.release() } }, 200)
+        Handler(ctx.mainLooper).postDelayed({ runCatching { gen.release() } }, 200)
     }
 }
 

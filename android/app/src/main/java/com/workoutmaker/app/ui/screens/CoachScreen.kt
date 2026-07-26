@@ -77,6 +77,45 @@ import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.contentOrNull
 import javax.inject.Inject
+import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.StartOffset
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.lazy.LazyRow
+import androidx.compose.material3.AssistChip
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.SmallFloatingActionButton
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.platform.LocalHapticFeedback
+import androidx.compose.ui.text.AnnotatedString
+import com.workoutmaker.app.data.ChatSettingChange
+import com.workoutmaker.app.data.CoachConversation
+import com.workoutmaker.app.data.PlanChangeBus
+import com.workoutmaker.app.data.PlanWeekRequest
+import com.workoutmaker.app.data.PlannedWorkout
+import com.workoutmaker.app.ui.components.LocalAppSnackbar
+import com.workoutmaker.app.ui.components.LogoMark
+import com.workoutmaker.app.ui.components.MarkdownText
+import com.workoutmaker.app.ui.components.SectionCard
+import com.workoutmaker.app.ui.components.SectionLabel
+import com.workoutmaker.app.ui.components.rememberAnimationsEnabled
+import com.workoutmaker.app.ui.theme.amberAccent
+import com.workoutmaker.app.util.AppLog
+import com.workoutmaker.app.util.friendlyFnError
+import java.time.DayOfWeek
+import java.time.LocalDate
+import java.time.format.TextStyle
+import java.util.Locale
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 
 private const val GREETING =
     "Hey! I'm your coach, and I can see your real data. Ask me things like " +
@@ -218,7 +257,7 @@ private fun friendlyTools(tools: List<String>): String {
 @HiltViewModel
 class CoachViewModel @Inject constructor(
     private val repo: WorkoutRepository,
-    private val planChanges: com.workoutmaker.app.data.PlanChangeBus,
+    private val planChanges: PlanChangeBus,
 ) : ViewModel() {
     val messages = MutableStateFlow(listOf(ChatMessage("assistant", GREETING)))
     val sending = MutableStateFlow(false)
@@ -242,7 +281,7 @@ class CoachViewModel @Inject constructor(
     val followUps = MutableStateFlow<List<CoachStarter>>(emptyList())
     fun dismissFollowUps() { followUps.value = emptyList() }
     // After the coach changes the calendar: this week's sessions for the result card.
-    val actionWeek = MutableStateFlow<List<com.workoutmaker.app.data.PlannedWorkout>?>(null)
+    val actionWeek = MutableStateFlow<List<PlannedWorkout>?>(null)
     // Plain-language summary of the write actions the coach just took (card subtitle).
     val lastAction = MutableStateFlow<String?>(null)
     // Whether a full week was (re)planned this turn — gates the card's "Re-plan" escape hatch.
@@ -277,7 +316,7 @@ class CoachViewModel @Inject constructor(
     // card, banner, follow-up chips) until this settles, so the reply types
     // into a stable layout instead of one that keeps reflowing.
     val revealing = MutableStateFlow(false)
-    private var revealJob: kotlinx.coroutines.Job? = null
+    private var revealJob: Job? = null
     private val revealQueue = StringBuilder()
 
     /** Append [text] to the trailing assistant message, creating it if needed. */
@@ -347,7 +386,7 @@ class CoachViewModel @Inject constructor(
                     val chunk = revealQueue.substring(0, cut)
                     revealQueue.delete(0, cut)
                     appendVisible(chunk)
-                    kotlinx.coroutines.delay(if (nl >= 0) 120 else 45)
+                    delay(if (nl >= 0) 120 else 45)
                 }
                 revealJob = null
                 revealing.value = false
@@ -400,16 +439,16 @@ class CoachViewModel @Inject constructor(
         liveStatus.value = "Re-planning your week…"
         viewModelScope.launch {
             runCatching {
-                val monday = java.time.LocalDate.now().with(java.time.DayOfWeek.MONDAY)
-                repo.planWeek(com.workoutmaker.app.data.PlanWeekRequest(start_date = monday.toString()))
+                val monday = LocalDate.now().with(DayOfWeek.MONDAY)
+                repo.planWeek(PlanWeekRequest(start_date = monday.toString()))
             }.onSuccess {
                 lastAction.value = "re-planned your week"
                 banner.value = "✓ Re-planned your week"
                 loadActionWeek()
                 planChanges.emit("coach")
             }.onFailure {
-                com.workoutmaker.app.util.AppLog.w("coach", "re-plan failed", it)
-                banner.value = com.workoutmaker.app.util.friendlyFnError(
+                AppLog.w("coach", "re-plan failed", it)
+                banner.value = friendlyFnError(
                     it, "Couldn't re-plan your week. Try again.",
                 )
             }
@@ -439,7 +478,7 @@ class CoachViewModel @Inject constructor(
     // the calendar now, fetched fresh from the source of truth.
     private fun loadActionWeek() = viewModelScope.launch {
         runCatching {
-            val monday = java.time.LocalDate.now().with(java.time.DayOfWeek.MONDAY)
+            val monday = LocalDate.now().with(DayOfWeek.MONDAY)
             val sunday = monday.plusDays(6)
             repo.plannedWorkouts(monday.toString())
                 .filter { it.date <= sunday.toString() }
@@ -448,7 +487,7 @@ class CoachViewModel @Inject constructor(
     }
 
     // Chat history
-    val conversations = MutableStateFlow<List<com.workoutmaker.app.data.CoachConversation>>(emptyList())
+    val conversations = MutableStateFlow<List<CoachConversation>>(emptyList())
     val showHistory = MutableStateFlow(false)
 
     fun openHistory() {
@@ -456,7 +495,7 @@ class CoachViewModel @Inject constructor(
         viewModelScope.launch {
             runCatching { repo.coachConversations() }.onSuccess { list ->
                 conversations.value = list.sortedWith(
-                    compareByDescending<com.workoutmaker.app.data.CoachConversation> { it.pinned }
+                    compareByDescending<CoachConversation> { it.pinned }
                         .thenByDescending { it.updated_at ?: "" },
                 )
             }
@@ -464,24 +503,24 @@ class CoachViewModel @Inject constructor(
     }
     fun closeHistory() { showHistory.value = false }
 
-    fun deleteConversation(c: com.workoutmaker.app.data.CoachConversation) {
+    fun deleteConversation(c: CoachConversation) {
         conversations.value = conversations.value.filterNot { it.id == c.id }
         if (conversationId == c.id) newChat()
         viewModelScope.launch { runCatching { repo.deleteCoachConversation(c.id) } }
     }
 
-    fun togglePin(c: com.workoutmaker.app.data.CoachConversation) {
+    fun togglePin(c: CoachConversation) {
         val next = !c.pinned
         // Optimistic: flip locally and re-sort (pinned first, then by updated_at).
         conversations.value = conversations.value
             .map { if (it.id == c.id) it.copy(pinned = next) else it }
-            .sortedWith(compareByDescending<com.workoutmaker.app.data.CoachConversation> { it.pinned }
+            .sortedWith(compareByDescending<CoachConversation> { it.pinned }
                 .thenByDescending { it.updated_at ?: "" })
         viewModelScope.launch { runCatching { repo.setCoachConversationPinned(c.id, next) } }
     }
 
     /** Load a past conversation to read or continue it. */
-    fun openConversation(c: com.workoutmaker.app.data.CoachConversation) {
+    fun openConversation(c: CoachConversation) {
         cancelReveal() // never type a stale reply into the newly opened thread
         incognito.value = false // saved threads are by definition not incognito
         conversationId = c.id
@@ -523,7 +562,7 @@ class CoachViewModel @Inject constructor(
                 gotReply = true
                 queueReveal(tok)
             }
-            suspend fun applySettings(changes: List<com.workoutmaker.app.data.ChatSettingChange>) {
+            suspend fun applySettings(changes: List<ChatSettingChange>) {
                 if (changes.isEmpty()) return
                 val applied = repo.applyChatSettings(changes)
                 if (applied.isNotEmpty()) banner.value = "✓ Settings updated: " + applied.joinToString(", ")
@@ -558,8 +597,8 @@ class CoachViewModel @Inject constructor(
                         applySettings(reply.settings_changes)
                         onToolsUsed(reply.tools_used)
                     }.onFailure { e2 ->
-                        com.workoutmaker.app.util.AppLog.w("coach", "both transports failed", e2)
-                        banner.value = com.workoutmaker.app.util.friendlyFnError(
+                        AppLog.w("coach", "both transports failed", e2)
+                        banner.value = friendlyFnError(
                             e2, "The coach didn't answer. Tap send to try again.",
                         )
                         // Both transports failed — revert the stranded user turn and
@@ -606,8 +645,8 @@ class CoachViewModel @Inject constructor(
                     "✓ Saved a multi-week plan to your templates."
                 else "✓ Saved a workout template you can reuse."
             }.onFailure {
-                com.workoutmaker.app.util.AppLog.w("coach", "finalize failed", it)
-                banner.value = com.workoutmaker.app.util.friendlyFnError(
+                AppLog.w("coach", "finalize failed", it)
+                banner.value = friendlyFnError(
                     it, "Couldn't save that. Try again.",
                 )
             }
@@ -640,18 +679,18 @@ fun CoachScreen(vm: CoachViewModel = hiltViewModel(), onOpenCalendar: () -> Unit
     val listState = rememberLazyListState()
 
     // Respect the system remove-animations setting: replies appear at once.
-    val animationsOn = com.workoutmaker.app.ui.components.rememberAnimationsEnabled()
+    val animationsOn = rememberAnimationsEnabled()
     LaunchedEffect(animationsOn) { vm.animateReplies.value = animationsOn }
 
     // A soft tick when the coach finishes answering, same language as the rest
     // of the app (set-done, PRs). "Finished" = the turn is done AND the
     // typewriter has settled, so the tick lands on the completed reply.
-    val haptics = androidx.compose.ui.platform.LocalHapticFeedback.current
+    val haptics = LocalHapticFeedback.current
     val busy = sending || revealing
     var wasBusy by remember { mutableStateOf(false) }
     LaunchedEffect(busy) {
         if (wasBusy && !busy && messages.lastOrNull()?.role == "assistant") {
-            haptics.performHapticFeedback(androidx.compose.ui.hapticfeedback.HapticFeedbackType.LongPress)
+            haptics.performHapticFeedback(HapticFeedbackType.LongPress)
         }
         wasBusy = busy
     }
@@ -736,7 +775,7 @@ fun CoachScreen(vm: CoachViewModel = hiltViewModel(), onOpenCalendar: () -> Unit
             verticalAlignment = Alignment.CenterVertically,
         ) {
             Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
-                com.workoutmaker.app.ui.components.SectionLabel(if (incognito) "AI COACH · INCOGNITO" else "AI COACH")
+                SectionLabel(if (incognito) "AI COACH · INCOGNITO" else "AI COACH")
                 Text(
                     "Coach",
                     style = MaterialTheme.typography.headlineSmall,
@@ -839,10 +878,10 @@ fun CoachScreen(vm: CoachViewModel = hiltViewModel(), onOpenCalendar: () -> Unit
             androidx.compose.animation.AnimatedVisibility(
                 visible = !atBottom,
                 modifier = Modifier.align(Alignment.BottomEnd).padding(12.dp),
-                enter = androidx.compose.animation.fadeIn(),
-                exit = androidx.compose.animation.fadeOut(),
+                enter = fadeIn(),
+                exit = fadeOut(),
             ) {
-                androidx.compose.material3.SmallFloatingActionButton(
+                SmallFloatingActionButton(
                     onClick = {
                         scope.launch {
                             val count = listState.layoutInfo.totalItemsCount
@@ -862,12 +901,12 @@ fun CoachScreen(vm: CoachViewModel = hiltViewModel(), onOpenCalendar: () -> Unit
         // row, one component; follow-ups clear on tap or when a new turn starts.
         val chips = if (messages.size <= 1) suggestions else followUps
         if (chips.isNotEmpty() && !sending && !revealing) {
-            androidx.compose.foundation.lazy.LazyRow(
+            LazyRow(
                 Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 4.dp),
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
             ) {
                 items(chips) { sgn ->
-                    androidx.compose.material3.AssistChip(
+                    AssistChip(
                         onClick = { vm.dismissFollowUps(); vm.send(sgn.prompt) },
                         label = { Text(sgn.label) },
                     )
@@ -914,15 +953,15 @@ fun CoachScreen(vm: CoachViewModel = hiltViewModel(), onOpenCalendar: () -> Unit
                     TextButton(onClick = { templateMenu = true }, enabled = !sending) {
                         Text("Save ▾", style = MaterialTheme.typography.labelMedium)
                     }
-                    androidx.compose.material3.DropdownMenu(
+                    DropdownMenu(
                         expanded = templateMenu,
                         onDismissRequest = { templateMenu = false },
                     ) {
-                        androidx.compose.material3.DropdownMenuItem(
+                        DropdownMenuItem(
                             text = { Text("Save as workout template") },
                             onClick = { templateMenu = false; vm.finalize("workout") },
                         )
-                        androidx.compose.material3.DropdownMenuItem(
+                        DropdownMenuItem(
                             text = { Text("Save as plan template") },
                             onClick = { templateMenu = false; vm.finalize("plan") },
                         )
@@ -931,7 +970,7 @@ fun CoachScreen(vm: CoachViewModel = hiltViewModel(), onOpenCalendar: () -> Unit
             }
         }
 
-        androidx.compose.material3.HorizontalDivider(color = MaterialTheme.colorScheme.surfaceContainerHigh)
+        HorizontalDivider(color = MaterialTheme.colorScheme.surfaceContainerHigh)
         Row(
             Modifier.fillMaxWidth()
                 .background(MaterialTheme.colorScheme.surfaceContainerLow)
@@ -950,7 +989,7 @@ fun CoachScreen(vm: CoachViewModel = hiltViewModel(), onOpenCalendar: () -> Unit
                 maxLines = 4,
             )
             val canSend = !sending && input.isNotBlank()
-            val sendBg by androidx.compose.animation.animateColorAsState(
+            val sendBg by animateColorAsState(
                 if (canSend) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.surfaceVariant,
                 label = "sendBg",
             )
@@ -978,7 +1017,7 @@ fun CoachScreen(vm: CoachViewModel = hiltViewModel(), onOpenCalendar: () -> Unit
 
 @Composable
 private fun ConversationRow(
-    c: com.workoutmaker.app.data.CoachConversation,
+    c: CoachConversation,
     onClick: () -> Unit,
     onPin: () -> Unit,
     onDelete: () -> Unit,
@@ -1056,7 +1095,7 @@ private fun ConversationRow(
 // straight from planned_workouts, with a jump into the Calendar tab.
 @Composable
 private fun CalendarResultCard(
-    week: List<com.workoutmaker.app.data.PlannedWorkout>,
+    week: List<PlannedWorkout>,
     changed: String?,
     showReplan: Boolean,
     onOpen: () -> Unit,
@@ -1064,9 +1103,9 @@ private fun CalendarResultCard(
     onReplan: () -> Unit,
     onDismiss: () -> Unit,
 ) {
-    com.workoutmaker.app.ui.components.SectionCard {
+    SectionCard {
         Row(verticalAlignment = Alignment.CenterVertically) {
-            com.workoutmaker.app.ui.components.SectionLabel(
+            SectionLabel(
                 if (changed != null) "✓ Updated your calendar" else "Now on your calendar",
             )
             Spacer(Modifier.weight(1f))
@@ -1089,8 +1128,8 @@ private fun CalendarResultCard(
         }
         week.forEach { w ->
             val day = runCatching {
-                java.time.LocalDate.parse(w.date).dayOfWeek
-                    .getDisplayName(java.time.format.TextStyle.SHORT, java.util.Locale.getDefault())
+                LocalDate.parse(w.date).dayOfWeek
+                    .getDisplayName(TextStyle.SHORT, Locale.getDefault())
             }.getOrDefault(w.date)
             // Each day is a jump straight to that date on the Calendar tab.
             Row(
@@ -1142,19 +1181,19 @@ private fun CalendarResultCard(
 // amber accent so "about to modify your plan" is visually distinct from reads.
 @Composable
 private fun ToolStepRow(step: CoachViewModel.ToolStep) {
-    val accent = if (step.write) com.workoutmaker.app.ui.theme.amberAccent()
+    val accent = if (step.write) amberAccent()
     else MaterialTheme.colorScheme.onSurfaceVariant
     Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
         if (step.done) {
             Text("✓", style = MaterialTheme.typography.labelMedium, color = accent)
         } else {
-            val pulse = androidx.compose.animation.core.rememberInfiniteTransition(label = "step")
+            val pulse = rememberInfiniteTransition(label = "step")
             val alpha by pulse.animateFloat(
                 initialValue = 0.3f,
                 targetValue = 1f,
-                animationSpec = androidx.compose.animation.core.infiniteRepeatable(
-                    animation = androidx.compose.animation.core.tween(600),
-                    repeatMode = androidx.compose.animation.core.RepeatMode.Reverse,
+                animationSpec = infiniteRepeatable(
+                    animation = tween(600),
+                    repeatMode = RepeatMode.Reverse,
                 ),
                 label = "stepAlpha",
             )
@@ -1174,16 +1213,16 @@ private fun ToolStepRow(step: CoachViewModel.ToolStep) {
 // Soft three-dot "coach is typing" indicator.
 @Composable
 internal fun TypingDots() {
-    val transition = androidx.compose.animation.core.rememberInfiniteTransition(label = "typing")
+    val transition = rememberInfiniteTransition(label = "typing")
     Row(horizontalArrangement = Arrangement.spacedBy(4.dp), verticalAlignment = Alignment.CenterVertically) {
         repeat(3) { i ->
             val alpha by transition.animateFloat(
                 initialValue = 0.25f,
                 targetValue = 1f,
-                animationSpec = androidx.compose.animation.core.infiniteRepeatable(
-                    animation = androidx.compose.animation.core.tween(500),
-                    repeatMode = androidx.compose.animation.core.RepeatMode.Reverse,
-                    initialStartOffset = androidx.compose.animation.core.StartOffset(i * 160),
+                animationSpec = infiniteRepeatable(
+                    animation = tween(500),
+                    repeatMode = RepeatMode.Reverse,
+                    initialStartOffset = StartOffset(i * 160),
                 ),
                 label = "dot$i",
             )
@@ -1244,15 +1283,15 @@ private fun Bubble(msg: ChatMessage, showAvatar: Boolean = true) {
 // The coach speaks as the app, not from a box: avatar + flat prose on the
 // background, full reading width. Consecutive assistant messages group — the
 // avatar appears only on the first, follow-ons indent to the same text column.
-@OptIn(androidx.compose.foundation.ExperimentalFoundationApi::class)
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun AssistantProse(text: String, showAvatar: Boolean = true) {
-    val clipboard = androidx.compose.ui.platform.LocalClipboardManager.current
-    val haptics = androidx.compose.ui.platform.LocalHapticFeedback.current
-    val snackbar = com.workoutmaker.app.ui.components.LocalAppSnackbar.current
+    val clipboard = LocalClipboardManager.current
+    val haptics = LocalHapticFeedback.current
+    val snackbar = LocalAppSnackbar.current
     Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.Top) {
         if (showAvatar) {
-            com.workoutmaker.app.ui.components.LogoMark(
+            LogoMark(
                 modifier = Modifier.padding(end = 8.dp, top = 3.dp),
                 size = 20.dp,
                 animate = false,
@@ -1266,14 +1305,14 @@ private fun AssistantProse(text: String, showAvatar: Boolean = true) {
                 .combinedClickable(
                     onClick = {},
                     onLongClick = {
-                        clipboard.setText(androidx.compose.ui.text.AnnotatedString(text))
-                        haptics.performHapticFeedback(androidx.compose.ui.hapticfeedback.HapticFeedbackType.LongPress)
+                        clipboard.setText(AnnotatedString(text))
+                        haptics.performHapticFeedback(HapticFeedbackType.LongPress)
                         snackbar?.show("Copied")
                     },
                 )
                 .padding(vertical = 2.dp),
         ) {
-            com.workoutmaker.app.ui.components.MarkdownText(
+            MarkdownText(
                 text,
                 color = MaterialTheme.colorScheme.onSurface,
                 style = MaterialTheme.typography.bodyMedium.copy(lineHeight = 22.sp),

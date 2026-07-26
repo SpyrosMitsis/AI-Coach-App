@@ -7,6 +7,7 @@ import kotlinx.serialization.Serializable
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 import java.io.File
+import java.time.Instant
 
 // Crash visibility without any third-party SDK (the privacy policy promises
 // "no analytics, no trackers", and the foss flavor must stay Google-free).
@@ -53,7 +54,7 @@ object CrashReporter {
         dir.listFiles()?.sortedByDescending { it.lastModified() }
             ?.drop(MAX_PENDING - 1)?.forEach { it.delete() }
         val record = CrashRecord(
-            crashed_at = java.time.Instant.now().toString(),
+            crashed_at = Instant.now().toString(),
             version_name = BuildConfig.VERSION_NAME,
             version_code = BuildConfig.VERSION_CODE,
             flavor = BuildConfig.FLAVOR,

@@ -30,6 +30,7 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import kotlin.math.abs
+import android.graphics.Paint
 
 // Precomputed plot geometry + screen positions, shared by drawing and the
 // touch hit-test so they always agree.
@@ -227,11 +228,11 @@ fun LineChart(
                 val v = values[idx]
                 if (v != null) {
                     val text = formatY(v) + (formatX?.let { " · ${it(t[idx])}" } ?: "")
-                    val paint = android.graphics.Paint().apply {
+                    val paint = Paint().apply {
                         this.color = calloutFg.toArgb()
                         textSize = 11.sp.toPx()
                         isAntiAlias = true
-                        textAlign = android.graphics.Paint.Align.CENTER
+                        textAlign = Paint.Align.CENTER
                     }
                     val tw = paint.measureText(text)
                     val padX = 9f

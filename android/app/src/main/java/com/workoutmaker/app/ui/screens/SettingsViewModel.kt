@@ -23,6 +23,27 @@ import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import javax.inject.Inject
+import android.app.Activity
+import android.util.Log
+import androidx.compose.runtime.mutableStateMapOf
+import com.workoutmaker.app.billing.BillingGateway
+import com.workoutmaker.app.billing.ProPurchaseResult
+import com.workoutmaker.app.billing.purchaseAndVerify
+import com.workoutmaker.app.calendar.DeviceCalendarManager
+import com.workoutmaker.app.data.GenerationLogRow
+import com.workoutmaker.app.data.LlmKeyRow
+import com.workoutmaker.app.data.ModelListResponse
+import com.workoutmaker.app.data.PlanStatus
+import com.workoutmaker.app.data.Race
+import com.workoutmaker.app.data.RestChime
+import com.workoutmaker.app.data.ThemeMode
+import com.workoutmaker.app.data.ThemePalette
+import com.workoutmaker.app.data.ThresholdTest
+import com.workoutmaker.app.health.HealthConnectManager
+import com.workoutmaker.app.strength.ImportSummary
+import com.workoutmaker.app.strength.StrengthRepository
+import com.workoutmaker.app.util.AppLog
+import java.time.LocalDate
 
 internal val DAYS = listOf("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun")
 
@@ -117,10 +138,10 @@ internal fun legacyGoalsBySport(p: TrainingProfile): Map<String, List<String>> {
 class SettingsViewModel @Inject constructor(
     private val repo: WorkoutRepository,
     private val prefs: AppPreferences,
-    private val strength: com.workoutmaker.app.strength.StrengthRepository,
-    private val health: com.workoutmaker.app.health.HealthConnectManager,
-    private val billing: com.workoutmaker.app.billing.BillingGateway,
-    private val deviceCalendar: com.workoutmaker.app.calendar.DeviceCalendarManager,
+    private val strength: StrengthRepository,
+    private val health: HealthConnectManager,
+    private val billing: BillingGateway,
+    private val deviceCalendar: DeviceCalendarManager,
 ) : ViewModel() {
 
     // --- Device calendar (read busy times / write workouts, both opt-in) ----
@@ -147,18 +168,18 @@ class SettingsViewModel @Inject constructor(
 
     // --- Pro plan / hosted AI (only when this build can bill AND this server
     // hosts an LLM key — self-hosted stacks and foss builds never see it) ----
-    val planStatus = MutableStateFlow(com.workoutmaker.app.data.PlanStatus())
+    val planStatus = MutableStateFlow(PlanStatus())
     val proAvailable = MutableStateFlow(false)
     val proBusy = MutableStateFlow(false)
     val proError = MutableStateFlow<String?>(null)
 
-    fun buyPro(activity: android.app.Activity) = viewModelScope.launch {
+    fun buyPro(activity: Activity) = viewModelScope.launch {
         proBusy.value = true
         proError.value = null
-        when (val r = com.workoutmaker.app.billing.purchaseAndVerify(activity, billing, repo)) {
-            is com.workoutmaker.app.billing.ProPurchaseResult.Success -> planStatus.value = repo.planStatus()
-            is com.workoutmaker.app.billing.ProPurchaseResult.Cancelled -> Unit
-            is com.workoutmaker.app.billing.ProPurchaseResult.Failed -> proError.value = r.message
+        when (val r = purchaseAndVerify(activity, billing, repo)) {
+            is ProPurchaseResult.Success -> planStatus.value = repo.planStatus()
+            is ProPurchaseResult.Cancelled -> Unit
+            is ProPurchaseResult.Failed -> proError.value = r.message
         }
         proBusy.value = false
     }
@@ -197,7 +218,7 @@ class SettingsViewModel @Inject constructor(
         tipPrices.value = runCatching { billing.tipPrices() }.getOrDefault(emptyMap())
     }
 
-    fun sendTip(activity: android.app.Activity, productId: String) = viewModelScope.launch {
+    fun sendTip(activity: Activity, productId: String) = viewModelScope.launch {
         tipBusy.value = true
         tipStatus.value = null
         val ok = runCatching { billing.tip(activity, productId) }.getOrDefault(false)
@@ -209,7 +230,7 @@ class SettingsViewModel @Inject constructor(
     val importStatus = MutableStateFlow<String?>(null)
     val importBusy = MutableStateFlow(false)
     // Set once an import finishes so the UI can show a detailed result dialog.
-    val importResult = MutableStateFlow<com.workoutmaker.app.strength.ImportSummary?>(null)
+    val importResult = MutableStateFlow<ImportSummary?>(null)
     fun dismissImportResult() { importResult.value = null }
     fun importCsv(text: String) = viewModelScope.launch {
         importBusy.value = true
@@ -223,19 +244,19 @@ class SettingsViewModel @Inject constructor(
                 else "Import failed: ${s.error}"
             }
             .onFailure {
-                android.util.Log.e("IMPORT", "import threw", it)
-                importResult.value = com.workoutmaker.app.strength.ImportSummary(
+                Log.e("IMPORT", "import threw", it)
+                importResult.value = ImportSummary(
                     ok = false, error = "${it::class.simpleName}: ${it.message ?: "unknown error"}")
                 importStatus.value = "Import failed: ${it.message}"
             }
         importBusy.value = false
     }
-    val results = androidx.compose.runtime.mutableStateMapOf<String, TestKeyResponse>()
-    var active by androidx.compose.runtime.mutableStateOf(LlmProvider.GROQ)
+    val results = mutableStateMapOf<String, TestKeyResponse>()
+    var active by mutableStateOf(LlmProvider.GROQ)
 
     // Dynamic model selector: per-provider override + live model lists.
     val modelOverrides = MutableStateFlow<Map<String, String>>(emptyMap())
-    val modelLists = androidx.compose.runtime.mutableStateMapOf<String, com.workoutmaker.app.data.ModelListResponse>()
+    val modelLists = mutableStateMapOf<String, ModelListResponse>()
     val modelBusy = MutableStateFlow<String?>(null)
 
     fun loadModels(p: LlmProvider) = viewModelScope.launch {
@@ -243,7 +264,7 @@ class SettingsViewModel @Inject constructor(
         runCatching { repo.listModels(p) }
             .onSuccess { modelLists[p.key] = it }
             .onFailure {
-                modelLists[p.key] = com.workoutmaker.app.data.ModelListResponse(
+                modelLists[p.key] = ModelListResponse(
                     provider = p.key, error = it.message ?: "couldn't fetch models")
             }
         modelBusy.value = null
@@ -269,10 +290,10 @@ class SettingsViewModel @Inject constructor(
     fun setRestVibrate(on: Boolean) = viewModelScope.launch { prefs.setRestVibrate(on) }
     fun setRestNotify(on: Boolean) = viewModelScope.launch { prefs.setRestNotify(on) }
     fun setMorningNotify(on: Boolean) = viewModelScope.launch { prefs.setMorningNotify(on) }
-    fun setRestChime(c: com.workoutmaker.app.data.RestChime) = viewModelScope.launch { prefs.setRestChime(c) }
+    fun setRestChime(c: RestChime) = viewModelScope.launch { prefs.setRestChime(c) }
     fun setKeepScreenOn(on: Boolean) = viewModelScope.launch { prefs.setKeepScreenOn(on) }
-    fun setThemeMode(m: com.workoutmaker.app.data.ThemeMode) = viewModelScope.launch { prefs.setThemeMode(m) }
-    fun setThemePalette(p: com.workoutmaker.app.data.ThemePalette) = viewModelScope.launch { prefs.setThemePalette(p) }
+    fun setThemeMode(m: ThemeMode) = viewModelScope.launch { prefs.setThemeMode(m) }
+    fun setThemePalette(p: ThemePalette) = viewModelScope.launch { prefs.setThemePalette(p) }
     fun setSpendCap(usd: Double) = viewModelScope.launch { prefs.setSpendCap(usd) }
 
     // Q11: build a Strong-compatible CSV of all strength history for the user to save.
@@ -299,7 +320,7 @@ class SettingsViewModel @Inject constructor(
                 healthStatus.value = "No HRV/HR/sleep data found in Health Connect yet."
                 return@launch
             }
-            val today = week.firstOrNull { it.date == java.time.LocalDate.now().toString() } ?: week.firstOrNull()
+            val today = week.firstOrNull { it.date == LocalDate.now().toString() } ?: week.firstOrNull()
             healthStatus.value = buildString {
                 append("✓ Synced ${week.size} days")
                 today?.hrvRmssd?.let { append(" · HRV ${"%.0f".format(it)}ms") }
@@ -311,10 +332,10 @@ class SettingsViewModel @Inject constructor(
     }
 
     val autoPlan = MutableStateFlow(false)
-    val logs = MutableStateFlow<List<com.workoutmaker.app.data.GenerationLogRow>>(emptyList())
+    val logs = MutableStateFlow<List<GenerationLogRow>>(emptyList())
     fun reloadLogs() = viewModelScope.launch {
         runCatching { repo.generationLogs() }.onSuccess { logs.value = it }
-            .onFailure { com.workoutmaker.app.util.AppLog.w("settings", "generationLogs failed", it) }
+            .onFailure { AppLog.w("settings", "generationLogs failed", it) }
     }
 
     // Durable coaching knowledge (injuries, equipment, preferences).
@@ -330,13 +351,13 @@ class SettingsViewModel @Inject constructor(
     val soulStatus = MutableStateFlow<String?>(null)
 
     // P1 races + E4 threshold tests.
-    val races = MutableStateFlow<List<com.workoutmaker.app.data.Race>>(emptyList())
-    val thresholdTests = MutableStateFlow<List<com.workoutmaker.app.data.ThresholdTest>>(emptyList())
+    val races = MutableStateFlow<List<Race>>(emptyList())
+    val thresholdTests = MutableStateFlow<List<ThresholdTest>>(emptyList())
 
     // Saved credentials, shown masked so it's clear what's already configured:
     // Intervals.icu (athlete id + key hint) and per-provider LLM key rows.
     val intervalsSaved = MutableStateFlow<Pair<String, String?>?>(null)
-    val llmKeys = MutableStateFlow<Map<String, com.workoutmaker.app.data.LlmKeyRow>>(emptyMap())
+    val llmKeys = MutableStateFlow<Map<String, LlmKeyRow>>(emptyMap())
     // Custom (BYO) provider per-1M-token prices, so its cost isn't shown as $0.
     val customPrice = MutableStateFlow<Pair<Double?, Double?>>(null to null)
 
@@ -355,7 +376,7 @@ class SettingsViewModel @Inject constructor(
         runCatching { repo.loadMemory() }.onSuccess { memory.value = it }
         runCatching { repo.loadSoul() }.onSuccess { soul.value = it }
         runCatching { repo.generationLogs() }.onSuccess { logs.value = it }
-            .onFailure { com.workoutmaker.app.util.AppLog.w("settings", "generationLogs failed", it) }
+            .onFailure { AppLog.w("settings", "generationLogs failed", it) }
         runCatching { repo.races() }.onSuccess { races.value = it }
         runCatching { repo.thresholdTests() }.onSuccess { thresholdTests.value = it }
         runCatching { repo.intervalsConnection() }.onSuccess { intervalsSaved.value = it }
@@ -370,7 +391,7 @@ class SettingsViewModel @Inject constructor(
         }
     }
 
-    fun addRace(r: com.workoutmaker.app.data.Race, setAsGoal: Boolean) = viewModelScope.launch {
+    fun addRace(r: Race, setAsGoal: Boolean) = viewModelScope.launch {
         runCatching {
             repo.addRace(r)
             if (setAsGoal) repo.setGoalRace(r)
@@ -379,7 +400,7 @@ class SettingsViewModel @Inject constructor(
         }.onSuccess { saveStatus.value = "✓ Goal added" }.onFailure { saveStatus.value = "Couldn't add: ${it.message}" }
     }
 
-    fun deleteRace(r: com.workoutmaker.app.data.Race) = viewModelScope.launch {
+    fun deleteRace(r: Race) = viewModelScope.launch {
         runCatching {
             repo.deleteRace(r)
             races.value = repo.races()
@@ -387,7 +408,7 @@ class SettingsViewModel @Inject constructor(
         }.onFailure { saveStatus.value = "Couldn't delete: ${it.message}" }
     }
 
-    fun makeGoalRace(r: com.workoutmaker.app.data.Race) = viewModelScope.launch {
+    fun makeGoalRace(r: Race) = viewModelScope.launch {
         runCatching { repo.setGoalRace(r); repo.loadProfile()?.let { profile.value = it } }
             .onSuccess { saveStatus.value = "✓ “${r.name}” is now your goal" }
             .onFailure { saveStatus.value = it.message }
@@ -401,7 +422,7 @@ class SettingsViewModel @Inject constructor(
         busy.value = false
     }
 
-    fun addThresholdTest(t: com.workoutmaker.app.data.ThresholdTest) = viewModelScope.launch {
+    fun addThresholdTest(t: ThresholdTest) = viewModelScope.launch {
         runCatching {
             repo.addThresholdTest(t)
             thresholdTests.value = repo.thresholdTests()
@@ -521,7 +542,7 @@ class SettingsViewModel @Inject constructor(
                 // Surface the failure instead of silently doing nothing — most
                 // commonly the function returned an error (e.g. endpoint
                 // unreachable from the server, or DB migration not yet applied).
-                results[p.key] = com.workoutmaker.app.data.TestKeyResponse(
+                results[p.key] = TestKeyResponse(
                     provider = p.key, model = model ?: p.model, is_valid = false,
                     error = it.message ?: "request failed",
                 )

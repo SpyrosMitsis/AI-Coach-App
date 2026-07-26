@@ -2,6 +2,13 @@ package com.workoutmaker.app.data
 
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
+import java.time.Instant
+import java.time.LocalDate
+import java.time.OffsetDateTime
+import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonNull
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
 
 // Kotlin mirror of /shared/types.ts. Keep field names in sync with the schema.
 
@@ -257,7 +264,7 @@ fun deriveLeanKg(weightKg: Double?, bodyFatPct: Double?): Double? {
 // a trend). Dates are ISO yyyy-MM-dd; values are already bounds-checked.
 fun slopePerWeek(points: List<Pair<String, Double>>): Double? {
     val dated = points.mapNotNull { (d, v) ->
-        runCatching { java.time.LocalDate.parse(d).toEpochDay() }.getOrNull()?.let { it to v }
+        runCatching { LocalDate.parse(d).toEpochDay() }.getOrNull()?.let { it to v }
     }.sortedBy { it.first }
     if (dated.size < 3 || dated.last().first - dated.first().first < 14) return null
     val xs = dated.map { (it.first - dated.first().first) / 7.0 }
@@ -288,8 +295,8 @@ data class PlanStatus(
     val isPro: Boolean get() {
         if (plan != "pro") return false
         val exp = expiresAt ?: return true
-        return runCatching { java.time.OffsetDateTime.parse(exp).toInstant() }
-            .map { it.isAfter(java.time.Instant.now()) }
+        return runCatching { OffsetDateTime.parse(exp).toInstant() }
+            .map { it.isAfter(Instant.now()) }
             .getOrDefault(true)
     }
 }
@@ -419,7 +426,7 @@ data class CompletedActivity(
     val tss: Double? = null,
     val ctl: Double? = null,
     val atl: Double? = null,
-    val data_json: kotlinx.serialization.json.JsonObject? = null,
+    val data_json: JsonObject? = null,
 ) {
     val isManual: Boolean get() = intervals_id.startsWith("manual:")
     val distanceKm: Double? get() = distance_m?.let { it / 1000.0 }
@@ -452,13 +459,13 @@ data class CompletedActivity(
 
     // --- typed pulls out of the raw Intervals object ---
     fun str(key: String): String? =
-        (data_json?.get(key) as? kotlinx.serialization.json.JsonPrimitive)?.contentOrNull
+        (data_json?.get(key) as? JsonPrimitive)?.contentOrNull
     fun num(key: String): Double? =
-        (data_json?.get(key) as? kotlinx.serialization.json.JsonPrimitive)?.contentOrNull?.toDoubleOrNull()
+        (data_json?.get(key) as? JsonPrimitive)?.contentOrNull?.toDoubleOrNull()
 
     fun numArray(key: String): List<Double>? {
-        val arr = data_json?.get(key) as? kotlinx.serialization.json.JsonArray ?: return null
-        return arr.map { (it as? kotlinx.serialization.json.JsonPrimitive)?.contentOrNull?.toDoubleOrNull() ?: 0.0 }
+        val arr = data_json?.get(key) as? JsonArray ?: return null
+        return arr.map { (it as? JsonPrimitive)?.contentOrNull?.toDoubleOrNull() ?: 0.0 }
     }
 
     val avgPower: Int? get() = num("icu_average_watts")?.toInt() ?: num("average_watts")?.toInt()
@@ -486,8 +493,8 @@ data class CompletedActivity(
         numArray("icu_hr_zone_times")?.map { it.toInt() }?.takeIf { secs -> secs.sum() > 0 }
 }
 
-private val kotlinx.serialization.json.JsonPrimitive.contentOrNull: String?
-    get() = if (this is kotlinx.serialization.json.JsonNull) null else content
+private val JsonPrimitive.contentOrNull: String?
+    get() = if (this is JsonNull) null else content
 
 // Result of an adaptive re-plan: how the plan was reconciled with reality.
 data class AdaptResult(

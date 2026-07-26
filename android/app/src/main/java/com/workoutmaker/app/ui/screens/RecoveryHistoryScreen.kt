@@ -49,6 +49,14 @@ import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.launch
 import javax.inject.Inject
+import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.FilterChip
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.graphics.Brush
+import com.workoutmaker.app.ui.components.EmptyState
+import com.workoutmaker.app.ui.components.ScreenScaffold
+import com.workoutmaker.app.ui.theme.amberAccent
+import java.time.LocalDate
 
 @HiltViewModel
 class RecoveryHistoryViewModel @Inject constructor(
@@ -63,7 +71,7 @@ class RecoveryHistoryViewModel @Inject constructor(
         loading.value = true
         // Always fetch the widest window (3 months); the screen filters it down to
         // the selected 7D / 1M / 3M view client-side, so switching range is instant.
-        val from = java.time.LocalDate.now().minusDays(90).toString()
+        val from = LocalDate.now().minusDays(90).toString()
         runCatching { repo.recoveryHistory(from) }.onSuccess { points.value = it }
         loading.value = false
     }
@@ -72,14 +80,14 @@ class RecoveryHistoryViewModel @Inject constructor(
 private data class RangeOption(val label: String, val days: Long)
 private val RANGES = listOf(RangeOption("7D", 7), RangeOption("1M", 30), RangeOption("3M", 90))
 
-@OptIn(androidx.compose.material3.ExperimentalMaterial3Api::class)
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun RecoveryHistoryScreen(onBack: () -> Unit, vm: RecoveryHistoryViewModel = hiltViewModel()) {
     val points by vm.points.collectAsStateSafe()
     val loading by vm.loading.collectAsStateSafe()
-    var range by androidx.compose.runtime.remember { androidx.compose.runtime.mutableStateOf(RANGES[1]) } // 1M
+    var range by remember { mutableStateOf(RANGES[1]) } // 1M
 
-    com.workoutmaker.app.ui.components.ScreenScaffold(
+    ScreenScaffold(
         title = "Recovery trends",
         subtitle = "Last ${range.label}",
         eyebrow = "BIO-METRICS",
@@ -95,7 +103,7 @@ fun RecoveryHistoryScreen(onBack: () -> Unit, vm: RecoveryHistoryViewModel = hil
         }
 
         // Filter to the selected window, then pull each metric out as dated points.
-        val cutoff = java.time.LocalDate.now().minusDays(range.days).toString()
+        val cutoff = LocalDate.now().minusDays(range.days).toString()
         val inRange = points.filter { it.date >= cutoff }
         val hrv = inRange.mapNotNull { p -> p.hrv_rmssd?.let { p.date to it } }
         val rhr = inRange.mapNotNull { p -> p.resting_hr?.let { p.date to it.toDouble() } }
@@ -106,7 +114,7 @@ fun RecoveryHistoryScreen(onBack: () -> Unit, vm: RecoveryHistoryViewModel = hil
             // Range selector — 7D / 1M / 3M, filtered from the loaded 3-month window.
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 RANGES.forEach { r ->
-                    androidx.compose.material3.FilterChip(
+                    FilterChip(
                         selected = range == r,
                         onClick = { range = r },
                         label = { Text(r.label) },
@@ -114,7 +122,7 @@ fun RecoveryHistoryScreen(onBack: () -> Unit, vm: RecoveryHistoryViewModel = hil
                 }
             }
             if (points.isEmpty()) {
-                com.workoutmaker.app.ui.components.EmptyState(
+                EmptyState(
                     title = "No recovery data yet",
                     subtitle = "HRV, resting HR and sleep will chart here as your watch (or manual entries) build up.",
                     icon = Icons.Filled.Favorite,
@@ -124,7 +132,7 @@ fun RecoveryHistoryScreen(onBack: () -> Unit, vm: RecoveryHistoryViewModel = hil
             MetricTrendCard("HRV", "ms", hrv, MaterialTheme.colorScheme.primary, higherIsBetter = true) { "%.0f".format(it) }
             MetricTrendCard("Resting HR", "bpm", rhr, MaterialTheme.colorScheme.error, higherIsBetter = false) { "%.0f".format(it) }
             MetricTrendCard("Sleep", "h", sleep, MaterialTheme.colorScheme.secondary, higherIsBetter = true) { hhmm(it) }
-            MetricTrendCard("Sleep score", "/100", sleepScore, com.workoutmaker.app.ui.theme.amberAccent(), higherIsBetter = true) { "%.0f".format(it) }
+            MetricTrendCard("Sleep score", "/100", sleepScore, amberAccent(), higherIsBetter = true) { "%.0f".format(it) }
         }
     }
 }
@@ -204,12 +212,12 @@ private fun MetricTrendCard(
         val statusColor = when {
             inRange -> MaterialTheme.colorScheme.onSurfaceVariant
             above == higherIsBetter -> color
-            else -> com.workoutmaker.app.ui.theme.amberAccent()
+            else -> amberAccent()
         }
         val status = if (inRange) "in your normal range"
             else "${kotlin.math.abs(pct)}% ${if (above) "above" else "below"} baseline ${if (above) "↑" else "↓"}"
 
-        Row(verticalAlignment = androidx.compose.ui.Alignment.Bottom) {
+        Row(verticalAlignment = Alignment.Bottom) {
             Text("${fmt(latest)} $unit", style = MaterialTheme.typography.titleMedium, color = color)
             Spacer(Modifier.width(8.dp))
             Text("· $status", style = MaterialTheme.typography.bodySmall, color = statusColor)
@@ -311,7 +319,7 @@ private fun BaselineBand(
         }
         drawPath(
             fill,
-            brush = androidx.compose.ui.graphics.Brush.verticalGradient(
+            brush = Brush.verticalGradient(
                 colors = listOf(color.copy(alpha = 0.16f), color.copy(alpha = 0f)),
                 startY = 0f,
                 endY = h,

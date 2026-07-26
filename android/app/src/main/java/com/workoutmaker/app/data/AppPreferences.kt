@@ -15,6 +15,7 @@ import kotlinx.coroutines.flow.map
 import javax.inject.Inject
 import javax.inject.Singleton
 import kotlin.math.roundToInt
+import androidx.datastore.preferences.core.MutablePreferences
 
 // Device-local app preferences (not tied to the cloud profile). These are the
 // "how the app behaves on this phone" knobs that used to be hardcoded or live
@@ -170,7 +171,7 @@ class AppPreferences @Inject constructor(
     suspend fun setCalendarRead(on: Boolean) = edit { it[Keys.calendarRead] = on }
     suspend fun setCalendarWrite(on: Boolean) = edit { it[Keys.calendarWrite] = on }
 
-    private suspend fun edit(block: (androidx.datastore.preferences.core.MutablePreferences) -> Unit) {
+    private suspend fun edit(block: (MutablePreferences) -> Unit) {
         context.dataStore.edit(block)
     }
 }

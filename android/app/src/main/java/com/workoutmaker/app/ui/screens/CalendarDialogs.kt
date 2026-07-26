@@ -35,6 +35,21 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import com.workoutmaker.app.ui.components.SectionCard
 import java.time.LocalDate
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.material3.AssistChip
+import androidx.compose.material3.Checkbox
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.FilterChip
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.runtime.mutableStateListOf
+import androidx.compose.ui.text.input.KeyboardType
+import com.workoutmaker.app.data.Workout
+import com.workoutmaker.app.data.WorkoutExercise
+import com.workoutmaker.app.data.WorkoutSection
+import java.time.Instant
+import java.time.ZoneOffset
 
 @Composable
 internal fun LogActivityDialog(
@@ -60,15 +75,15 @@ internal fun LogActivityDialog(
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                     listOf("Run", "WeightTraining", "Other").forEach { t ->
-                        androidx.compose.material3.FilterChip(
+                        FilterChip(
                             selected = type == t, onClick = { type = t },
                             label = { Text(if (t == "WeightTraining") "Strength" else t) },
                         )
                     }
                 }
-                androidx.compose.material3.OutlinedTextField(duration, { duration = it }, label = { Text("Duration (min)") })
-                androidx.compose.material3.OutlinedTextField(distance, { distance = it }, label = { Text("Distance km (optional)") })
-                androidx.compose.material3.OutlinedTextField(rpe, { rpe = it }, label = { Text("RPE 1-10 (optional)") })
+                OutlinedTextField(duration, { duration = it }, label = { Text("Duration (min)") })
+                OutlinedTextField(distance, { distance = it }, label = { Text("Distance km (optional)") })
+                OutlinedTextField(rpe, { rpe = it }, label = { Text("RPE 1-10 (optional)") })
             }
         },
     )
@@ -87,11 +102,11 @@ internal fun RequestSessionDialog(date: LocalDate, onDismiss: () -> Unit, onSubm
 
     if (showPicker) {
         val state = rememberDatePickerState(
-            initialSelectedDateMillis = day.atStartOfDay(java.time.ZoneOffset.UTC).toInstant().toEpochMilli())
+            initialSelectedDateMillis = day.atStartOfDay(ZoneOffset.UTC).toInstant().toEpochMilli())
         DatePickerDialog(
             onDismissRequest = { showPicker = false },
             confirmButton = { TextButton(onClick = {
-                state.selectedDateMillis?.let { day = java.time.Instant.ofEpochMilli(it).atZone(java.time.ZoneOffset.UTC).toLocalDate() }
+                state.selectedDateMillis?.let { day = Instant.ofEpochMilli(it).atZone(ZoneOffset.UTC).toLocalDate() }
                 showPicker = false
             }) { Text("Set date") } },
             dismissButton = { TextButton(onClick = { showPicker = false }) { Text("Cancel") } },
@@ -110,7 +125,7 @@ internal fun RequestSessionDialog(date: LocalDate, onDismiss: () -> Unit, onSubm
                 OutlinedButton(onClick = { showPicker = true }, modifier = Modifier.fillMaxWidth()) {
                     Icon(Icons.Filled.EditCalendar, null); Text("  $day")
                 }
-                androidx.compose.material3.OutlinedTextField(
+                OutlinedTextField(
                     text, { text = it },
                     label = { Text("What's the plan?") },
                     placeholder = { Text("e.g. social 10k run with friends, keep it easy") },
@@ -118,7 +133,7 @@ internal fun RequestSessionDialog(date: LocalDate, onDismiss: () -> Unit, onSubm
                 )
                 Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                     listOf("auto" to "Auto", "run" to "Run", "ride" to "Ride", "strength" to "Strength").forEach { (k, label) ->
-                        androidx.compose.material3.FilterChip(selected = type == k, onClick = { type = k }, label = { Text(label) })
+                        FilterChip(selected = type == k, onClick = { type = k }, label = { Text(label) })
                     }
                 }
                 Text("It'll be 🔒 locked, your weekly AI re-plan will schedule around it, not over it.",
@@ -144,12 +159,12 @@ internal val STEP_KINDS = listOf("Warm-up", "Work", "Recovery", "Steady", "Cool-
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-internal fun IntervalBuilderDialog(date: LocalDate, onDismiss: () -> Unit, onSave: (com.workoutmaker.app.data.Workout, Boolean) -> Unit) {
+internal fun IntervalBuilderDialog(date: LocalDate, onDismiss: () -> Unit, onSave: (Workout, Boolean) -> Unit) {
     var title by remember { mutableStateOf("Interval session") }
     var type by remember { mutableStateOf("run") }
     var push by remember { mutableStateOf(true) }
     val steps = remember {
-        androidx.compose.runtime.mutableStateListOf(
+        mutableStateListOf(
             BuilderStep("Warm-up", "Z1", "10", "1"),
             BuilderStep("Work", "Z4", "3", "5"),
             BuilderStep("Recovery", "Z1", "2", "5"),
@@ -172,15 +187,15 @@ internal fun IntervalBuilderDialog(date: LocalDate, onDismiss: () -> Unit, onSav
                 onClick = {
                     val exercises = steps.map { s ->
                         val r = s.reps.toIntOrNull() ?: 1
-                        com.workoutmaker.app.data.WorkoutExercise(
+                        WorkoutExercise(
                             name = (if (r > 1) "$r× " else "") + s.kind,
                             reps = "${s.minutes} min", hr_zone = s.zone,
                         )
                     }
-                    val w = com.workoutmaker.app.data.Workout(
+                    val w = Workout(
                         type = type, title = title.ifBlank { "Interval session" },
                         duration_minutes = totalMin, tss_estimate = tss, rpe_target = 7.0,
-                        sections = listOf(com.workoutmaker.app.data.WorkoutSection("Main", totalMin, exercises)),
+                        sections = listOf(WorkoutSection("Main", totalMin, exercises)),
                         coach_note = "Built manually.",
                     )
                     onSave(w, push)
@@ -192,14 +207,14 @@ internal fun IntervalBuilderDialog(date: LocalDate, onDismiss: () -> Unit, onSav
         text = {
             Column(
                 Modifier.fillMaxWidth().heightIn(max = 460.dp)
-                    .verticalScroll(androidx.compose.foundation.rememberScrollState()),
+                    .verticalScroll(rememberScrollState()),
                 verticalArrangement = Arrangement.spacedBy(8.dp),
             ) {
-                androidx.compose.material3.OutlinedTextField(title, { title = it }, label = { Text("Title") },
+                OutlinedTextField(title, { title = it }, label = { Text("Title") },
                     singleLine = true, modifier = Modifier.fillMaxWidth())
                 Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                     listOf("run" to "Run", "ride" to "Ride").forEach { (k, label) ->
-                        androidx.compose.material3.FilterChip(selected = type == k, onClick = { type = k }, label = { Text(label) })
+                        FilterChip(selected = type == k, onClick = { type = k }, label = { Text(label) })
                     }
                 }
                 Text("${totalMin.toInt()} min · ~${tss.toInt()} TSS", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.primary)
@@ -216,24 +231,24 @@ internal fun IntervalBuilderDialog(date: LocalDate, onDismiss: () -> Unit, onSav
                         }
                         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                             ZoneDropdown(s.zone, listOf("Z1", "Z2", "Z3", "Z4", "Z5")) { s.zone = it }
-                            androidx.compose.material3.OutlinedTextField(
+                            OutlinedTextField(
                                 s.minutes, { s.minutes = it }, label = { Text("min") },
                                 singleLine = true, modifier = Modifier.width(84.dp),
-                                keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(
-                                    keyboardType = androidx.compose.ui.text.input.KeyboardType.Number),
+                                keyboardOptions = KeyboardOptions(
+                                    keyboardType = KeyboardType.Number),
                             )
-                            androidx.compose.material3.OutlinedTextField(
+                            OutlinedTextField(
                                 s.reps, { s.reps = it }, label = { Text("× reps") },
                                 singleLine = true, modifier = Modifier.width(84.dp),
-                                keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(
-                                    keyboardType = androidx.compose.ui.text.input.KeyboardType.Number),
+                                keyboardOptions = KeyboardOptions(
+                                    keyboardType = KeyboardType.Number),
                             )
                         }
                     }
                 }
                 TextButton(onClick = { steps.add(BuilderStep()) }) { Icon(Icons.Filled.Add, null); Text(" Add step") }
                 Row(verticalAlignment = Alignment.CenterVertically) {
-                    androidx.compose.material3.Checkbox(checked = push, onCheckedChange = { push = it })
+                    Checkbox(checked = push, onCheckedChange = { push = it })
                     Text("Push to Intervals.icu watch calendar", style = MaterialTheme.typography.bodySmall)
                 }
             }
@@ -246,10 +261,10 @@ internal fun IntervalBuilderDialog(date: LocalDate, onDismiss: () -> Unit, onSav
 internal fun ZoneDropdown(value: String, options: List<String>, onPick: (String) -> Unit) {
     var open by remember { mutableStateOf(false) }
     Box {
-        androidx.compose.material3.AssistChip(onClick = { open = true }, label = { Text(value) })
-        androidx.compose.material3.DropdownMenu(expanded = open, onDismissRequest = { open = false }) {
+        AssistChip(onClick = { open = true }, label = { Text(value) })
+        DropdownMenu(expanded = open, onDismissRequest = { open = false }) {
             options.forEach { o ->
-                androidx.compose.material3.DropdownMenuItem(text = { Text(o) }, onClick = { onPick(o); open = false })
+                DropdownMenuItem(text = { Text(o) }, onClick = { onPick(o); open = false })
             }
         }
     }

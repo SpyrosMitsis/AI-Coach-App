@@ -50,6 +50,17 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.layout.IntrinsicSize
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.RowScope
+import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.OutlinedButton
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.text.font.FontStyle
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Dp
+import com.workoutmaker.app.ui.theme.mossAccent
 
 // A consistent top-bar + scrolling body used by every screen.
 @OptIn(ExperimentalMaterial3Api::class)
@@ -93,7 +104,7 @@ fun ScreenScaffold(
                         // One line each: the app bar has a fixed height, so a long
                         // title (e.g. a workout name) wrapping would get clipped by
                         // the content below instead of ellipsized.
-                        androidx.compose.foundation.layout.Row(
+                        Row(
                             verticalAlignment = Alignment.CenterVertically,
                             modifier = if (onTitleClick != null) {
                                 Modifier.clip(RoundedCornerShape(8.dp)).clickable { onTitleClick() }
@@ -105,7 +116,7 @@ fun ScreenScaffold(
                                 style = MaterialTheme.typography.headlineSmall,
                                 fontWeight = FontWeight.Bold,
                                 maxLines = 1,
-                                overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
+                                overflow = TextOverflow.Ellipsis,
                             )
                             if (onTitleClick != null) {
                                 Icon(
@@ -122,7 +133,7 @@ fun ScreenScaffold(
                                 style = MaterialTheme.typography.bodySmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                                 maxLines = 1,
-                                overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
+                                overflow = TextOverflow.Ellipsis,
                             )
                         }
                     }
@@ -235,7 +246,7 @@ fun EmptyState(
 fun SkeletonBar(
     modifier: Modifier = Modifier,
     widthFraction: Float = 1f,
-    height: androidx.compose.ui.unit.Dp = 16.dp,
+    height: Dp = 16.dp,
 ) {
     val transition = rememberInfiniteTransition(label = "skeleton")
     val alpha by transition.animateFloat(
@@ -274,7 +285,7 @@ fun SkeletonCard(lines: Int = 3, modifier: Modifier = Modifier) {
 
 /** Uppercase, letter-spaced section/eyebrow label in muted sage. */
 @Composable
-fun SectionLabel(text: String, modifier: Modifier = Modifier, color: androidx.compose.ui.graphics.Color = MaterialTheme.colorScheme.primary) {
+fun SectionLabel(text: String, modifier: Modifier = Modifier, color: Color = MaterialTheme.colorScheme.primary) {
     Text(
         text.uppercase(),
         modifier = modifier,
@@ -291,7 +302,7 @@ fun MetaChip(text: String) {
     Box(
         Modifier
             .clip(RoundedCornerShape(50))
-            .background(com.workoutmaker.app.ui.theme.mossAccent().copy(alpha = 0.45f))
+            .background(mossAccent().copy(alpha = 0.45f))
             .padding(horizontal = 10.dp, vertical = 4.dp),
     ) {
         Text(text, style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.primary)
@@ -302,7 +313,7 @@ fun MetaChip(text: String) {
 @Composable
 fun ChipRow(items: List<String>, modifier: Modifier = Modifier) {
     val scroll = rememberScrollState()
-    androidx.compose.foundation.layout.Row(
+    Row(
         modifier.fillMaxWidth().horizontalScroll(scroll),
         horizontalArrangement = Arrangement.spacedBy(6.dp),
     ) { items.forEach { MetaChip(it) } }
@@ -311,7 +322,7 @@ fun ChipRow(items: List<String>, modifier: Modifier = Modifier) {
 /** Inset metric row inside a card (darker than the card → "inset" feel). */
 @Composable
 fun InsetStat(label: String, value: String, modifier: Modifier = Modifier) {
-    androidx.compose.foundation.layout.Row(
+    Row(
         modifier
             .fillMaxWidth()
             .clip(RoundedCornerShape(10.dp))
@@ -359,11 +370,11 @@ fun StatTileGrid(items: List<Pair<String, String>>, modifier: Modifier = Modifie
     val columns = if (items.size <= 3) items.size else 2
     Column(modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(8.dp)) {
         items.chunked(columns).forEach { row ->
-            androidx.compose.foundation.layout.Row(
+            Row(
                 // Match every tile in a row to the tallest one, so a stat whose
                 // label fits on one line (e.g. "Form (TSB)") isn't shorter than its
                 // two-line neighbours ("Fitness (CTL)").
-                Modifier.fillMaxWidth().height(androidx.compose.foundation.layout.IntrinsicSize.Max),
+                Modifier.fillMaxWidth().height(IntrinsicSize.Max),
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
             ) {
                 row.forEach { (l, v) -> StatTile(l, v, Modifier.weight(1f).fillMaxHeight()) }
@@ -375,14 +386,14 @@ fun StatTileGrid(items: List<Pair<String, String>>, modifier: Modifier = Modifie
 
 /** Ghost (secondary) button: 1px warm-sand border, transparent fill. */
 @Composable
-fun GhostButton(onClick: () -> Unit, modifier: Modifier = Modifier, enabled: Boolean = true, content: @Composable androidx.compose.foundation.layout.RowScope.() -> Unit) {
-    androidx.compose.material3.OutlinedButton(
+fun GhostButton(onClick: () -> Unit, modifier: Modifier = Modifier, enabled: Boolean = true, content: @Composable RowScope.() -> Unit) {
+    OutlinedButton(
         onClick = onClick,
         modifier = modifier,
         enabled = enabled,
         shape = RoundedCornerShape(10.dp),
-        border = androidx.compose.foundation.BorderStroke(1.dp, MaterialTheme.colorScheme.secondary.copy(alpha = 0.6f)),
-        colors = androidx.compose.material3.ButtonDefaults.outlinedButtonColors(contentColor = MaterialTheme.colorScheme.onSurface),
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.secondary.copy(alpha = 0.6f)),
+        colors = ButtonDefaults.outlinedButtonColors(contentColor = MaterialTheme.colorScheme.onSurface),
         content = content,
     )
 }
@@ -390,12 +401,12 @@ fun GhostButton(onClick: () -> Unit, modifier: Modifier = Modifier, enabled: Boo
 /** Coach-note / callout: inset box with a left sage accent bar. */
 @Composable
 fun QuoteBlock(text: String, modifier: Modifier = Modifier) {
-    androidx.compose.foundation.layout.Row(
+    Row(
         modifier
             .fillMaxWidth()
             .clip(RoundedCornerShape(10.dp))
             .background(MaterialTheme.colorScheme.surfaceContainerLowest)
-            .height(androidx.compose.foundation.layout.IntrinsicSize.Min),
+            .height(IntrinsicSize.Min),
     ) {
         Box(Modifier.width(3.dp).fillMaxHeight().background(MaterialTheme.colorScheme.primary))
         Text(
@@ -403,7 +414,7 @@ fun QuoteBlock(text: String, modifier: Modifier = Modifier) {
             Modifier.padding(12.dp),
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
-            fontStyle = androidx.compose.ui.text.font.FontStyle.Italic,
+            fontStyle = FontStyle.Italic,
         )
     }
 }
@@ -469,7 +480,7 @@ fun InfoIcon(
     title: String,
     body: String,
     modifier: Modifier = Modifier,
-    tint: androidx.compose.ui.graphics.Color = MaterialTheme.colorScheme.onSurfaceVariant,
+    tint: Color = MaterialTheme.colorScheme.onSurfaceVariant,
 ) {
     var open by remember { mutableStateOf(false) }
     IconButton(onClick = { open = true }, modifier = modifier.size(28.dp)) {

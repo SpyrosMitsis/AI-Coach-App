@@ -21,6 +21,7 @@ import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.text.withLink
 import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
+import androidx.compose.material3.MaterialTheme
 
 // ============================================================================
 // Tiny markdown renderer for LLM output — no dependency, covers what the
@@ -87,7 +88,7 @@ fun MarkdownText(
     style: TextStyle,
     modifier: Modifier = Modifier,
 ) {
-    val linkColor = androidx.compose.material3.MaterialTheme.colorScheme.primary
+    val linkColor = MaterialTheme.colorScheme.primary
     Column(modifier, verticalArrangement = Arrangement.spacedBy(2.dp)) {
         var lastBlank = false
         text.trim().lines().forEach { raw ->

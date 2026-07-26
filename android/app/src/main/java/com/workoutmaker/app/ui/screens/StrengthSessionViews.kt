@@ -89,6 +89,19 @@ import com.workoutmaker.app.ui.components.EmptyState
 import com.workoutmaker.app.ui.components.rememberDragDropState
 import com.workoutmaker.app.ui.components.SectionCard
 import com.workoutmaker.app.ui.theme.amberAccent
+import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.material3.LinearProgressIndicator
+import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.key
+import androidx.compose.ui.platform.LocalView
+import androidx.compose.ui.text.font.FontFamily
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
+import com.workoutmaker.app.strength.SetEntity
+import com.workoutmaker.app.strength.SetSanity
+import java.time.Instant
+import java.time.ZoneId
 
 // ---------------------------------------------------------------------------
 // Workout detail — drill into one logged session: every exercise and set.
@@ -133,11 +146,11 @@ internal fun WorkoutDetailView(vm: StrengthViewModel, onOpenStats: (String) -> U
             onConfirm = { confirmDelete = false; vm.deleteWorkout(d.workout.id) },
             onDismiss = { confirmDelete = false },
         )
-        val date = java.time.Instant.ofEpochMilli(d.workout.startedAt)
-            .atZone(java.time.ZoneId.systemDefault()).toLocalDate().toString()
+        val date = Instant.ofEpochMilli(d.workout.startedAt)
+            .atZone(ZoneId.systemDefault()).toLocalDate().toString()
         LazyColumn(
             Modifier.padding(padding).fillMaxWidth(),
-            contentPadding = androidx.compose.foundation.layout.PaddingValues(16.dp),
+            contentPadding = PaddingValues(16.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
             item {
@@ -162,7 +175,7 @@ internal fun WorkoutDetailView(vm: StrengthViewModel, onOpenStats: (String) -> U
 }
 
 @Composable
-internal fun WorkoutDetailExercise(name: String, sets: List<com.workoutmaker.app.strength.SetEntity>, onStats: () -> Unit) {
+internal fun WorkoutDetailExercise(name: String, sets: List<SetEntity>, onStats: () -> Unit) {
     val cardio = ExerciseCatalog.find(name)?.category == "Cardio"
     SectionCard {
         Row(verticalAlignment = Alignment.CenterVertically) {
@@ -217,19 +230,19 @@ internal fun ActiveWorkoutView(vm: StrengthViewModel, onOpenStats: (String) -> U
     val finishHaptics = LocalHapticFeedback.current
 
     // Keep the screen awake during a workout when the user opts in.
-    val view = androidx.compose.ui.platform.LocalView.current
-    androidx.compose.runtime.DisposableEffect(settings.keepScreenOn) {
+    val view = LocalView.current
+    DisposableEffect(settings.keepScreenOn) {
         view.keepScreenOn = settings.keepScreenOn
         onDispose { view.keepScreenOn = false }
     }
 
     // Persist the session whenever the app is backgrounded (captures in-progress
     // text edits to weights/reps/name) so a lock or kill never loses it.
-    val lifecycleOwner = androidx.lifecycle.compose.LocalLifecycleOwner.current
-    androidx.compose.runtime.DisposableEffect(lifecycleOwner) {
-        val obs = androidx.lifecycle.LifecycleEventObserver { _, event ->
+    val lifecycleOwner = LocalLifecycleOwner.current
+    DisposableEffect(lifecycleOwner) {
+        val obs = LifecycleEventObserver { _, event ->
             // Synchronous write — the process may be killed right after backgrounding.
-            if (event == androidx.lifecycle.Lifecycle.Event.ON_STOP) vm.persistSessionNow()
+            if (event == Lifecycle.Event.ON_STOP) vm.persistSessionNow()
         }
         lifecycleOwner.lifecycle.addObserver(obs)
         onDispose { lifecycleOwner.lifecycle.removeObserver(obs) }
@@ -288,7 +301,7 @@ internal fun ActiveWorkoutView(vm: StrengthViewModel, onOpenStats: (String) -> U
         LazyColumn(
             Modifier.padding(padding).fillMaxWidth(),
             state = listState,
-            contentPadding = androidx.compose.foundation.layout.PaddingValues(12.dp),
+            contentPadding = PaddingValues(12.dp),
             verticalArrangement = Arrangement.spacedBy(10.dp),
         ) {
             item {
@@ -377,7 +390,7 @@ internal fun RateEffortView(vm: StrengthViewModel) {
                 "How hard did that feel?",
                 style = MaterialTheme.typography.titleMedium,
                 color = MaterialTheme.colorScheme.onSurface,
-                textAlign = androidx.compose.ui.text.style.TextAlign.Center,
+                textAlign = TextAlign.Center,
             )
             Spacer(Modifier.height(14.dp))
 
@@ -434,7 +447,7 @@ internal fun RateEffortView(vm: StrengthViewModel) {
                                 Text(
                                     label,
                                     style = MaterialTheme.typography.labelMedium,
-                                    textAlign = androidx.compose.ui.text.style.TextAlign.Center,
+                                    textAlign = TextAlign.Center,
                                     modifier = Modifier.fillMaxWidth(),
                                 )
                             },
@@ -504,7 +517,7 @@ private fun EffortBars(selected: Int?, onSelect: (Int) -> Unit, modifier: Modifi
                 Text(
                     "$n",
                     modifier = Modifier.weight(1f),
-                    textAlign = androidx.compose.ui.text.style.TextAlign.Center,
+                    textAlign = TextAlign.Center,
                     style = MaterialTheme.typography.labelSmall,
                     color = if (current) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.onSurfaceVariant,
                     fontWeight = if (current) FontWeight.Bold else FontWeight.Normal,
@@ -605,7 +618,7 @@ internal fun ExerciseCard(
             // Key by the set's identity so swipe-dismiss state follows the row it
             // belongs to (otherwise deleting one freezes the dismissed background
             // onto the row that shifts into its slot).
-            androidx.compose.runtime.key(System.identityHashCode(s)) {
+            key(System.identityHashCode(s)) {
                 SetRow(
                     label, s, ux.previous.getOrNull(i),
                     cardio = ux.isCardio,
@@ -632,7 +645,7 @@ internal fun HCell(text: String, modifier: Modifier) {
 internal fun SetRow(
     label: String,
     s: UiSet,
-    prev: com.workoutmaker.app.strength.SetEntity?,
+    prev: SetEntity?,
     cardio: Boolean = false,
     onToggle: () -> Unit,
     onRemove: () -> Unit,
@@ -732,7 +745,7 @@ internal fun SetRow(
                     // minutes in the reps slot, so it only gets the weight-free
                     // absolute rep cap via baselines being null.
                     val question = if (becomingDone && !s.confirmedOdd && !cardio) {
-                        com.workoutmaker.app.strength.SetSanity.check(
+                        SetSanity.check(
                             weight = s.weight.toDoubleOrNull(),
                             reps = s.reps.toIntOrNull(),
                             baselineWeight = prev?.weightKg ?: s.suggestedWeight.toDoubleOrNull(),
@@ -880,7 +893,7 @@ internal fun RestTimerBar(remaining: Int, vm: StrengthViewModel) {
     val nearDone = remaining in 1..5
     val accent = if (nearDone) amberAccent() else MaterialTheme.colorScheme.primary
     Column(Modifier.fillMaxWidth().background(MaterialTheme.colorScheme.surfaceContainerHigh)) {
-        androidx.compose.material3.LinearProgressIndicator(
+        LinearProgressIndicator(
             progress = { progress },
             modifier = Modifier.fillMaxWidth().height(5.dp),
             color = accent,
@@ -900,7 +913,7 @@ internal fun RestTimerBar(remaining: Int, vm: StrengthViewModel) {
                 Text(
                     fmtClock(remaining.toLong()),
                     style = MaterialTheme.typography.headlineSmall.copy(
-                        fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace,
+                        fontFamily = FontFamily.Monospace,
                     ),
                     fontWeight = FontWeight.Bold,
                     color = accent,

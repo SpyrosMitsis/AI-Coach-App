@@ -56,10 +56,13 @@ import com.workoutmaker.app.ui.components.ScreenScaffold
 import com.workoutmaker.app.ui.components.SectionCard
 import com.workoutmaker.app.ui.components.SectionLabel
 import com.workoutmaker.app.ui.theme.amberAccent
+import androidx.compose.foundation.ExperimentalFoundationApi
+import com.workoutmaker.app.data.PlannedWorkout
+import com.workoutmaker.app.ui.components.fmtWeight
 
 internal fun fmtClock(totalSec: Long): String = com.workoutmaker.app.ui.components.fmtClock(totalSec)
 
-internal fun trimKg(v: Double): String = com.workoutmaker.app.ui.components.fmtWeight(v)
+internal fun trimKg(v: Double): String = fmtWeight(v)
 
 @Composable
 fun StrengthScreen(
@@ -121,7 +124,7 @@ fun StrengthScreen(
 // ---------------------------------------------------------------------------
 // Home: start workout, routines, history, per-exercise stats entry
 // ---------------------------------------------------------------------------
-@OptIn(androidx.compose.foundation.ExperimentalFoundationApi::class)
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 internal fun StrengthHomeView(
     vm: StrengthViewModel,
@@ -211,7 +214,7 @@ internal fun StrengthHomeView(
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
             if (routines.isEmpty()) {
-                com.workoutmaker.app.ui.components.EmptyState(
+                EmptyState(
                     title = "No routines yet",
                     subtitle = "Start a workout and “Save as routine”, or pick a program below.",
                     icon = Icons.Filled.FitnessCenter,
@@ -261,7 +264,7 @@ internal fun StrengthHomeView(
 @Composable
 internal fun TodayPlannedCard(
     mod: Modifier,
-    pw: com.workoutmaker.app.data.PlannedWorkout,
+    pw: PlannedWorkout,
     onStart: () -> Unit,
 ) {
     SectionCard(mod, title = "Today's plan") {

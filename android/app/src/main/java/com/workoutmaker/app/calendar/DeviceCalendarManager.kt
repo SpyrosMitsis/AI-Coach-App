@@ -15,6 +15,7 @@ import java.time.ZoneId
 import java.time.ZoneOffset
 import javax.inject.Inject
 import javax.inject.Singleton
+import android.net.Uri
 
 // Device-calendar bridge (CalendarProvider, NOT the Google Calendar API — every
 // synced account, no OAuth, works offline). Two one-way flows, both opt-in:
@@ -156,7 +157,7 @@ class DeviceCalendarManager @Inject constructor(
 
     // Calendar writes/deletes require sync-adapter caller params for a local
     // account; this stamps them onto a CalendarContract uri.
-    private fun asSyncAdapter(uri: android.net.Uri): android.net.Uri = uri.buildUpon()
+    private fun asSyncAdapter(uri: Uri): Uri = uri.buildUpon()
         .appendQueryParameter(CalendarContract.CALLER_IS_SYNCADAPTER, "true")
         .appendQueryParameter(CalendarContract.Calendars.ACCOUNT_NAME, CALENDAR_NAME)
         .appendQueryParameter(CalendarContract.Calendars.ACCOUNT_TYPE, CalendarContract.ACCOUNT_TYPE_LOCAL)

@@ -56,6 +56,15 @@ import java.time.LocalDate
 import java.time.YearMonth
 import java.time.format.TextStyle
 import java.util.Locale
+import com.workoutmaker.app.strength.WorkoutEntity
+import com.workoutmaker.app.ui.components.DetailOverlay
+import com.workoutmaker.app.ui.components.EmptyState
+import com.workoutmaker.app.ui.components.LocalAppSnackbar
+import com.workoutmaker.app.ui.components.friendlyError
+import java.time.DayOfWeek
+import java.time.Instant
+import java.time.ZoneId
+import java.time.ZoneOffset
 
 // Same "primary session first" rule the Home dashboard uses (still-pending
 // before done/skipped, real work before rest, newest first) so the top card on
@@ -91,12 +100,12 @@ fun CalendarScreen(vm: CalendarViewModel = hiltViewModel(), onOpenStrength: () -
 
     // Transient sync/mark/skip confirmations go to the app-wide snackbar; the
     // persistent "Offline — …" note stays inline as standing context.
-    val snackbar = com.workoutmaker.app.ui.components.LocalAppSnackbar.current
-    androidx.compose.runtime.LaunchedEffect(banner) {
+    val snackbar = LocalAppSnackbar.current
+    LaunchedEffect(banner) {
         val b = banner ?: return@LaunchedEffect
         if (b.startsWith("Offline")) return@LaunchedEffect
         val ok = b.startsWith("✓") || b.startsWith("Marked") || b.contains("Sync", ignoreCase = true)
-        snackbar?.show(if (ok) b else com.workoutmaker.app.ui.components.friendlyError(b))
+        snackbar?.show(if (ok) b else friendlyError(b))
         vm.banner.value = null
     }
 
@@ -108,8 +117,8 @@ fun CalendarScreen(vm: CalendarViewModel = hiltViewModel(), onOpenStrength: () -
     var showRequest by remember { mutableStateOf(false) }
     var confirmDelete by remember { mutableStateOf<PlannedWorkout?>(null) }
     var moveTarget by remember { mutableStateOf<PlannedWorkout?>(null) }
-    var activityDetail by remember { mutableStateOf<com.workoutmaker.app.data.CompletedActivity?>(null) }
-    var strengthDetail by remember { mutableStateOf<com.workoutmaker.app.strength.WorkoutEntity?>(null) }
+    var activityDetail by remember { mutableStateOf<CompletedActivity?>(null) }
+    var strengthDetail by remember { mutableStateOf<WorkoutEntity?>(null) }
     val strengthSets by vm.strengthSets.collectAsStateSafe()
     val calProfile by vm.profile.collectAsStateSafe()
 
@@ -139,7 +148,7 @@ fun CalendarScreen(vm: CalendarViewModel = hiltViewModel(), onOpenStrength: () -
     // Activity detail is a full sub-screen.
     activityDetail?.let { act ->
         BackHandler { activityDetail = null }
-        com.workoutmaker.app.ui.components.DetailOverlay {
+        DetailOverlay {
             ActivityDetailScreen(
                 activity = act,
                 planned = byDate[act.date]?.firstOrNull(),
@@ -153,12 +162,12 @@ fun CalendarScreen(vm: CalendarViewModel = hiltViewModel(), onOpenStrength: () -
     strengthDetail?.let { sw ->
         BackHandler { strengthDetail = null }
         LaunchedEffect(sw.id) { vm.loadStrengthSets(sw.id) }
-        val zone = java.time.ZoneId.systemDefault()
-        val day = java.time.Instant.ofEpochMilli(sw.startedAt).atZone(zone).toLocalDate().toString()
+        val zone = ZoneId.systemDefault()
+        val day = Instant.ofEpochMilli(sw.startedAt).atZone(zone).toLocalDate().toString()
         val watch = vm.activitiesByDate.value[day]?.firstOrNull { a ->
             looksLike("strength", a.type)
         }
-        com.workoutmaker.app.ui.components.DetailOverlay {
+        DetailOverlay {
             StrengthSessionDetailScreen(
                 w = sw,
                 sets = strengthSets[sw.id].orEmpty(),
@@ -171,7 +180,7 @@ fun CalendarScreen(vm: CalendarViewModel = hiltViewModel(), onOpenStrength: () -
     }
 
     // Adaptive prompt: did a past planned session this real week go unlogged?
-    val realWeekStart = LocalDate.now().with(java.time.DayOfWeek.MONDAY)
+    val realWeekStart = LocalDate.now().with(DayOfWeek.MONDAY)
     val divergence = remember(workouts) {
         val ws = realWeekStart.toString()
         val td = LocalDate.now().toString()
@@ -301,7 +310,7 @@ fun CalendarScreen(vm: CalendarViewModel = hiltViewModel(), onOpenStrength: () -
             }
 
             if (daySessions.isEmpty() && dayStrength.isEmpty() && dayActivities.isEmpty()) {
-                com.workoutmaker.app.ui.components.EmptyState(
+                EmptyState(
                     title = "Nothing planned",
                     subtitle = "Tap ＋ to schedule a template on this day.",
                     icon = Icons.Filled.EventAvailable,
@@ -425,7 +434,7 @@ fun CalendarScreen(vm: CalendarViewModel = hiltViewModel(), onOpenStrength: () -
 
     moveTarget?.let { w ->
         val initial = runCatching {
-            LocalDate.parse(w.date).atStartOfDay(java.time.ZoneOffset.UTC).toInstant().toEpochMilli()
+            LocalDate.parse(w.date).atStartOfDay(ZoneOffset.UTC).toInstant().toEpochMilli()
         }.getOrNull()
         val state = rememberDatePickerState(initialSelectedDateMillis = initial)
         DatePickerDialog(
@@ -433,7 +442,7 @@ fun CalendarScreen(vm: CalendarViewModel = hiltViewModel(), onOpenStrength: () -
             confirmButton = {
                 TextButton(onClick = {
                     state.selectedDateMillis?.let { ms ->
-                        val d = java.time.Instant.ofEpochMilli(ms).atZone(java.time.ZoneOffset.UTC).toLocalDate()
+                        val d = Instant.ofEpochMilli(ms).atZone(ZoneOffset.UTC).toLocalDate()
                         vm.reschedule(w.id, d)
                     }
                     moveTarget = null
@@ -451,7 +460,7 @@ fun CalendarScreen(vm: CalendarViewModel = hiltViewModel(), onOpenStrength: () -
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     if (templates.isEmpty()) {
-                        com.workoutmaker.app.ui.components.EmptyState(
+                        EmptyState(
                             title = "No templates yet",
                             subtitle = "Design one with your coach in the Coach tab, then schedule it here.",
                             icon = Icons.Filled.AutoAwesome,

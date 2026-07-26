@@ -31,6 +31,25 @@ import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.put
 import javax.inject.Inject
 import javax.inject.Singleton
+import com.workoutmaker.app.calendar.DeviceCalendarManager
+import com.workoutmaker.app.calendar.calendarEventDetail
+import com.workoutmaker.app.calendar.calendarEventTitle
+import com.workoutmaker.app.health.HcExercise
+import com.workoutmaker.app.health.HealthConnectManager
+import com.workoutmaker.app.health.HealthSnapshot
+import com.workoutmaker.app.strength.ExerciseCatalog
+import com.workoutmaker.app.strength.StrengthDao
+import com.workoutmaker.app.util.AppLog
+import com.workoutmaker.app.util.CrashReporter
+import com.workoutmaker.app.util.serverErrorText
+import dagger.hilt.android.qualifiers.ApplicationContext
+import java.io.File
+import java.time.LocalDate
+import java.util.UUID
+import kotlinx.serialization.builtins.ListSerializer
+import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonNull
+import kotlinx.serialization.json.buildJsonObject
 
 @Singleton
 class WorkoutRepository @Inject constructor(
@@ -38,11 +57,11 @@ class WorkoutRepository @Inject constructor(
     private val cache: CacheDao,
     private val prefs: AppPreferences,
     private val backend: BackendConfig,
-    private val health: com.workoutmaker.app.health.HealthConnectManager,
-    private val deviceCalendar: com.workoutmaker.app.calendar.DeviceCalendarManager,
+    private val health: HealthConnectManager,
+    private val deviceCalendar: DeviceCalendarManager,
     // The DAO, not StrengthRepository (which depends on this class).
-    private val strengthDao: com.workoutmaker.app.strength.StrengthDao,
-    @dagger.hilt.android.qualifiers.ApplicationContext private val appContext: android.content.Context,
+    private val strengthDao: StrengthDao,
+    @ApplicationContext private val appContext: android.content.Context,
 ) {
     private val json = Json { ignoreUnknownKeys = true; encodeDefaults = true }
 
@@ -62,7 +81,7 @@ class WorkoutRepository @Inject constructor(
 
     // Swallowed errors are still logged so failures aren't invisible in logcat.
     private fun <T> Result<T>.logFailure(op: String): Result<T> =
-        onFailure { com.workoutmaker.app.util.AppLog.w("repo", "$op failed", it) }
+        onFailure { AppLog.w("repo", "$op failed", it) }
 
     suspend fun signIn(email: String, password: String) {
         supabase.auth.signInWith(Email) { this.email = email; this.password = password }
@@ -111,7 +130,7 @@ class WorkoutRepository @Inject constructor(
             runCatching { prefs.setLastAccountUid(uid) }
             return
         }
-        com.workoutmaker.app.util.AppLog.i("repo", "account changed, wiping per-account local state")
+        AppLog.i("repo", "account changed, wiping per-account local state")
         clearLocalAccountData()
         runCatching { prefs.setLastAccountUid(uid) }
     }
@@ -125,11 +144,11 @@ class WorkoutRepository @Inject constructor(
             strengthDao.clearRoutineItems(); strengthDao.clearRoutines()
             strengthDao.clearCustomExercises(); strengthDao.clearFavorites()
             strengthDao.clearTombstones()
-            com.workoutmaker.app.strength.ExerciseCatalog.resetCustom()
+            ExerciseCatalog.resetCustom()
         }.logFailure("clearLocalAccountData/strength")
         // A half-finished logger session from the previous account must not
         // resume under the new one.
-        runCatching { java.io.File(appContext.filesDir, "active_session.json").delete() }
+        runCatching { File(appContext.filesDir, "active_session.json").delete() }
     }
 
     // A deep link (email confirm / recovery) imported a session without going
@@ -142,8 +161,8 @@ class WorkoutRepository @Inject constructor(
     // on disk until its insert succeeds (offline, or migration not pushed yet)
     // or it goes stale; a failed insert stops the batch until next start.
     suspend fun uploadPendingCrashes() {
-        for (f in com.workoutmaker.app.util.CrashReporter.pending(appContext)) {
-            val rec = com.workoutmaker.app.util.CrashReporter.parse(f)
+        for (f in CrashReporter.pending(appContext)) {
+            val rec = CrashReporter.parse(f)
             if (rec == null) { f.delete(); continue }
             val ok = runCatching { supabase.postgrest.from("crash_reports").insert(rec) }
                 .logFailure("uploadPendingCrashes").isSuccess
@@ -193,8 +212,8 @@ class WorkoutRepository @Inject constructor(
     // start can still show the last dashboard instead of a bare error.
     // Sends the device's LOCAL date — the server's UTC clock is yesterday for
     // tz-ahead users until mid-morning, which made Home show the wrong day.
-    suspend fun dailySummary(date: java.time.LocalDate = java.time.LocalDate.now()): DailySummary {
-        val body = kotlinx.serialization.json.buildJsonObject {
+    suspend fun dailySummary(date: LocalDate = LocalDate.now()): DailySummary {
+        val body = buildJsonObject {
             put("date", JsonPrimitive(date.toString()))
         }.toString()
         val s: DailySummary = json.decodeFromString(
@@ -218,12 +237,12 @@ class WorkoutRepository @Inject constructor(
     // Whether today's brief is already cached, i.e. whether requesting it would
     // trigger the day's one LLM generation. Lets Home sync fresh recovery data
     // BEFORE the generation, and skip that work on every later open.
-    suspend fun hasCachedBrief(date: String = java.time.LocalDate.now().toString()): Boolean =
+    suspend fun hasCachedBrief(date: String = LocalDate.now().toString()): Boolean =
         runCatching { cache.brief(date) != null }.getOrDefault(false)
 
-    suspend fun coachBrief(date: String = java.time.LocalDate.now().toString()): String? {
+    suspend fun coachBrief(date: String = LocalDate.now().toString()): String? {
         runCatching { cache.brief(date) }.getOrNull()?.let { return it.text }
-        val body = kotlinx.serialization.json.buildJsonObject {
+        val body = buildJsonObject {
             put("date", JsonPrimitive(date))
         }.toString()
         val resp: CoachBriefResponse = runCatching {
@@ -241,7 +260,7 @@ class WorkoutRepository @Inject constructor(
     // be the Monday of the target week. Null when not generated / empty / offline.
     suspend fun weekReview(weekStart: String): String? {
         runCatching { cache.weekReview(weekStart) }.getOrNull()?.let { return it.text }
-        val body = kotlinx.serialization.json.buildJsonObject {
+        val body = buildJsonObject {
             put("week_start", JsonPrimitive(weekStart))
         }.toString()
         val resp: CoachWeekReviewResponse = runCatching {
@@ -262,7 +281,7 @@ class WorkoutRepository @Inject constructor(
     }.logFailure("cachedDailySummary").getOrNull()
 
     suspend fun generateWorkout(req: GenerateRequest): String =
-        com.workoutmaker.app.util.AppLog.time("gen", "generate-workout date=${req.date} type=${req.type}") {
+        AppLog.time("gen", "generate-workout date=${req.date} type=${req.type}") {
             val enriched = req.copy(calendar_busy = req.calendar_busy ?: calendarBusy(req.date, days = 1))
             val out: String = supabase.functions.invoke("generate-workout") {
                 setBody(json.encodeToString(GenerateRequest.serializer(), enriched))
@@ -278,7 +297,7 @@ class WorkoutRepository @Inject constructor(
     private suspend fun calendarBusy(fromDate: String?, days: Int): List<BusyDay>? {
         val enabled = runCatching { prefs.settings.first().calendarRead }.getOrDefault(false)
         if (!enabled || !deviceCalendar.hasReadPermission()) return null
-        val from = runCatching { java.time.LocalDate.parse(fromDate) }.getOrNull() ?: java.time.LocalDate.now()
+        val from = runCatching { LocalDate.parse(fromDate) }.getOrNull() ?: LocalDate.now()
         return runCatching { deviceCalendar.busyDays(from, days) }.getOrNull()?.takeIf { it.isNotEmpty() }
     }
 
@@ -289,19 +308,19 @@ class WorkoutRepository @Inject constructor(
         runCatching {
             val enabled = prefs.settings.first().calendarWrite
             if (!enabled || !deviceCalendar.hasWritePermission()) return
-            val from = java.time.LocalDate.now()
+            val from = LocalDate.now()
             val until = from.plusDays(14)
             val entries = plannedWorkouts(from.toString())
                 .filter { it.type != "rest" && !it.skipped }
                 .mapNotNull { p ->
-                    val date = runCatching { java.time.LocalDate.parse(p.date) }.getOrNull()
+                    val date = runCatching { LocalDate.parse(p.date) }.getOrNull()
                         ?: return@mapNotNull null
                     if (date >= until) return@mapNotNull null
                     val w = p.workout_json
-                    com.workoutmaker.app.calendar.DeviceCalendarManager.PlanEntry(
+                    DeviceCalendarManager.PlanEntry(
                         date = p.date,
-                        title = com.workoutmaker.app.calendar.calendarEventTitle(w, p.type),
-                        detail = com.workoutmaker.app.calendar.calendarEventDetail(w, p.type),
+                        title = calendarEventTitle(w, p.type),
+                        detail = calendarEventDetail(w, p.type),
                     )
                 }
             deviceCalendar.syncPlan(entries, from, 14)
@@ -317,7 +336,7 @@ class WorkoutRepository @Inject constructor(
     suspend fun connectIntervals(athleteId: String, apiKey: String): String =
         supabase.functions.invoke("connect-intervals") {
             setBody(
-                kotlinx.serialization.json.buildJsonObject {
+                buildJsonObject {
                     put("athleteId", JsonPrimitive(athleteId))
                     put("apiKey", JsonPrimitive(apiKey))
                 }.toString(),
@@ -332,7 +351,7 @@ class WorkoutRepository @Inject constructor(
         )
 
     private fun workoutIdBody(workoutId: String): String =
-        kotlinx.serialization.json.buildJsonObject { put("workout_id", JsonPrimitive(workoutId)) }.toString()
+        buildJsonObject { put("workout_id", JsonPrimitive(workoutId)) }.toString()
 
     suspend fun pushWorkout(workoutId: String): String =
         supabase.functions.invoke("push-workout") { setBody(workoutIdBody(workoutId)) }.body()
@@ -351,7 +370,7 @@ class WorkoutRepository @Inject constructor(
         json.decodeFromString(
             supabase.functions.invoke("analyze-activity") {
                 setBody(
-                    kotlinx.serialization.json.buildJsonObject {
+                    buildJsonObject {
                         put("activity_id", JsonPrimitive(activityId))
                         put("force", JsonPrimitive(force))
                         put("peek", JsonPrimitive(peek))
@@ -365,7 +384,7 @@ class WorkoutRepository @Inject constructor(
         json.decodeFromString(
             supabase.functions.invoke("analyze-strength") {
                 setBody(
-                    kotlinx.serialization.json.buildJsonObject {
+                    buildJsonObject {
                         put("date", JsonPrimitive(date))
                         put("force", JsonPrimitive(force))
                         put("peek", JsonPrimitive(peek))
@@ -390,7 +409,7 @@ class WorkoutRepository @Inject constructor(
         val rows: List<PlannedWorkout> = supabase.postgrest.from("planned_workouts").select {
             filter { gte("date", fromDate) }
             order("date", Order.DESCENDING)
-        }.decodeList<kotlinx.serialization.json.JsonObject>().mapNotNull { el ->
+        }.decodeList<JsonObject>().mapNotNull { el ->
             runCatching { json.decodeFromJsonElement(PlannedWorkout.serializer(), el) }
                 .logFailure("plannedWorkouts/row").getOrNull()
         }
@@ -473,7 +492,7 @@ class WorkoutRepository @Inject constructor(
         }.decodeList<WellnessCheckin>().firstOrNull()
 
     // Upsert a multi-day Health Connect series (7-day trend) in one call.
-    suspend fun submitHealthSnapshots(snaps: List<com.workoutmaker.app.health.HealthSnapshot>) {
+    suspend fun submitHealthSnapshots(snaps: List<HealthSnapshot>) {
         val rows = snaps.filter { it.hasAny }.map { snap ->
             WellnessHealthUpdate(
                 date = snap.date,
@@ -492,7 +511,7 @@ class WorkoutRepository @Inject constructor(
     }
 
     data class HealthSyncResult(
-        val week: List<com.workoutmaker.app.health.HealthSnapshot> = emptyList(),
+        val week: List<HealthSnapshot> = emptyList(),
         val activitiesUpserted: Int = 0,
     )
 
@@ -523,7 +542,7 @@ class WorkoutRepository @Inject constructor(
         val newWeight = bc.weightKg?.let { Math.round(it).toInt() } ?: p.weight_kg
         val newBodyFat = bc.bodyFatPct?.let { Math.round(it * 10) / 10.0 } ?: p.body_fat_pct
         if (newWeight != p.weight_kg || newBodyFat != p.body_fat_pct) {
-            com.workoutmaker.app.util.AppLog.i("health", "body comp from HC: ${newWeight}kg, bf=$newBodyFat%")
+            AppLog.i("health", "body comp from HC: ${newWeight}kg, bf=$newBodyFat%")
             saveProfile(p.copy(weight_kg = newWeight, body_fat_pct = newBodyFat))
         }
         // Dated history behind the Body trends screen. Own runCatching: on a
@@ -540,7 +559,7 @@ class WorkoutRepository @Inject constructor(
             }
             upsertBodyMetrics(rows)
             if (rows.isNotEmpty()) {
-                com.workoutmaker.app.util.AppLog.d("health", "body history: ${rows.size} days upserted")
+                AppLog.d("health", "body history: ${rows.size} days upserted")
             }
         }.logFailure("bodyHistoryUpsert")
     }
@@ -554,7 +573,7 @@ class WorkoutRepository @Inject constructor(
         val earliest = sessions.minOf { it.startMs }
         val logged = runCatching { strengthDao.workoutsSince(earliest) }.getOrDefault(emptyList())
         val slackMs = 30 * 60 * 1000L
-        fun overlapsLoggedStrength(s: com.workoutmaker.app.health.HcExercise): Boolean =
+        fun overlapsLoggedStrength(s: HcExercise): Boolean =
             logged.any { w -> s.startMs < w.endedAt + slackMs && w.startedAt < s.endMs + slackMs }
         val lthr = runCatching { loadProfile()?.lthr }.getOrNull()
         val rows = sessions
@@ -584,7 +603,7 @@ class WorkoutRepository @Inject constructor(
             supabase.postgrest.from("completed_activities")
                 .upsert(rows, onConflict = "user_id,intervals_id")
         }
-        com.workoutmaker.app.util.AppLog.d(
+        AppLog.d(
             "health",
             "hc exercise ingest: ${sessions.size} sessions, ${rows.size} upserted",
         )
@@ -647,7 +666,7 @@ class WorkoutRepository @Inject constructor(
     // Server-side verification of a Play purchase; the fn is the only writer
     // of the plan columns. Returns the resulting plan ("pro" on success).
     suspend fun verifyPurchase(purchaseToken: String): String {
-        val body = kotlinx.serialization.json.buildJsonObject {
+        val body = buildJsonObject {
             put("purchase_token", JsonPrimitive(purchaseToken))
         }.toString()
         val res: Map<String, JsonElement> = json.decodeFromString(
@@ -667,9 +686,9 @@ class WorkoutRepository @Inject constructor(
     }.logFailure("customLlmPricing").getOrDefault(null to null)
 
     suspend fun setCustomLlmPricing(inputPer1M: Double?, outputPer1M: Double?) {
-        val obj = kotlinx.serialization.json.buildJsonObject {
-            put("llm_custom_input_per_1m", inputPer1M?.let { JsonPrimitive(it) } ?: kotlinx.serialization.json.JsonNull)
-            put("llm_custom_output_per_1m", outputPer1M?.let { JsonPrimitive(it) } ?: kotlinx.serialization.json.JsonNull)
+        val obj = buildJsonObject {
+            put("llm_custom_input_per_1m", inputPer1M?.let { JsonPrimitive(it) } ?: JsonNull)
+            put("llm_custom_output_per_1m", outputPer1M?.let { JsonPrimitive(it) } ?: JsonNull)
         }
         supabase.postgrest.from("user_profiles").update(obj) { filter { eq("id", uid()) } }
         invalidateProfileCache()
@@ -687,7 +706,7 @@ class WorkoutRepository @Inject constructor(
         json.decodeFromString(
             supabase.functions.invoke("list-models") {
                 setBody(
-                    kotlinx.serialization.json.buildJsonObject {
+                    buildJsonObject {
                         put("provider", JsonPrimitive(provider.key))
                     }.toString(),
                 )
@@ -704,7 +723,7 @@ class WorkoutRepository @Inject constructor(
     suspend fun setModelOverride(provider: LlmProvider, model: String?) {
         val current = modelOverrides().toMutableMap()
         if (model.isNullOrBlank()) current.remove(provider.key) else current[provider.key] = model
-        val obj = kotlinx.serialization.json.buildJsonObject {
+        val obj = buildJsonObject {
             current.forEach { (k, v) -> put(k, JsonPrimitive(v)) }
         }
         supabase.postgrest.from("user_profiles").update(mapOf("llm_models" to obj)) {
@@ -715,7 +734,7 @@ class WorkoutRepository @Inject constructor(
 
     // --- Coach chat ----------------------------------------------------------
     suspend fun coachChat(req: CoachChatRequest): CoachReply =
-        com.workoutmaker.app.util.AppLog.time("coach", "coach-chat mode=${req.mode} turns=${req.messages.size}") {
+        AppLog.time("coach", "coach-chat mode=${req.mode} turns=${req.messages.size}") {
             json.decodeFromString<CoachReply>(
                 supabase.functions.invoke("coach-chat") {
                     setBody(json.encodeToString(CoachChatRequest.serializer(), req))
@@ -771,10 +790,10 @@ class WorkoutRepository @Inject constructor(
         supabase.postgrest.from("user_profiles").update(
             mapOf(
                 "onboarding" to onboarding,
-                "onboarding_complete" to kotlinx.serialization.json.JsonPrimitive(true),
+                "onboarding_complete" to JsonPrimitive(true),
                 // Mirror the name to the top-level column the backend already reads.
                 "display_name" to (profile.display_name?.let { JsonPrimitive(it) }
-                    ?: kotlinx.serialization.json.JsonNull),
+                    ?: JsonNull),
             ),
         ) { filter { eq("id", uid()) } }
         invalidateProfileCache()
@@ -785,7 +804,7 @@ class WorkoutRepository @Inject constructor(
     suspend fun accountExists(email: String): Boolean? = runCatching {
         supabase.postgrest.rpc(
             "account_exists",
-            kotlinx.serialization.json.buildJsonObject { put("p_email", email.trim()) },
+            buildJsonObject { put("p_email", email.trim()) },
         ).decodeAs<Boolean>()
     }.logFailure("accountExists").getOrNull()
 
@@ -797,7 +816,7 @@ class WorkoutRepository @Inject constructor(
 
     suspend fun saveKnowledge(text: String) {
         supabase.postgrest.from("user_profiles").update(
-            mapOf("coach_knowledge" to kotlinx.serialization.json.JsonPrimitive(text)),
+            mapOf("coach_knowledge" to JsonPrimitive(text)),
         ) { filter { eq("id", uid()) } }
         invalidateProfileCache()
     }
@@ -810,7 +829,7 @@ class WorkoutRepository @Inject constructor(
 
     suspend fun saveMemory(text: String) {
         supabase.postgrest.from("user_profiles").update(
-            mapOf("training_memory" to kotlinx.serialization.json.JsonPrimitive(text)),
+            mapOf("training_memory" to JsonPrimitive(text)),
         ) { filter { eq("id", uid()) } }
         invalidateProfileCache()
     }
@@ -825,7 +844,7 @@ class WorkoutRepository @Inject constructor(
 
     suspend fun saveSoul(text: String) {
         supabase.postgrest.from("user_profiles").update(
-            mapOf("coach_soul" to kotlinx.serialization.json.JsonPrimitive(text)),
+            mapOf("coach_soul" to JsonPrimitive(text)),
         ) { filter { eq("id", uid()) } }
         invalidateProfileCache()
     }
@@ -887,7 +906,7 @@ class WorkoutRepository @Inject constructor(
     suspend fun reschedulePlanned(plannedId: String, newDate: String) {
         supabase.functions.invoke("move-workout") {
             setBody(
-                kotlinx.serialization.json.buildJsonObject {
+                buildJsonObject {
                     put("workout_id", JsonPrimitive(plannedId))
                     put("new_date", JsonPrimitive(newDate))
                 }.toString(),
@@ -919,8 +938,8 @@ class WorkoutRepository @Inject constructor(
     // E5: persist a manually-built structured workout into the plan (client-side),
     // returning its id so it can optionally be pushed to Intervals.icu.
     suspend fun savePlannedWorkout(date: String, workout: Workout): String {
-        val id = java.util.UUID.randomUUID().toString()
-        val row = kotlinx.serialization.json.buildJsonObject {
+        val id = UUID.randomUUID().toString()
+        val row = buildJsonObject {
             put("id", JsonPrimitive(id))
             put("user_id", JsonPrimitive(uid()))
             put("date", JsonPrimitive(date))
@@ -936,7 +955,7 @@ class WorkoutRepository @Inject constructor(
         supabase.postgrest.from("races").select { order("date", Order.ASCENDING) }.decodeList()
 
     suspend fun addRace(race: Race) {
-        val row = kotlinx.serialization.json.buildJsonObject {
+        val row = buildJsonObject {
             put("name", JsonPrimitive(race.name))
             put("date", JsonPrimitive(race.date))
             put("priority", JsonPrimitive(race.priority))
@@ -973,7 +992,7 @@ class WorkoutRepository @Inject constructor(
         supabase.postgrest.from("threshold_tests").select { order("date", Order.DESCENDING) }.decodeList()
 
     suspend fun addThresholdTest(t: ThresholdTest) {
-        val row = kotlinx.serialization.json.buildJsonObject {
+        val row = buildJsonObject {
             put("date", JsonPrimitive(t.date))
             put("kind", JsonPrimitive(t.kind))
             put("value", JsonPrimitive(t.value))
@@ -1137,7 +1156,7 @@ class WorkoutRepository @Inject constructor(
         val tss = durationMin * (rpe ?: 5) / 6.0
         supabase.postgrest.from("completed_activities").insert(
             ManualActivityInsert(
-                intervals_id = "manual:" + java.util.UUID.randomUUID(),
+                intervals_id = "manual:" + UUID.randomUUID(),
                 type = type,
                 date = date,
                 duration_seconds = durationMin * 60,
@@ -1193,7 +1212,7 @@ class WorkoutRepository @Inject constructor(
         var error: String? = null
         var gotReply = false
         val streamStarted = System.currentTimeMillis()
-        com.workoutmaker.app.util.AppLog.i("coach", "coach-stream start turns=${messages.size}")
+        AppLog.i("coach", "coach-stream start turns=${messages.size}")
         streamingHttp.preparePost(url) {
             header("Authorization", "Bearer $token")
             header("apikey", backend.anonKey)
@@ -1212,19 +1231,19 @@ class WorkoutRepository @Inject constructor(
                 obj["error"]?.let { error = it.jsonPrimitive.contentOrNull }
                 if (obj["done"] != null) {
                     convId = obj["conversation_id"]?.jsonPrimitive?.contentOrNull
-                    tools = (obj["tools_used"] as? kotlinx.serialization.json.JsonArray)
+                    tools = (obj["tools_used"] as? JsonArray)
                         ?.mapNotNull { (it as? JsonPrimitive)?.contentOrNull } ?: emptyList()
                     settingsChanges = obj["settings_changes"]?.let { el ->
                         runCatching {
                             json.decodeFromJsonElement(
-                                kotlinx.serialization.builtins.ListSerializer(ChatSettingChange.serializer()), el,
+                                ListSerializer(ChatSettingChange.serializer()), el,
                             )
                         }.getOrNull()
                     } ?: emptyList()
                 }
             }
         }
-        com.workoutmaker.app.util.AppLog.i(
+        AppLog.i(
             "coach",
             "coach-stream done ${System.currentTimeMillis() - streamStarted}ms reply=$gotReply tools=$tools" +
                 (error?.let { " error=$it" } ?: ""),
@@ -1244,7 +1263,7 @@ class WorkoutRepository @Inject constructor(
     // Keeps the truncated raw text as a fallback: this feeds a generation error
     // record, where the transport detail is worth having.
     private fun fnErrorMessage(t: Throwable): String =
-        com.workoutmaker.app.util.serverErrorText(t)
+        serverErrorText(t)
             ?: t.message?.take(200)
             ?: "request failed"
 

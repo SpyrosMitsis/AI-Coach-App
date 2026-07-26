@@ -15,13 +15,24 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.launch
 import java.time.LocalDate
 import javax.inject.Inject
+import com.workoutmaker.app.data.PlanChangeBus
+import com.workoutmaker.app.data.PlanWeekRequest
+import com.workoutmaker.app.data.TrainingProfile
+import com.workoutmaker.app.data.WeekPlanRow
+import com.workoutmaker.app.data.Workout
+import com.workoutmaker.app.strength.SetEntity
+import com.workoutmaker.app.strength.StrengthHandoff
+import com.workoutmaker.app.strength.StrengthRepository
+import com.workoutmaker.app.strength.WorkoutEntity
+import java.time.Instant
+import java.time.ZoneId
 
 @HiltViewModel
 class CalendarViewModel @Inject constructor(
     private val repo: WorkoutRepository,
-    private val strength: com.workoutmaker.app.strength.StrengthRepository,
-    private val strengthHandoff: com.workoutmaker.app.strength.StrengthHandoff,
-    private val planChanges: com.workoutmaker.app.data.PlanChangeBus,
+    private val strength: StrengthRepository,
+    private val strengthHandoff: StrengthHandoff,
+    private val planChanges: PlanChangeBus,
 ) : ViewModel() {
     // A date another screen asked the calendar to open on (chat's "view this
     // workout"). The screen consumes it once and clears it.
@@ -41,23 +52,23 @@ class CalendarViewModel @Inject constructor(
     private var lastWeekStart: LocalDate? = null
     val workouts = MutableStateFlow<List<PlannedWorkout>>(emptyList())
     // For the phase strip on the week card (goal_date drives the phase bands).
-    val profile = MutableStateFlow<com.workoutmaker.app.data.TrainingProfile?>(null)
+    val profile = MutableStateFlow<TrainingProfile?>(null)
     val templates = MutableStateFlow<List<WorkoutTemplate>>(emptyList())
     val banner = MutableStateFlow<String?>(null)
     val loading = MutableStateFlow(false)
     val planning = MutableStateFlow(false)
-    val weekPlan = MutableStateFlow<com.workoutmaker.app.data.WeekPlanRow?>(null)
+    val weekPlan = MutableStateFlow<WeekPlanRow?>(null)
     // Q14: logged strength sessions, grouped by yyyy-MM-dd for the calendar.
-    val strengthByDate = MutableStateFlow<Map<String, List<com.workoutmaker.app.strength.WorkoutEntity>>>(emptyMap())
+    val strengthByDate = MutableStateFlow<Map<String, List<WorkoutEntity>>>(emptyMap())
     // Past activities from Intervals.icu, grouped by date for the calendar + detail.
-    val activitiesByDate = MutableStateFlow<Map<String, List<com.workoutmaker.app.data.CompletedActivity>>>(emptyMap())
+    val activitiesByDate = MutableStateFlow<Map<String, List<CompletedActivity>>>(emptyMap())
     val adapting = MutableStateFlow(false)
     // Count of local strength changes (logged/edited/deleted offline) not yet
     // pushed to the cloud — surfaced as a banner so nothing looks lost.
     val pendingSync = MutableStateFlow(0)
 
     // Sets for a strength session opened from the calendar, keyed by workout id.
-    val strengthSets = MutableStateFlow<Map<String, List<com.workoutmaker.app.strength.SetEntity>>>(emptyMap())
+    val strengthSets = MutableStateFlow<Map<String, List<SetEntity>>>(emptyMap())
     fun loadStrengthSets(id: String) = viewModelScope.launch {
         if (strengthSets.value.containsKey(id)) return@launch
         runCatching { strength.setsForWorkout(id) }.onSuccess { strengthSets.value = strengthSets.value + (id to it) }
@@ -87,9 +98,9 @@ class CalendarViewModel @Inject constructor(
         runCatching { repo.completedActivities(from) }
             .onSuccess { acts -> activitiesByDate.value = acts.filter { it.date != null }.groupBy { it.date!! } }
         runCatching {
-            val zone = java.time.ZoneId.systemDefault()
+            val zone = ZoneId.systemDefault()
             strength.recentWorkouts(500).groupBy {
-                java.time.Instant.ofEpochMilli(it.startedAt).atZone(zone).toLocalDate().toString()
+                Instant.ofEpochMilli(it.startedAt).atZone(zone).toLocalDate().toString()
             }
         }.onSuccess { strengthByDate.value = it }
         runCatching { strength.pendingSyncCount() }.onSuccess { pendingSync.value = it }
@@ -198,7 +209,7 @@ class CalendarViewModel @Inject constructor(
     }
 
     // E5: persist a manually-built structured session into the plan.
-    fun saveBuiltWorkout(date: LocalDate, workout: com.workoutmaker.app.data.Workout, push: Boolean) = viewModelScope.launch {
+    fun saveBuiltWorkout(date: LocalDate, workout: Workout, push: Boolean) = viewModelScope.launch {
         banner.value = "Saving session…"
         runCatching {
             val id = repo.savePlannedWorkout(date.toString(), workout)
@@ -219,7 +230,7 @@ class CalendarViewModel @Inject constructor(
     fun planWeek(start: LocalDate) = viewModelScope.launch {
         planning.value = true
         banner.value = "Planning your week from $start…"
-        runCatching { repo.planWeek(com.workoutmaker.app.data.PlanWeekRequest(start_date = start.toString())) }
+        runCatching { repo.planWeek(PlanWeekRequest(start_date = start.toString())) }
             .onSuccess { r ->
                 banner.value = r.error
                     ?: "✓ Planned ${r.scheduled}-day week (${r.week_focus ?: "block"})" +

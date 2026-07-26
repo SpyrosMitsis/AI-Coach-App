@@ -40,6 +40,9 @@ import com.workoutmaker.app.data.Periodization
 import com.workoutmaker.app.data.ThemeMode
 import com.workoutmaker.app.data.ThemePalette
 import com.workoutmaker.app.ui.theme.palette
+import androidx.compose.foundation.layout.ColumnScope
+import com.workoutmaker.app.data.StartingLift
+import com.workoutmaker.app.ui.theme.amberAccent
 
 // ===========================================================================
 // Stateless, ViewModel-agnostic profile editors. They take the current value
@@ -144,7 +147,7 @@ internal fun PeriodizationNumbers(weeklyTssTarget: Int?, periodized: Boolean, mo
     }
     val max = remember(weeks) { weeks.maxOf { it.tss }.toFloat() }
     val buildColor = MaterialTheme.colorScheme.primary
-    val deloadColor = com.workoutmaker.app.ui.theme.amberAccent()
+    val deloadColor = amberAccent()
     val muted = MaterialTheme.colorScheme.onSurfaceVariant
 
     Column(modifier, verticalArrangement = Arrangement.spacedBy(6.dp)) {
@@ -426,7 +429,7 @@ internal fun thresholdPaceFromRace(distanceKm: Double, timeSeconds: Int): String
 private val RACE_DISTANCES = listOf("5K" to 5.0, "10K" to 10.0, "Half" to 21.0975)
 
 @Composable
-private fun PerfSection(title: String, content: @Composable androidx.compose.foundation.layout.ColumnScope.() -> Unit) {
+private fun PerfSection(title: String, content: @Composable ColumnScope.() -> Unit) {
     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
         Text(title, style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.SemiBold)
         content()
@@ -553,7 +556,7 @@ internal fun StartingLiftRow(lift: String, profile: TrainingProfile, onUpdate: (
             val r = reps ?: current?.reps
             p.copy(
                 starting_lifts = if (w != null && w > 0) {
-                    rest + com.workoutmaker.app.data.StartingLift(lift, w, r ?: 5)
+                    rest + StartingLift(lift, w, r ?: 5)
                 } else rest,
             )
         }

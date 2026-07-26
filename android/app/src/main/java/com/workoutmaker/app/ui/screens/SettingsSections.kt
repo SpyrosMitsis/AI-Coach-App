@@ -62,6 +62,31 @@ import com.workoutmaker.app.data.format
 import com.workoutmaker.app.ui.collectAsStateSafe
 import com.workoutmaker.app.ui.components.SectionCard
 import kotlinx.coroutines.launch
+import android.app.Activity
+import android.content.Intent
+import android.net.Uri
+import android.util.Log
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.contentColorFor
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalUriHandler
+import androidx.health.connect.client.HealthConnectClient
+import androidx.health.connect.client.PermissionController
+import com.workoutmaker.app.billing.TIP_FALLBACK_PRICES
+import com.workoutmaker.app.billing.TIP_PRODUCT_IDS
+import com.workoutmaker.app.data.GenerationLogRow
+import com.workoutmaker.app.data.Periodization
+import com.workoutmaker.app.data.RestChime
+import com.workoutmaker.app.notify.playRestOverSound
+import com.workoutmaker.app.strength.ImportSummary
+import com.workoutmaker.app.ui.components.EmptyState
+import java.time.LocalDate
+import java.time.temporal.ChronoUnit
 
 // The one-page "Profile & week" grew too crowded, so it's now three pages
 // (About you / Sports & goals / Your training week). They all edit the same
@@ -202,7 +227,7 @@ internal fun WorkoutDefaultsSection(vm: SettingsViewModel) {
     }
 }
 
-@OptIn(androidx.compose.foundation.layout.ExperimentalLayoutApi::class)
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 internal fun PlanningSection(vm: SettingsViewModel) {
     val autoPlan by vm.autoPlan.collectAsStateSafe()
@@ -227,9 +252,9 @@ internal fun PlanningSection(vm: SettingsViewModel) {
         // The same effort chips onboarding offers: fractions of the athlete's
         // own availability ceiling, so the suggestion is always achievable.
         val minutes = profile.day_availability.sumOf { it.max_minutes }
-        com.workoutmaker.app.data.Periodization.availabilityCeiling(minutes)?.let { ceiling ->
-            androidx.compose.foundation.layout.FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                com.workoutmaker.app.data.Periodization.Effort.entries.forEach { e ->
+        Periodization.availabilityCeiling(minutes)?.let { ceiling ->
+            FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                Periodization.Effort.entries.forEach { e ->
                     val target = e.targetFor(ceiling)
                     FilterChip(
                         selected = profile.weekly_tss_target == target,
@@ -349,7 +374,7 @@ internal fun ProSection(vm: SettingsViewModel) {
     val plan = vm.planStatus.collectAsStateSafe().value
     val busy = vm.proBusy.collectAsStateSafe().value
     val error = vm.proError.collectAsStateSafe().value
-    val context = androidx.compose.ui.platform.LocalContext.current
+    val context = LocalContext.current
 
     SectionCard(title = if (plan.isPro) "Pro, hosted AI" else "Pro") {
         if (plan.isPro) {
@@ -369,7 +394,7 @@ internal fun ProSection(vm: SettingsViewModel) {
                     val url = "https://play.google.com/store/account/subscriptions" +
                         "?sku=${com.workoutmaker.app.billing.PRO_PRODUCT_ID}&package=${context.packageName}"
                     context.startActivity(
-                        android.content.Intent(android.content.Intent.ACTION_VIEW, android.net.Uri.parse(url)),
+                        Intent(Intent.ACTION_VIEW, Uri.parse(url)),
                     )
                 },
                 modifier = Modifier.fillMaxWidth(),
@@ -381,7 +406,7 @@ internal fun ProSection(vm: SettingsViewModel) {
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
             Button(
-                onClick = { (context as? android.app.Activity)?.let { vm.buyPro(it) } },
+                onClick = { (context as? Activity)?.let { vm.buyPro(it) } },
                 enabled = !busy,
                 modifier = Modifier.fillMaxWidth(),
             ) { Text(if (busy) "Working…" else "Get Pro") }
@@ -401,7 +426,7 @@ internal const val KOFI_URL = "https://ko-fi.com/PLACEHOLDER"
 
 @Composable
 internal fun SupportSection(vm: SettingsViewModel) {
-    val context = androidx.compose.ui.platform.LocalContext.current
+    val context = LocalContext.current
     SectionCard(title = "Support the developer") {
         Text(
             "This app is free and open source. If it helps your training, a small tip keeps it alive.",
@@ -412,19 +437,19 @@ internal fun SupportSection(vm: SettingsViewModel) {
             val busy = vm.tipBusy.collectAsStateSafe().value
             val status = vm.tipStatus.collectAsStateSafe().value
             val prices = vm.tipPrices.collectAsStateSafe().value
-            androidx.compose.runtime.LaunchedEffect(Unit) { vm.loadTipPrices() }
+            LaunchedEffect(Unit) { vm.loadTipPrices() }
             Row(
                 Modifier.fillMaxWidth(),
-                horizontalArrangement = androidx.compose.foundation.layout.Arrangement.spacedBy(8.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
             ) {
-                com.workoutmaker.app.billing.TIP_PRODUCT_IDS.forEach { id ->
+                TIP_PRODUCT_IDS.forEach { id ->
                     // Play's price when it has answered, our own until then, so the
                     // label can never contradict the checkout sheet.
                     val label = prices[id]
-                        ?: com.workoutmaker.app.billing.TIP_FALLBACK_PRICES[id]
+                        ?: TIP_FALLBACK_PRICES[id]
                         ?: "Tip"
-                    androidx.compose.material3.OutlinedButton(
-                        onClick = { (context as? android.app.Activity)?.let { vm.sendTip(it, id) } },
+                    OutlinedButton(
+                        onClick = { (context as? Activity)?.let { vm.sendTip(it, id) } },
                         enabled = !busy,
                         modifier = Modifier.weight(1f),
                     ) { Text(if (busy) "…" else label) }
@@ -436,7 +461,7 @@ internal fun SupportSection(vm: SettingsViewModel) {
         } else {
             // Ko-fi (browser) is the only rail that can take an arbitrary amount;
             // Play Billing tips are fixed products. Validate: must be > 0.
-            val uriHandler = androidx.compose.ui.platform.LocalUriHandler.current
+            val uriHandler = LocalUriHandler.current
             var custom by remember { mutableStateOf("") }
             val amount = custom.toDoubleOrNull()
             val valid = amount != null && amount > 0.0
@@ -513,12 +538,12 @@ internal fun ConnectionsSection(vm: SettingsViewModel) {
     val intervalsSaved by vm.intervalsSaved.collectAsStateSafe()
     val healthStatus by vm.healthStatus.collectAsStateSafe()
     val busy by vm.busy.collectAsStateSafe()
-    val scope = androidx.compose.runtime.rememberCoroutineScope()
-    val context = androidx.compose.ui.platform.LocalContext.current
+    val scope = rememberCoroutineScope()
+    val context = LocalContext.current
     // Sync runs with whatever was granted — a partial grant (e.g. no steps) is
     // still useful; only a fully-empty grant is a real denial.
-    val healthPermLauncher = androidx.activity.compose.rememberLauncherForActivityResult(
-        androidx.health.connect.client.PermissionController.createRequestPermissionResultContract(),
+    val healthPermLauncher = rememberLauncherForActivityResult(
+        PermissionController.createRequestPermissionResultContract(),
     ) { granted ->
         if (granted.intersect(vm.healthPermissions).isNotEmpty()) vm.syncHealth()
         else vm.setHealthStatus(
@@ -581,8 +606,8 @@ internal fun ConnectionsSection(vm: SettingsViewModel) {
             onClick = {
                 runCatching {
                     context.startActivity(
-                        android.content.Intent(
-                            androidx.health.connect.client.HealthConnectClient.ACTION_HEALTH_CONNECT_SETTINGS,
+                        Intent(
+                            HealthConnectClient.ACTION_HEALTH_CONNECT_SETTINGS,
                         ),
                     )
                 }.onFailure { vm.setHealthStatus("Couldn't open Health Connect, open it from your app drawer instead.") }
@@ -594,14 +619,14 @@ internal fun ConnectionsSection(vm: SettingsViewModel) {
     SectionCard(title = "Device calendar") {
         val s by vm.appSettings.collectAsStateSafe()
         val calendarStatus by vm.calendarStatus.collectAsStateSafe()
-        val readPermLauncher = androidx.activity.compose.rememberLauncherForActivityResult(
-            androidx.activity.result.contract.ActivityResultContracts.RequestPermission(),
+        val readPermLauncher = rememberLauncherForActivityResult(
+            ActivityResultContracts.RequestPermission(),
         ) { granted ->
             if (granted) vm.setCalendarRead(true)
             else vm.setCalendarStatus("Permission denied. Grant calendar access in system settings to use this.")
         }
-        val writePermLauncher = androidx.activity.compose.rememberLauncherForActivityResult(
-            androidx.activity.result.contract.ActivityResultContracts.RequestPermission(),
+        val writePermLauncher = rememberLauncherForActivityResult(
+            ActivityResultContracts.RequestPermission(),
         ) { granted ->
             if (granted) vm.setCalendarWrite(true)
             else vm.setCalendarStatus("Permission denied. Grant calendar access in system settings to use this.")
@@ -642,7 +667,7 @@ internal fun ConnectionsSection(vm: SettingsViewModel) {
 @Composable
 internal fun NotificationsSection(vm: SettingsViewModel) {
     val s by vm.appSettings.collectAsStateSafe()
-    val context = androidx.compose.ui.platform.LocalContext.current
+    val context = LocalContext.current
     SectionCard {
         ToggleRow("Morning readiness summary", "One notification at wake-up with your readiness score and the day's plan.", s.morningNotify) { vm.setMorningNotify(it) }
         HorizontalDivider(color = MaterialTheme.colorScheme.surfaceContainerHigh)
@@ -652,13 +677,13 @@ internal fun NotificationsSection(vm: SettingsViewModel) {
     }
     SectionCard(title = "Rest-end chime") {
         FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-            com.workoutmaker.app.data.RestChime.entries.forEach { c ->
+            RestChime.entries.forEach { c ->
                 FilterChip(
                     selected = s.restChime == c,
                     onClick = {
                         vm.setRestChime(c)
                         // Preview the pick right away so choosing doesn't need a live timer.
-                        com.workoutmaker.app.notify.playRestOverSound(context, c)
+                        playRestOverSound(context, c)
                     },
                     label = { Text(c.label) },
                 )
@@ -676,7 +701,7 @@ internal fun DiagnosticsSection(vm: SettingsViewModel) {
     val logs by vm.logs.collectAsStateSafe()
     if (logs.isEmpty()) {
         SectionCard {
-            com.workoutmaker.app.ui.components.EmptyState(
+            EmptyState(
                 title = "No AI generations yet",
                 subtitle = "Generate a workout or plan and it'll be logged here.",
                 icon = Icons.Filled.AutoAwesome,
@@ -685,9 +710,9 @@ internal fun DiagnosticsSection(vm: SettingsViewModel) {
         return
     }
     // Local-date based windows (the app's "today" is the client's local date).
-    val today = java.time.LocalDate.now()
-    fun daysAgo(l: com.workoutmaker.app.data.GenerationLogRow): Long = runCatching {
-        java.time.temporal.ChronoUnit.DAYS.between(java.time.LocalDate.parse(l.created_at?.take(10)), today)
+    val today = LocalDate.now()
+    fun daysAgo(l: GenerationLogRow): Long = runCatching {
+        ChronoUnit.DAYS.between(LocalDate.parse(l.created_at?.take(10)), today)
     }.getOrDefault(99999L)
     fun money(v: Double) = "$${"%.3f".format(v)}"
     val within30 = logs.filter { daysAgo(it) <= 29 }
@@ -727,9 +752,9 @@ internal fun DiagnosticsSection(vm: SettingsViewModel) {
             onValueChange = { capText = it.filter { c -> c.isDigit() || c == '.' } },
             label = { Text("Monthly spend cap (USD, 0 = off)") },
             singleLine = true,
-            keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(keyboardType = androidx.compose.ui.text.input.KeyboardType.Decimal),
+            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
             trailingIcon = {
-                androidx.compose.material3.TextButton(onClick = { vm.setSpendCap(capText.toDoubleOrNull() ?: 0.0) }) { Text("Set") }
+                TextButton(onClick = { vm.setSpendCap(capText.toDoubleOrNull() ?: 0.0) }) { Text("Set") }
             },
             modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
         )
@@ -762,22 +787,22 @@ internal fun DataSection(vm: SettingsViewModel) {
     val importStatus by vm.importStatus.collectAsStateSafe()
     val importBusy by vm.importBusy.collectAsStateSafe()
     val result by vm.importResult.collectAsStateSafe()
-    val context = androidx.compose.ui.platform.LocalContext.current
-    val importLauncher = androidx.activity.compose.rememberLauncherForActivityResult(
-        androidx.activity.result.contract.ActivityResultContracts.OpenDocument(),
+    val context = LocalContext.current
+    val importLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.OpenDocument(),
     ) { uri ->
         if (uri == null) {
-            android.util.Log.i("IMPORT", "picker returned null (no file selected)")
-            vm.importResult.value = com.workoutmaker.app.strength.ImportSummary(
+            Log.i("IMPORT", "picker returned null (no file selected)")
+            vm.importResult.value = ImportSummary(
                 ok = false, error = "No file was selected.")
         } else {
             val read = runCatching {
                 context.contentResolver.openInputStream(uri)?.use { it.readBytes().decodeToString() }
             }
             val text = read.getOrNull()
-            android.util.Log.i("IMPORT", "picked uri=$uri readOk=${read.isSuccess} len=${text?.length ?: -1} err=${read.exceptionOrNull()?.message}")
+            Log.i("IMPORT", "picked uri=$uri readOk=${read.isSuccess} len=${text?.length ?: -1} err=${read.exceptionOrNull()?.message}")
             if (text.isNullOrBlank()) {
-                vm.importResult.value = com.workoutmaker.app.strength.ImportSummary(
+                vm.importResult.value = ImportSummary(
                     ok = false, error = "Couldn't read that file (${read.exceptionOrNull()?.message ?: "empty"}). " +
                         "Pick the .csv exported from Strong or Hevy.")
             } else vm.importCsv(text)
@@ -795,7 +820,7 @@ internal fun DataSection(vm: SettingsViewModel) {
             modifier = Modifier.fillMaxWidth(),
         ) {
             if (importBusy) {
-                androidx.compose.material3.CircularProgressIndicator(
+                CircularProgressIndicator(
                     modifier = Modifier.size(18.dp), strokeWidth = 2.dp,
                     color = MaterialTheme.colorScheme.onPrimary)
                 Text("  Importing…")
@@ -809,11 +834,11 @@ internal fun DataSection(vm: SettingsViewModel) {
 
 @Composable
 internal fun ExportCard(vm: SettingsViewModel) {
-    val context = androidx.compose.ui.platform.LocalContext.current
-    val scope = androidx.compose.runtime.rememberCoroutineScope()
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
     var status by remember { mutableStateOf<String?>(null) }
-    val exportLauncher = androidx.activity.compose.rememberLauncherForActivityResult(
-        androidx.activity.result.contract.ActivityResultContracts.CreateDocument("text/csv"),
+    val exportLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.CreateDocument("text/csv"),
     ) { uri ->
         if (uri == null) { status = "Export cancelled." } else scope.launch {
             status = "Exporting…"
@@ -859,7 +884,7 @@ internal fun RacesSection(vm: SettingsViewModel) {
     val races by vm.races.collectAsStateSafe()
     val profile by vm.profile.collectAsStateSafe()
     var showAdd by remember { mutableStateOf(false) }
-    val today = java.time.LocalDate.now()
+    val today = LocalDate.now()
 
     if (showAdd) AddRaceDialog(onClose = { showAdd = false }) { race, setGoal ->
         vm.addRace(race, setGoal); showAdd = false
@@ -869,21 +894,21 @@ internal fun RacesSection(vm: SettingsViewModel) {
         Text("Set goals for any sport, races, FTP targets, swim times, lifts. Your A-goal drives periodization and the taper; B/C goals are tune-ups shown on the countdown.",
             style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
         if (races.isEmpty()) {
-            com.workoutmaker.app.ui.components.EmptyState(
+            EmptyState(
                 title = "No goals yet",
                 subtitle = "Add a goal race or target to drive your periodization.",
                 icon = Icons.Filled.Flag,
             )
         }
         races.forEach { r ->
-            val days = runCatching { java.time.temporal.ChronoUnit.DAYS.between(today, java.time.LocalDate.parse(r.date)) }.getOrNull()
+            val days = runCatching { ChronoUnit.DAYS.between(today, LocalDate.parse(r.date)) }.getOrNull()
             val isGoal = profile.goal_date == r.date
             Row(Modifier.fillMaxWidth().padding(vertical = 6.dp), verticalAlignment = Alignment.CenterVertically) {
                 val dotColor = priorityColor(r.priority)
-                Box(Modifier.size(26.dp).background(dotColor, androidx.compose.foundation.shape.CircleShape),
+                Box(Modifier.size(26.dp).background(dotColor, CircleShape),
                     contentAlignment = Alignment.Center) {
                     Text(r.priority, style = MaterialTheme.typography.labelMedium,
-                        color = androidx.compose.material3.contentColorFor(dotColor))
+                        color = contentColorFor(dotColor))
                 }
                 Column(Modifier.weight(1f).padding(start = 10.dp)) {
                     Text(r.name + if (isGoal) "  ⭐" else "", style = MaterialTheme.typography.titleSmall)
@@ -921,7 +946,7 @@ internal fun AccountSection(vm: SettingsViewModel) {
         }
     }
     if (confirmDelete.value) {
-        androidx.compose.material3.AlertDialog(
+        AlertDialog(
             onDismissRequest = { confirmDelete.value = false },
             title = { Text("Delete account?") },
             text = {
@@ -1030,13 +1055,13 @@ internal fun ProviderCard(mod: Modifier, provider: LlmProvider, vm: SettingsView
                     priceIn, { priceIn = it },
                     label = { Text("Input") }, placeholder = { Text("0.20") },
                     singleLine = true, modifier = Modifier.weight(1f),
-                    keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(keyboardType = androidx.compose.ui.text.input.KeyboardType.Decimal),
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
                 )
                 OutlinedTextField(
                     priceOut, { priceOut = it },
                     label = { Text("Output") }, placeholder = { Text("0.60") },
                     singleLine = true, modifier = Modifier.weight(1f),
-                    keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(keyboardType = androidx.compose.ui.text.input.KeyboardType.Decimal),
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
                 )
                 TextButton(onClick = { vm.setCustomPricing(priceIn.toDoubleOrNull(), priceOut.toDoubleOrNull()) }) {
                     Text("Save")
@@ -1110,7 +1135,7 @@ internal fun ModelPickerDialog(provider: LlmProvider, vm: SettingsViewModel, onC
 
     LaunchedEffect(provider.key) { if (list == null) vm.loadModels(provider) }
 
-    androidx.compose.material3.AlertDialog(
+    AlertDialog(
         onDismissRequest = onClose,
         confirmButton = { TextButton(onClick = onClose) { Text("Close") } },
         title = { Text("${provider.label} model") },
@@ -1127,7 +1152,7 @@ internal fun ModelPickerDialog(provider: LlmProvider, vm: SettingsViewModel, onC
                         Modifier.fillMaxWidth().padding(vertical = 16.dp),
                         horizontalArrangement = Arrangement.Center,
                     ) {
-                        androidx.compose.material3.CircularProgressIndicator(
+                        CircularProgressIndicator(
                             Modifier.padding(end = 10.dp).then(Modifier.size(18.dp)), strokeWidth = 2.dp)
                         Text("Fetching available models…", style = MaterialTheme.typography.bodySmall)
                     }

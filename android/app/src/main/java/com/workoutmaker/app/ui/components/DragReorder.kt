@@ -23,6 +23,7 @@ import androidx.compose.runtime.setValue
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.launch
+import android.util.Log
 
 @Composable
 fun rememberDragDropState(
@@ -70,7 +71,7 @@ class DragDropState internal constructor(
 
     fun onDragStart(key: Any) {
         val item = state.layoutInfo.visibleItemsInfo.firstOrNull { it.key == key }
-        android.util.Log.d("WM.drag", "onDragStart key=$key found=${item != null} canDrag=${item?.let(canDrag)}")
+        Log.d("WM.drag", "onDragStart key=$key found=${item != null} canDrag=${item?.let(canDrag)}")
         if (item == null || !canDrag(item)) return
         draggingItemIndex = item.index
         draggingInitialOffset = item.offset
@@ -78,7 +79,7 @@ class DragDropState internal constructor(
     }
 
     fun onDrag(deltaY: Float) {
-        android.util.Log.d("WM.drag", "onDrag d=$deltaY total=$draggedDistance idx=$draggingItemIndex off=$draggingItemOffset")
+        Log.d("WM.drag", "onDrag d=$deltaY total=$draggedDistance idx=$draggingItemIndex off=$draggingItemOffset")
         draggedDistance += deltaY
         val current = draggingLayoutInfo ?: return
         val startOffset = draggingInitialOffset + draggedDistance
@@ -96,7 +97,7 @@ class DragDropState internal constructor(
             if (current.index == state.firstVisibleItemIndex || target.index == state.firstVisibleItemIndex) {
                 state.requestScrollToItem(state.firstVisibleItemIndex, state.firstVisibleItemScrollOffset)
             }
-            android.util.Log.d("WM.drag", "onMove ${current.index} -> ${target.index}")
+            Log.d("WM.drag", "onMove ${current.index} -> ${target.index}")
             onMove(current.index, target.index)
             draggingItemIndex = target.index
         } else {

@@ -60,6 +60,13 @@ import com.workoutmaker.app.ui.AuthViewModel
 import com.workoutmaker.app.ui.collectAsStateSafe
 import com.workoutmaker.app.ui.components.BreathingBackdrop
 import com.workoutmaker.app.ui.components.LogoMark
+import android.content.Context
+import android.content.Intent
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.rememberCoroutineScope
+import com.workoutmaker.app.data.AuthDeepLinks
+import com.workoutmaker.app.data.WorkoutRepository
 
 private enum class AuthMode { SignIn, Create }
 
@@ -108,7 +115,7 @@ internal fun LoginScreen(vm: AuthViewModel) {
                 .verticalScroll(rememberScrollState())
                 .imePadding()
                 .padding(24.dp),
-            verticalArrangement = androidx.compose.foundation.layout.Arrangement.Center,
+            verticalArrangement = Arrangement.Center,
             horizontalAlignment = Alignment.CenterHorizontally,
         ) {
             Column(
@@ -255,9 +262,9 @@ internal fun LoginScreen(vm: AuthViewModel) {
                 }
 
                 // Notes arriving via auth deep links (expired/used email links).
-                val deepLinkMsg by com.workoutmaker.app.data.AuthDeepLinks.message.collectAsStateSafe()
-                androidx.compose.runtime.DisposableEffect(Unit) {
-                    onDispose { com.workoutmaker.app.data.AuthDeepLinks.message.value = null }
+                val deepLinkMsg by AuthDeepLinks.message.collectAsStateSafe()
+                DisposableEffect(Unit) {
+                    onDispose { AuthDeepLinks.message.value = null }
                 }
                 AnimatedVisibility(visible = deepLinkMsg != null, enter = expandVertically() + fadeIn(), exit = shrinkVertically() + fadeOut()) {
                     Text(
@@ -291,10 +298,10 @@ internal fun LoginScreen(vm: AuthViewModel) {
 
 // Restarting the process is the price of the Supabase client being a Hilt
 // singleton built at startup: a settings change can't rebuild it in place.
-private fun relaunchApp(context: android.content.Context) {
+private fun relaunchApp(context: Context) {
     val intent = context.packageManager.getLaunchIntentForPackage(context.packageName)
     intent?.addFlags(
-        android.content.Intent.FLAG_ACTIVITY_NEW_TASK or android.content.Intent.FLAG_ACTIVITY_CLEAR_TASK,
+        Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK,
     )
     context.startActivity(intent)
     Runtime.getRuntime().exit(0)
@@ -354,13 +361,13 @@ private fun CustomServerDialog(backend: BackendConfig, onDismiss: () -> Unit) {
 // Shown (over whatever screen is up) after a password-recovery deep link has
 // imported its session; saving calls auth.updateUser with the new password.
 @Composable
-fun SetNewPasswordDialog(repo: com.workoutmaker.app.data.WorkoutRepository) {
+fun SetNewPasswordDialog(repo: WorkoutRepository) {
     var pw by remember { mutableStateOf("") }
     var confirm by remember { mutableStateOf("") }
     var msg by remember { mutableStateOf<String?>(null) }
     var busy by remember { mutableStateOf(false) }
-    val scope = androidx.compose.runtime.rememberCoroutineScope()
-    val dismiss = { com.workoutmaker.app.data.AuthDeepLinks.recoveryPending.value = false }
+    val scope = rememberCoroutineScope()
+    val dismiss = { AuthDeepLinks.recoveryPending.value = false }
     // The reset link itself signed the user in, so backing out of the dialog
     // must not leave that session usable: cancelling signs out again. The only
     // way to stay signed in through a recovery link is to set a new password.

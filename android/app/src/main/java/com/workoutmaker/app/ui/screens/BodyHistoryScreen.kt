@@ -46,6 +46,10 @@ import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.launch
 import javax.inject.Inject
+import androidx.compose.runtime.LaunchedEffect
+import com.workoutmaker.app.ui.components.LocalAppSnackbar
+import com.workoutmaker.app.ui.theme.amberAccent
+import java.time.LocalDate
 
 // The goal decides which trend matters — same mapping as the backend's
 // body_trend.ts bodyFocus, keyed on the strength goal strings.
@@ -75,7 +79,7 @@ class BodyHistoryViewModel @Inject constructor(
     fun load() = viewModelScope.launch {
         loading.value = true
         // Widest window once (a year); the range chips filter client-side.
-        val from = java.time.LocalDate.now().minusDays(365).toString()
+        val from = LocalDate.now().minusDays(365).toString()
         runCatching { repo.bodyHistory(from) }.onSuccess { points.value = it }
         runCatching { repo.loadProfile() }.getOrNull()?.let {
             strengthGoals.value = it.goals_by_sport["strength"].orEmpty()
@@ -87,7 +91,7 @@ class BodyHistoryViewModel @Inject constructor(
     fun logToday(weightKg: Double?, bodyFatPct: Double?, leanMassKg: Double?) {
         if (weightKg == null && bodyFatPct == null && leanMassKg == null) return
         viewModelScope.launch {
-            val today = java.time.LocalDate.now().toString()
+            val today = LocalDate.now().toString()
             val saved = runCatching {
                 repo.upsertBodyMetrics(
                     listOf(
@@ -129,8 +133,8 @@ fun BodyHistoryScreen(onBack: () -> Unit, vm: BodyHistoryViewModel = hiltViewMod
     val status by vm.status.collectAsStateSafe()
     var range by remember { mutableStateOf(BODY_RANGES[1]) } // 3M
 
-    val snackbar = com.workoutmaker.app.ui.components.LocalAppSnackbar.current
-    androidx.compose.runtime.LaunchedEffect(status) {
+    val snackbar = LocalAppSnackbar.current
+    LaunchedEffect(status) {
         status?.let { snackbar?.show(it); vm.status.value = null }
     }
 
@@ -149,7 +153,7 @@ fun BodyHistoryScreen(onBack: () -> Unit, vm: BodyHistoryViewModel = hiltViewMod
             return@ScreenScaffold
         }
 
-        val cutoff = java.time.LocalDate.now().minusDays(range.days).toString()
+        val cutoff = LocalDate.now().minusDays(range.days).toString()
         val inRange = points.filter { it.date >= cutoff }
         val weight = inRange.mapNotNull { p -> p.weight_kg?.let { p.date to it } }
         val fat = inRange.mapNotNull { p -> p.body_fat_pct?.let { p.date to it } }
@@ -181,7 +185,7 @@ fun BodyHistoryScreen(onBack: () -> Unit, vm: BodyHistoryViewModel = hiltViewMod
                     val w: @Composable () -> Unit =
                         { BodyMetricCard("Weight", "kg", weight, MaterialTheme.colorScheme.primary, goodWhen(focus, "weight")) }
                     val f: @Composable () -> Unit =
-                        { BodyMetricCard("Body fat", "%", fat, com.workoutmaker.app.ui.theme.amberAccent(), goodWhen(focus, "fat")) }
+                        { BodyMetricCard("Body fat", "%", fat, amberAccent(), goodWhen(focus, "fat")) }
                     val l: @Composable () -> Unit =
                         { BodyMetricCard("Muscle (lean mass)", "kg", lean, MaterialTheme.colorScheme.secondary, goodWhen(focus, "lean")) }
                     when (focus) {
@@ -239,7 +243,7 @@ private fun GoalFocusCard(
                 if (ok) "On track ✓" else "Not trending the right way yet",
                 style = MaterialTheme.typography.titleSmall,
                 fontWeight = FontWeight.SemiBold,
-                color = if (ok) MaterialTheme.colorScheme.primary else com.workoutmaker.app.ui.theme.amberAccent(),
+                color = if (ok) MaterialTheme.colorScheme.primary else amberAccent(),
             )
         }
     }
@@ -273,7 +277,7 @@ private fun BodyMetricCard(
             slope == null || kotlin.math.abs(slope) < 0.05 || higherIsGood == null ->
                 MaterialTheme.colorScheme.onSurfaceVariant
             (slope > 0) == higherIsGood -> MaterialTheme.colorScheme.primary
-            else -> com.workoutmaker.app.ui.theme.amberAccent()
+            else -> amberAccent()
         }
         Row(verticalAlignment = Alignment.Bottom) {
             // Never bake the unit into the format template: "%" as a unit reads
@@ -282,7 +286,7 @@ private fun BodyMetricCard(
             Spacer(Modifier.width(8.dp))
             Text("· $trendText", style = MaterialTheme.typography.bodySmall, color = trendColor)
         }
-        val epochs = series.map { java.time.LocalDate.parse(it.first).toEpochDay().toDouble() }
+        val epochs = series.map { LocalDate.parse(it.first).toEpochDay().toDouble() }
         LineChart(
             t = epochs,
             values = series.map { it.second },

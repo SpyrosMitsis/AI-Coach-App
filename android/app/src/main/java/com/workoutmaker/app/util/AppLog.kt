@@ -4,7 +4,7 @@ import android.util.Log
 import com.workoutmaker.app.BuildConfig
 
 /**
- * Thin, debug-gated wrapper over [android.util.Log].
+ * Thin, debug-gated wrapper over [Log].
  *
  * Everything logs under one tag family ("WM") so the whole app's chatter can be
  * filtered with a single grep — `scripts/dev.sh android:log` keys off it. Calls

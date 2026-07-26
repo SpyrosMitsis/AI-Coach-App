@@ -23,6 +23,7 @@ import java.time.LocalDate
 import java.util.Calendar
 import java.util.concurrent.TimeUnit
 import kotlinx.serialization.Serializable
+import android.app.PendingIntent
 
 // Evening prompt: if a completed activity matched today's planned session, lead
 // with the coach's measured debrief when the analysis is ready ("Coach debrief:
@@ -108,9 +109,9 @@ class FeedbackPromptWorker @AssistedInject constructor(
                 }
             }
         val pi = launch?.let {
-            android.app.PendingIntent.getActivity(
+            PendingIntent.getActivity(
                 applicationContext, 0, it,
-                android.app.PendingIntent.FLAG_IMMUTABLE or android.app.PendingIntent.FLAG_UPDATE_CURRENT,
+                PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
             )
         }
         val (title, text) = FeedbackNotificationContent.build(

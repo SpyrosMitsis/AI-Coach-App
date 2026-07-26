@@ -4,6 +4,7 @@ import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import javax.inject.Inject
 import javax.inject.Singleton
+import kotlinx.coroutines.flow.MutableStateFlow
 
 /**
  * The missing wire between screens: Home and Calendar keep their ViewModels
@@ -34,5 +35,5 @@ class PlanChangeBus @Inject constructor() {
      * (restoreState = true), so its route never re-composes with new args.
      * The CalendarViewModel consumes it exactly once.
      */
-    val focusDate = kotlinx.coroutines.flow.MutableStateFlow<String?>(null)
+    val focusDate = MutableStateFlow<String?>(null)
 }

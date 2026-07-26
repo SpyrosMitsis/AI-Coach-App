@@ -9,6 +9,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.graphics.Color
+import com.workoutmaker.app.data.ThemePalette
 
 // ============================================================================
 // "Serene Vanguard" — grounded, restorative wellness palette.
@@ -330,13 +331,13 @@ val Solstice = AppPalette(
 )
 
 // Map the persisted palette choice (a pure-data enum in AppPreferences) → colors.
-fun com.workoutmaker.app.data.ThemePalette.palette(): AppPalette = when (this) {
-    com.workoutmaker.app.data.ThemePalette.SERENE -> SereneVanguard
-    com.workoutmaker.app.data.ThemePalette.EMBER -> Ember
-    com.workoutmaker.app.data.ThemePalette.TIDAL -> Tidal
-    com.workoutmaker.app.data.ThemePalette.NOCTURNE -> Nocturne
-    com.workoutmaker.app.data.ThemePalette.BLOOM -> Bloom
-    com.workoutmaker.app.data.ThemePalette.SOLSTICE -> Solstice
+fun ThemePalette.palette(): AppPalette = when (this) {
+    ThemePalette.SERENE -> SereneVanguard
+    ThemePalette.EMBER -> Ember
+    ThemePalette.TIDAL -> Tidal
+    ThemePalette.NOCTURNE -> Nocturne
+    ThemePalette.BLOOM -> Bloom
+    ThemePalette.SOLSTICE -> Solstice
 }
 
 // Active accents for the current palette+mode, provided by WorkoutMakerTheme.

@@ -37,21 +37,33 @@ import androidx.compose.ui.unit.dp
 import com.workoutmaker.app.data.format
 import com.workoutmaker.app.ui.collectAsStateSafe
 import com.workoutmaker.app.ui.components.SectionCard
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Checkbox
+import com.workoutmaker.app.data.Race
+import com.workoutmaker.app.data.ThresholdTest
+import com.workoutmaker.app.data.Zones
+import com.workoutmaker.app.strength.ImportSummary
+import com.workoutmaker.app.ui.theme.amberAccent
+import java.time.Instant
+import java.time.LocalDate
+import java.time.ZoneOffset
+import java.time.format.DateTimeFormatter
+import java.time.temporal.ChronoUnit
 
 // Theme-aware: the raw band constants are dark-palette pastels that wash out on
 // light paper (theme-aware-accents rule).
 @Composable
 internal fun priorityColor(p: String) = when (p.uppercase()) {
     "A" -> MaterialTheme.colorScheme.error
-    "B" -> com.workoutmaker.app.ui.theme.amberAccent()
+    "B" -> amberAccent()
     else -> MaterialTheme.colorScheme.primary
 }
 
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
 @Composable
-internal fun AddRaceDialog(onClose: () -> Unit, onAdd: (com.workoutmaker.app.data.Race, Boolean) -> Unit) {
+internal fun AddRaceDialog(onClose: () -> Unit, onAdd: (Race, Boolean) -> Unit) {
     var name by remember { mutableStateOf("") }
-    var date by remember { mutableStateOf(java.time.LocalDate.now().plusWeeks(8)) }
+    var date by remember { mutableStateOf(LocalDate.now().plusWeeks(8)) }
     var distance by remember { mutableStateOf("") }
     var priority by remember { mutableStateOf("A") }
     var sport by remember { mutableStateOf("run") }
@@ -61,13 +73,13 @@ internal fun AddRaceDialog(onClose: () -> Unit, onAdd: (com.workoutmaker.app.dat
 
     if (showPicker) {
         val state = rememberDatePickerState(
-            initialSelectedDateMillis = date.atStartOfDay(java.time.ZoneOffset.UTC).toInstant().toEpochMilli())
+            initialSelectedDateMillis = date.atStartOfDay(ZoneOffset.UTC).toInstant().toEpochMilli())
         DatePickerDialog(
             onDismissRequest = { showPicker = false },
             confirmButton = {
                 TextButton(onClick = {
                     state.selectedDateMillis?.let {
-                        date = java.time.Instant.ofEpochMilli(it).atZone(java.time.ZoneOffset.UTC).toLocalDate()
+                        date = Instant.ofEpochMilli(it).atZone(ZoneOffset.UTC).toLocalDate()
                     }
                     showPicker = false
                 }) { Text("Set date") }
@@ -85,15 +97,15 @@ internal fun AddRaceDialog(onClose: () -> Unit, onAdd: (com.workoutmaker.app.dat
     // Changing sport invalidates the chosen distance (a "5K" ride goal is noise).
     LaunchedEffect(sport) { distance = ""; customDistance = false }
 
-    val weeksAway = java.time.temporal.ChronoUnit.WEEKS.between(java.time.LocalDate.now(), date).toInt()
-    val daysAway = java.time.temporal.ChronoUnit.DAYS.between(java.time.LocalDate.now(), date)
+    val weeksAway = ChronoUnit.WEEKS.between(LocalDate.now(), date).toInt()
+    val daysAway = ChronoUnit.DAYS.between(LocalDate.now(), date)
 
-    androidx.compose.material3.AlertDialog(
+    AlertDialog(
         onDismissRequest = onClose,
         confirmButton = {
             TextButton(
                 enabled = name.isNotBlank() && daysAway >= 0,
-                onClick = { onAdd(com.workoutmaker.app.data.Race(name = name.trim(), date = date.toString(),
+                onClick = { onAdd(Race(name = name.trim(), date = date.toString(),
                     priority = priority, sport = sport, distance = distance.ifBlank { null },
                     target = target.ifBlank { null }), setGoal && priority == "A") },
             ) { Text("Add goal") }
@@ -123,7 +135,7 @@ internal fun AddRaceDialog(onClose: () -> Unit, onAdd: (com.workoutmaker.app.dat
                 FieldLabel("Date")
                 OutlinedButton(onClick = { showPicker = true }, modifier = Modifier.fillMaxWidth()) {
                     Icon(Icons.Filled.EditCalendar, null)
-                    Text("  " + date.format(java.time.format.DateTimeFormatter.ofPattern("EEE d MMM yyyy")))
+                    Text("  " + date.format(DateTimeFormatter.ofPattern("EEE d MMM yyyy")))
                 }
                 // The countdown is the whole point of a goal date: it's what picks
                 // the training phase and decides whether a taper even fits.
@@ -187,7 +199,7 @@ internal fun AddRaceDialog(onClose: () -> Unit, onAdd: (com.workoutmaker.app.dat
                 )
 
                 if (priority == "A") Row(verticalAlignment = Alignment.CenterVertically) {
-                    androidx.compose.material3.Checkbox(checked = setGoal, onCheckedChange = { setGoal = it })
+                    Checkbox(checked = setGoal, onCheckedChange = { setGoal = it })
                     Text(
                         "Make this the goal my whole plan builds toward",
                         style = MaterialTheme.typography.bodySmall,
@@ -260,11 +272,11 @@ internal fun ZonesSection(vm: SettingsViewModel) {
         Text("Set your thresholds; zones below are derived automatically. LTHR = lactate-threshold HR, threshold pace ≈ your 1-hour race pace.",
             style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
         OutlinedTextField(lthr, { lthr = it }, label = { Text("LTHR (bpm)") }, singleLine = true,
-            keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(keyboardType = androidx.compose.ui.text.input.KeyboardType.Number),
+            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
             modifier = Modifier.fillMaxWidth())
         OutlinedTextField(pace, { pace = it }, label = { Text("Threshold pace /km (m:ss)") }, singleLine = true, modifier = Modifier.fillMaxWidth())
         OutlinedTextField(ftp, { ftp = it }, label = { Text("FTP (watts, optional)") }, singleLine = true,
-            keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(keyboardType = androidx.compose.ui.text.input.KeyboardType.Number),
+            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
             modifier = Modifier.fillMaxWidth())
         Button(onClick = { vm.saveThresholds(lthr.toIntOrNull(), ftp.toIntOrNull(), pace.ifBlank { null }) },
             enabled = !busy, modifier = Modifier.fillMaxWidth()) { Text("Save thresholds") }
@@ -322,10 +334,10 @@ internal fun ZonesSection(vm: SettingsViewModel) {
 // Shared pace/HR/power zone tables, reused by Settings and the cardio plan peek.
 @Composable
 internal fun ZoneTables(lthr: Int?, thresholdPace: String?, ftp: Int?) {
-    val hrZones = lthr?.let { com.workoutmaker.app.data.Zones.hrZonesFromLthr(it) }.orEmpty()
-    val paceZones = thresholdPace?.let { com.workoutmaker.app.data.Zones.parsePace(it) }
-        ?.let { com.workoutmaker.app.data.Zones.paceZonesFromThreshold(it) }.orEmpty()
-    val powerZones = ftp?.let { com.workoutmaker.app.data.Zones.powerZonesFromFtp(it) }.orEmpty()
+    val hrZones = lthr?.let { Zones.hrZonesFromLthr(it) }.orEmpty()
+    val paceZones = thresholdPace?.let { Zones.parsePace(it) }
+        ?.let { Zones.paceZonesFromThreshold(it) }.orEmpty()
+    val powerZones = ftp?.let { Zones.powerZonesFromFtp(it) }.orEmpty()
 
     if (hrZones.isNotEmpty()) SectionCard(title = "Heart-rate zones") {
         hrZones.forEach { z -> ZoneRow(z.name, "${z.min}-${z.max} bpm") }
@@ -347,20 +359,20 @@ internal fun ZoneRow(name: String, value: String) {
 }
 
 @Composable
-internal fun LogTestDialog(onClose: () -> Unit, onLog: (com.workoutmaker.app.data.ThresholdTest) -> Unit) {
+internal fun LogTestDialog(onClose: () -> Unit, onLog: (ThresholdTest) -> Unit) {
     var kind by remember { mutableStateOf("lthr") }
     var value by remember { mutableStateOf("") }
-    val date = java.time.LocalDate.now().toString()
+    val date = LocalDate.now().toString()
     // For pace, the input is m:ss; otherwise a plain number.
     val isPace = kind == "threshold_pace"
-    androidx.compose.material3.AlertDialog(
+    AlertDialog(
         onDismissRequest = onClose,
         confirmButton = {
             TextButton(
-                enabled = if (isPace) com.workoutmaker.app.data.Zones.parsePace(value) != null else value.toDoubleOrNull() != null,
+                enabled = if (isPace) Zones.parsePace(value) != null else value.toDoubleOrNull() != null,
                 onClick = {
-                    val v = if (isPace) com.workoutmaker.app.data.Zones.parsePace(value)!!.toDouble() else value.toDouble()
-                    onLog(com.workoutmaker.app.data.ThresholdTest(date = date, kind = kind, value = v))
+                    val v = if (isPace) Zones.parsePace(value)!!.toDouble() else value.toDouble()
+                    onLog(ThresholdTest(date = date, kind = kind, value = v))
                 },
             ) { Text("Log") }
         },
@@ -370,7 +382,7 @@ internal fun LogTestDialog(onClose: () -> Unit, onLog: (com.workoutmaker.app.dat
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                     listOf("lthr" to "LTHR", "threshold_pace" to "Pace", "ftp" to "FTP").forEach { (k, label) ->
-                        androidx.compose.material3.FilterChip(selected = kind == k, onClick = { kind = k; value = "" }, label = { Text(label) })
+                        FilterChip(selected = kind == k, onClick = { kind = k; value = "" }, label = { Text(label) })
                     }
                 }
                 OutlinedTextField(value, { value = it },
@@ -382,10 +394,10 @@ internal fun LogTestDialog(onClose: () -> Unit, onLog: (com.workoutmaker.app.dat
 }
 
 @Composable
-internal fun ImportResultDialog(s: com.workoutmaker.app.strength.ImportSummary, onClose: () -> Unit) {
-    androidx.compose.material3.AlertDialog(
+internal fun ImportResultDialog(s: ImportSummary, onClose: () -> Unit) {
+    AlertDialog(
         onDismissRequest = onClose,
-        confirmButton = { androidx.compose.material3.TextButton(onClick = onClose) { Text("Done") } },
+        confirmButton = { TextButton(onClick = onClose) { Text("Done") } },
         title = { Text(if (s.ok) "✓ Import complete" else "Import failed") },
         text = {
             if (!s.ok) {

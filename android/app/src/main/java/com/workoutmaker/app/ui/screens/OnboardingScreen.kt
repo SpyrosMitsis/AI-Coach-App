@@ -69,6 +69,28 @@ import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import javax.inject.Inject
+import android.app.Activity
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.ui.platform.LocalContext
+import com.workoutmaker.app.billing.BillingGateway
+import com.workoutmaker.app.billing.ProPurchaseResult
+import com.workoutmaker.app.billing.purchaseAndVerify
+import com.workoutmaker.app.calendar.DeviceCalendarManager
+import com.workoutmaker.app.data.Periodization
+import com.workoutmaker.app.data.PlanWeekRequest
+import com.workoutmaker.app.data.PlanWeekResult
+import com.workoutmaker.app.health.HealthConnectManager
+import com.workoutmaker.app.notify.vibrateCelebrate
+import com.workoutmaker.app.ui.components.BreathingBackdrop
+import com.workoutmaker.app.ui.components.Confetti
+import com.workoutmaker.app.ui.components.SectionLabel
+import com.workoutmaker.app.ui.components.rememberAnimationsEnabled
+import com.workoutmaker.app.util.AppLog
+import com.workoutmaker.app.util.friendlyFnError
+import java.time.LocalDate
+import java.time.format.DateTimeFormatter
+import kotlinx.coroutines.delay
 
 // The onboarding steps, in order. RACE and EQUIPMENT are conditional; the rest
 // always show. Conditional steps come AFTER the step that decides them (SPORTS),
@@ -126,9 +148,9 @@ private fun stepTitle(spec: StepSpec): String = when (spec.kind) {
 class OnboardingViewModel @Inject constructor(
     private val repo: WorkoutRepository,
     private val prefs: AppPreferences,
-    private val billing: com.workoutmaker.app.billing.BillingGateway,
-    private val health: com.workoutmaker.app.health.HealthConnectManager,
-    private val deviceCalendar: com.workoutmaker.app.calendar.DeviceCalendarManager,
+    private val billing: BillingGateway,
+    private val health: HealthConnectManager,
+    private val deviceCalendar: DeviceCalendarManager,
 ) : ViewModel() {
     val complete = MutableStateFlow<Boolean?>(null)
     val step = MutableStateFlow(0)
@@ -137,7 +159,7 @@ class OnboardingViewModel @Inject constructor(
     val intervalsStatus = MutableStateFlow<String?>(null)
     val finishStatus = MutableStateFlow<String?>(null)
     val busy = MutableStateFlow(false)
-    var provider by androidx.compose.runtime.mutableStateOf(LlmProvider.GROQ)
+    var provider by mutableStateOf(LlmProvider.GROQ)
 
     // Appearance step: same device-local theme prefs the Settings screen edits.
     val appSettings = prefs.settings.stateIn(viewModelScope, SharingStarted.Eagerly, AppSettings())
@@ -196,22 +218,22 @@ class OnboardingViewModel @Inject constructor(
         refreshBilling()
     }
 
-    fun buyPro(activity: android.app.Activity) = viewModelScope.launch {
+    fun buyPro(activity: Activity) = viewModelScope.launch {
         proBusy.value = true
         proError.value = null
-        when (val r = com.workoutmaker.app.billing.purchaseAndVerify(activity, billing, repo)) {
+        when (val r = purchaseAndVerify(activity, billing, repo)) {
             // Success only means the server VERIFIED the token, not that it granted
             // Pro: a pending/on-hold purchase verifies fine and still returns "free".
             // Re-read the plan columns rather than assuming (Settings does the same).
-            is com.workoutmaker.app.billing.ProPurchaseResult.Success -> {
+            is ProPurchaseResult.Success -> {
                 proActive.value = repo.planStatus().isPro
                 if (!proActive.value) {
                     proError.value = "Google Play is still confirming your purchase. " +
                         "Pro switches on by itself once it clears."
                 }
             }
-            is com.workoutmaker.app.billing.ProPurchaseResult.Cancelled -> Unit
-            is com.workoutmaker.app.billing.ProPurchaseResult.Failed -> proError.value = r.message
+            is ProPurchaseResult.Cancelled -> Unit
+            is ProPurchaseResult.Failed -> proError.value = r.message
         }
         proBusy.value = false
     }
@@ -221,7 +243,7 @@ class OnboardingViewModel @Inject constructor(
     // because OnboardingGate keys on OUR `complete` flag (set only in finish()),
     // not the DB column, so the screen stays put. push=false: no watch spam
     // before the athlete has even entered the app.
-    val previewWeek = MutableStateFlow<com.workoutmaker.app.data.PlanWeekResult?>(null)
+    val previewWeek = MutableStateFlow<PlanWeekResult?>(null)
     val previewBusy = MutableStateFlow(false)
     val previewError = MutableStateFlow<String?>(null)
     fun previewFirstWeek() = viewModelScope.launch {
@@ -230,15 +252,15 @@ class OnboardingViewModel @Inject constructor(
         runCatching {
             repo.saveProfile(profile.value.deriveLegacyFields())
             repo.planWeek(
-                com.workoutmaker.app.data.PlanWeekRequest(
-                    start_date = java.time.LocalDate.now().toString(),
+                PlanWeekRequest(
+                    start_date = LocalDate.now().toString(),
                     push = false,
                 ),
             )
         }.onSuccess { previewWeek.value = it }
             .onFailure {
-                com.workoutmaker.app.util.AppLog.w("onboarding", "preview failed", it)
-                previewError.value = com.workoutmaker.app.util.friendlyFnError(
+                AppLog.w("onboarding", "preview failed", it)
+                previewError.value = friendlyFnError(
                     it, "Couldn't build the preview. Finish setup and plan from the app instead.",
                 )
             }
@@ -305,7 +327,7 @@ class OnboardingViewModel @Inject constructor(
             .onSuccess {
                 if (celebrate) {
                     celebrating.value = true
-                    kotlinx.coroutines.delay(CELEBRATION_MS)
+                    delay(CELEBRATION_MS)
                 }
                 complete.value = true
             }
@@ -333,10 +355,10 @@ fun OnboardingScreen(vm: OnboardingViewModel = hiltViewModel()) {
     val steps = remember(profile.sports, profile.goals_by_sport) { visibleSteps(profile) }
     val idx = stepIndex.coerceIn(0, steps.lastIndex)
     val current = steps[idx]
-    val animationsOn = com.workoutmaker.app.ui.components.rememberAnimationsEnabled()
+    val animationsOn = rememberAnimationsEnabled()
 
     Box(Modifier.fillMaxSize()) {
-        com.workoutmaker.app.ui.components.BreathingBackdrop(Modifier.fillMaxSize(), intensity = 0.6f)
+        BreathingBackdrop(Modifier.fillMaxSize(), intensity = 0.6f)
         // Onboarding renders OUTSIDE MainScaffold (see AuthGate.OnboardingGate), so it
         // inherits none of the Scaffold's window insets — and targetSdk 35 forces
         // edge-to-edge. Inset the content only; the backdrop above stays full-bleed.
@@ -345,7 +367,7 @@ fun OnboardingScreen(vm: OnboardingViewModel = hiltViewModel()) {
         // finds them in the same place.
         var confirmSkip by remember { mutableStateOf(false) }
         if (confirmSkip) {
-            androidx.compose.material3.AlertDialog(
+            AlertDialog(
                 onDismissRequest = { confirmSkip = false },
                 title = { Text("Skip setup?") },
                 text = {
@@ -445,11 +467,11 @@ fun OnboardingScreen(vm: OnboardingViewModel = hiltViewModel()) {
         // Above the content and full-bleed, so it falls past the insets too.
         // The buzz belongs to the celebration moment, not the drawing: with
         // animations off, finish() never celebrates, so neither fires.
-        val ctx = androidx.compose.ui.platform.LocalContext.current
+        val ctx = LocalContext.current
         LaunchedEffect(celebrating) {
-            if (celebrating) com.workoutmaker.app.notify.vibrateCelebrate(ctx)
+            if (celebrating) vibrateCelebrate(ctx)
         }
-        com.workoutmaker.app.ui.components.Confetti(playing = celebrating)
+        Confetti(playing = celebrating)
     }
 }
 
@@ -529,7 +551,7 @@ private fun StepAppearance(vm: OnboardingViewModel) {
 
 @Composable
 private fun StepPersonal(profile: TrainingProfile, vm: OnboardingViewModel) {
-    val year = java.time.LocalDate.now().year
+    val year = LocalDate.now().year
     StepColumn {
         Text(
             "This tunes training load, recovery and intensity to you. All optional, but it helps the coach calibrate.",
@@ -626,15 +648,15 @@ private fun StepRace(profile: TrainingProfile, vm: OnboardingViewModel) {
             "Optional. Set the event you're building toward and your A-goal drives periodization and the taper. You can add or change it later in Settings.",
             style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
-        val goalDate = profile.goal_date?.let { runCatching { java.time.LocalDate.parse(it) }.getOrNull() }
+        val goalDate = profile.goal_date?.let { runCatching { LocalDate.parse(it) }.getOrNull() }
         if (goalDate != null) {
             // The race as a real card: date, phase countdown, target pace, and
             // clear Change/Remove actions instead of one ambiguous button.
-            val phase = com.workoutmaker.app.data.Periodization.phaseFor(goalDate, java.time.LocalDate.now())
+            val phase = Periodization.phaseFor(goalDate, LocalDate.now())
             SectionCard {
-                com.workoutmaker.app.ui.components.SectionLabel("YOUR GOAL RACE")
+                SectionLabel("YOUR GOAL RACE")
                 Text(
-                    goalDate.format(java.time.format.DateTimeFormatter.ofPattern("EEE d MMM yyyy")),
+                    goalDate.format(DateTimeFormatter.ofPattern("EEE d MMM yyyy")),
                     style = MaterialTheme.typography.titleMedium,
                     fontWeight = FontWeight.SemiBold,
                 )
@@ -682,7 +704,7 @@ private fun StepAvailability(profile: TrainingProfile, vm: OnboardingViewModel) 
 private fun StepEffort(profile: TrainingProfile, vm: OnboardingViewModel) {
     StepColumn {
         val minutes = profile.day_availability.sumOf { it.max_minutes }
-        val ceiling = com.workoutmaker.app.data.Periodization.availabilityCeiling(minutes)
+        val ceiling = Periodization.availabilityCeiling(minutes)
         if (ceiling == null) {
             Text(
                 "Set your training days on the previous step first, this page sizes the effort options to the time you actually have.",
@@ -694,7 +716,7 @@ private fun StepEffort(profile: TrainingProfile, vm: OnboardingViewModel) {
                 style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.SemiBold,
             )
             FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                com.workoutmaker.app.data.Periodization.Effort.entries.forEach { e ->
+                Periodization.Effort.entries.forEach { e ->
                     val target = e.targetFor(ceiling)
                     FilterChip(
                         selected = profile.weekly_tss_target == target,
@@ -885,7 +907,7 @@ private fun StepReview(profile: TrainingProfile, vm: OnboardingViewModel) {
         val previewError by vm.previewError.collectAsStateSafe()
         when {
             preview != null -> SectionCard {
-                com.workoutmaker.app.ui.components.SectionLabel("YOUR FIRST WEEK")
+                SectionLabel("YOUR FIRST WEEK")
                 preview!!.week_focus?.let {
                     Text(it, style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.SemiBold)
                 }
@@ -918,7 +940,7 @@ private fun StepReview(profile: TrainingProfile, vm: OnboardingViewModel) {
                 )
             }
             previewBusy -> Row(verticalAlignment = Alignment.CenterVertically) {
-                androidx.compose.material3.CircularProgressIndicator(
+                CircularProgressIndicator(
                     Modifier.width(18.dp).height(18.dp), strokeWidth = 2.dp,
                 )
                 Text(
@@ -986,7 +1008,7 @@ private fun ProOnboardingCard(vm: OnboardingViewModel) {
     val proActive by vm.proActive.collectAsStateSafe()
     val proBusy by vm.proBusy.collectAsStateSafe()
     val proError by vm.proError.collectAsStateSafe()
-    val context = androidx.compose.ui.platform.LocalContext.current
+    val context = LocalContext.current
 
     SectionCard(title = if (proActive) "Pro is active" else "Pro: zero setup") {
         if (proActive) {
@@ -1002,7 +1024,7 @@ private fun ProOnboardingCard(vm: OnboardingViewModel) {
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
             Button(
-                onClick = { (context as? android.app.Activity)?.let { vm.buyPro(it) } },
+                onClick = { (context as? Activity)?.let { vm.buyPro(it) } },
                 enabled = !proBusy,
                 modifier = Modifier.fillMaxWidth(),
             ) { Text(if (proBusy) "Working…" else "Get Pro") }

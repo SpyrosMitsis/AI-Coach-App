@@ -6,6 +6,10 @@ import androidx.work.Configuration
 import com.workoutmaker.app.work.CheckinReminderScheduler
 import dagger.hilt.android.HiltAndroidApp
 import javax.inject.Inject
+import com.workoutmaker.app.notify.Notifications
+import com.workoutmaker.app.util.CrashReporter
+import com.workoutmaker.app.work.FeedbackPromptScheduler
+import com.workoutmaker.app.work.StrengthSync
 
 @HiltAndroidApp
 class WorkoutMakerApp : Application(), Configuration.Provider {
@@ -18,13 +22,13 @@ class WorkoutMakerApp : Application(), Configuration.Provider {
     override fun onCreate() {
         super.onCreate()
         // First: capture uncaught exceptions to disk (uploaded on next start).
-        com.workoutmaker.app.util.CrashReporter.install(this)
-        com.workoutmaker.app.notify.Notifications.ensureChannels(this)
+        CrashReporter.install(this)
+        Notifications.ensureChannels(this)
         // Schedule the recurring 7am wellness check-in reminder.
         CheckinReminderScheduler.schedule(this)
         // Evening "how did it feel?" prompt that feeds the autoregulation loop.
-        com.workoutmaker.app.work.FeedbackPromptScheduler.schedule(this)
+        FeedbackPromptScheduler.schedule(this)
         // Flush any strength changes made offline last session (runs when online).
-        com.workoutmaker.app.work.StrengthSync.request(this)
+        StrengthSync.request(this)
     }
 }

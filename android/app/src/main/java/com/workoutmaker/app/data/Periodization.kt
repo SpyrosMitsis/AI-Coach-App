@@ -1,6 +1,8 @@
 package com.workoutmaker.app.data
 
 import kotlin.math.roundToInt
+import java.time.LocalDate
+import java.time.temporal.ChronoUnit
 
 // Client-side mirror of the periodization rules in supabase/functions/plan-week
 // (search "PERIODIZATION" there — that block is the source of truth). It builds
@@ -57,9 +59,9 @@ object Periodization {
             }
     }
 
-    fun phaseFor(goalDate: java.time.LocalDate?, weekStart: java.time.LocalDate): Phase {
+    fun phaseFor(goalDate: LocalDate?, weekStart: LocalDate): Phase {
         if (goalDate == null || goalDate.isBefore(weekStart)) return Phase("Maintenance", null)
-        val weeks = (java.time.temporal.ChronoUnit.DAYS.between(weekStart, goalDate) / 7.0)
+        val weeks = (ChronoUnit.DAYS.between(weekStart, goalDate) / 7.0)
             .let { Math.round(it).toInt() }
         val name = when {
             weeks <= 2 -> "Taper"

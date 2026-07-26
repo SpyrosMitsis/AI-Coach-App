@@ -12,6 +12,15 @@ import kotlinx.serialization.Serializable
 import java.util.UUID
 import javax.inject.Inject
 import javax.inject.Singleton
+import android.util.Log
+import com.workoutmaker.app.data.GenerateRequest
+import com.workoutmaker.app.data.GenerateResult
+import com.workoutmaker.app.data.Workout
+import java.time.Instant
+import java.time.ZoneId
+import java.time.format.DateTimeFormatter
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonPrimitive
 
 // Domain types passed from the active-session ViewModel when a workout finishes.
 data class FinishedSet(val weightKg: Double, val reps: Int, val rpe: Int?, val isWarmup: Boolean, val note: String = "")
@@ -141,7 +150,7 @@ class StrengthRepository @Inject constructor(
 
     // Swallowed errors are still logged so failures aren't invisible in logcat.
     private fun <T> Result<T>.logFailure(op: String): Result<T> =
-        onFailure { android.util.Log.w("StrengthRepo", "$op failed", it) }
+        onFailure { Log.w("StrengthRepo", "$op failed", it) }
 
     // --- D1: custom exercises ---------------------------------------------
     suspend fun loadAndRegisterCustom() {
@@ -217,9 +226,9 @@ class StrengthRepository @Inject constructor(
     suspend fun importCsv(text: String): ImportSummary {
         val lineCount = text.count { it == '\n' } + 1
         val firstLine = text.lineSequence().firstOrNull()?.take(80) ?: ""
-        android.util.Log.i("IMPORT", "read ${text.length} chars, ~$lineCount lines, header: $firstLine")
+        Log.i("IMPORT", "read ${text.length} chars, ~$lineCount lines, header: $firstLine")
         val result = StrengthCsvImport.parse(text)
-        android.util.Log.i("IMPORT", "parsed: format=${result.format} workouts=${result.workoutCount} sets=${result.setCount}")
+        Log.i("IMPORT", "parsed: format=${result.format} workouts=${result.workoutCount} sets=${result.setCount}")
         if (result.format == "unrecognized") {
             return ImportSummary(ok = false, format = "unrecognized",
                 error = "Couldn't recognise this file (read ${text.length} chars, $lineCount lines). " +
@@ -253,7 +262,7 @@ class StrengthRepository @Inject constructor(
             existing.add(w.startedAt)
             added++; setsAdded += setEntities.size
         }
-        android.util.Log.i("IMPORT", "inserted $added workouts ($setsAdded sets), skipped $duplicates dup; db now ${dao.allStartedAts().size}")
+        Log.i("IMPORT", "inserted $added workouts ($setsAdded sets), skipped $duplicates dup; db now ${dao.allStartedAts().size}")
         return ImportSummary(
             ok = true, format = result.format,
             workoutsAdded = added, duplicatesSkipped = duplicates, setsAdded = setsAdded,
@@ -283,11 +292,11 @@ class StrengthRepository @Inject constructor(
     suspend fun exportCsv(): String {
         val sb = StringBuilder()
         sb.append("Date;Workout Name;Exercise Name;Set Order;Weight;Weight Unit;Reps;RPE;Notes\n")
-        val fmt = java.time.format.DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss")
-        val zone = java.time.ZoneId.systemDefault()
+        val fmt = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss")
+        val zone = ZoneId.systemDefault()
         fun q(s: String) = "\"" + s.replace("\"", "\"\"") + "\""
         for (w in dao.recentWorkouts(10_000)) {
-            val date = java.time.Instant.ofEpochMilli(w.startedAt).atZone(zone).toLocalDateTime().format(fmt)
+            val date = Instant.ofEpochMilli(w.startedAt).atZone(zone).toLocalDateTime().format(fmt)
             val sets = dao.setsForWorkout(w.id)
             for (s in sets) {
                 val weight = if (s.weightKg == s.weightKg.toLong().toDouble()) s.weightKg.toLong().toString()
@@ -333,13 +342,13 @@ class StrengthRepository @Inject constructor(
     }
 
     // B3: ask the AI generator for a strength session (not pushed; the user logs it live).
-    private val genJson = kotlinx.serialization.json.Json { ignoreUnknownKeys = true; isLenient = true }
-    suspend fun generateAiStrength(durationMin: Int = 60): com.workoutmaker.app.data.Workout? {
+    private val genJson = Json { ignoreUnknownKeys = true; isLenient = true }
+    suspend fun generateAiStrength(durationMin: Int = 60): Workout? {
         val raw = cloud.generateWorkout(
-            com.workoutmaker.app.data.GenerateRequest(type = "strength", duration = durationMin, push = false),
+            GenerateRequest(type = "strength", duration = durationMin, push = false),
         )
         return runCatching {
-            genJson.decodeFromString(com.workoutmaker.app.data.GenerateResult.serializer(), raw).workout
+            genJson.decodeFromString(GenerateResult.serializer(), raw).workout
         }.logFailure("generateAiStrength/parse").getOrNull()
     }
 
@@ -381,7 +390,7 @@ class StrengthRepository @Inject constructor(
      *  strength session is logged (or un-done) from the strength logger. */
     suspend fun markPlannedWorkoutDone(plannedId: String, done: Boolean) {
         supabase.postgrest.from("planned_workouts")
-            .update(mapOf("completed" to kotlinx.serialization.json.JsonPrimitive(done))) {
+            .update(mapOf("completed" to JsonPrimitive(done))) {
                 filter { eq("id", plannedId) }
             }
     }
@@ -527,7 +536,7 @@ class StrengthRepository @Inject constructor(
         // WorkManager still retries, after everything syncable has drained.
         var firstError: Throwable? = null
         fun noteFailure(e: Throwable) { if (firstError == null) firstError = e }
-        val zone = java.time.ZoneId.systemDefault()
+        val zone = ZoneId.systemDefault()
 
         // 1. Push workouts logged/imported/edited offline (+ their sets). They
         // are NOT marked synced here: the synced=0 flag doubles as the dirty
@@ -548,7 +557,7 @@ class StrengthRepository @Inject constructor(
                         sets.map { CloudSet(it.id, it.workoutId, it.exerciseName, it.muscle, it.idx, it.weightKg, it.reps, it.rpe, it.isWarmup) },
                     )
                 }
-                val date = java.time.Instant.ofEpochMilli(w.startedAt).atZone(zone).toLocalDate().toString()
+                val date = Instant.ofEpochMilli(w.startedAt).atZone(zone).toLocalDate().toString()
                 idsByDate.getOrPut(date) { mutableListOf() }.add(w.id)
             }.logFailure("syncPending/workout").onFailure(::noteFailure)
         }
@@ -567,7 +576,7 @@ class StrengthRepository @Inject constructor(
                 runCatching {
                     supabase.postgrest.from("strength_logs").delete { filter { eq("date", date) } }
                     val dayWorkouts = dao.recentWorkouts(10_000).filter {
-                        java.time.Instant.ofEpochMilli(it.startedAt).atZone(zone).toLocalDate().toString() == date
+                        Instant.ofEpochMilli(it.startedAt).atZone(zone).toLocalDate().toString() == date
                     }
                     for (w in dayWorkouts) {
                         dao.setsForWorkout(w.id).filter { !it.isWarmup && it.reps > 0 }

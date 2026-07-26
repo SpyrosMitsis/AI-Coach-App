@@ -55,6 +55,9 @@ import com.workoutmaker.app.ui.components.ScreenScaffold
 import com.workoutmaker.app.ui.components.SectionCard
 import com.workoutmaker.app.ui.components.SectionLabel
 import com.workoutmaker.app.ui.components.StatTileGrid
+import com.workoutmaker.app.ui.components.LineChart
+import java.time.Instant
+import java.time.ZoneId
 
 // ---------------------------------------------------------------------------
 // Exercise picker
@@ -309,8 +312,8 @@ fun ExerciseStatsScreen(vm: StrengthViewModel, exercise: String, onBack: () -> U
 
         SectionCard(mod, title = "Sessions") {
             s.points.reversed().forEach { p ->
-                val d = java.time.Instant.ofEpochMilli(p.dateMillis)
-                    .atZone(java.time.ZoneId.systemDefault()).toLocalDate().toString()
+                val d = Instant.ofEpochMilli(p.dateMillis)
+                    .atZone(ZoneId.systemDefault()).toLocalDate().toString()
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
                     Text(d, style = MaterialTheme.typography.bodySmall)
                     Text("e1RM ${p.e1rm.toInt()}kg · ${p.volume.toInt()}kg vol",
@@ -339,7 +342,7 @@ internal fun MetricChart(values: List<Double>, unit: String = "kg") {
     // The latest value + unit is shown in the caption below the chart, so the
     // chart itself stays clean: a filled, rounded progression line with a dot
     // per session. (unit kept for source compatibility.)
-    com.workoutmaker.app.ui.components.LineChart(
+    LineChart(
         t = values.indices.map { it.toDouble() },
         values = values.map { it as Double? },
         color = MaterialTheme.colorScheme.primary,

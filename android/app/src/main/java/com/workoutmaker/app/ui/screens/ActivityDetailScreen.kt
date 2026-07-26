@@ -55,13 +55,29 @@ import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.launch
 import javax.inject.Inject
+import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.drawscope.Stroke
+import com.workoutmaker.app.data.ActivityAnalysis
+import com.workoutmaker.app.data.AnalysisSeries
+import com.workoutmaker.app.data.AnalysisTarget
+import com.workoutmaker.app.data.Zones
+import com.workoutmaker.app.ui.components.LineChart
+import com.workoutmaker.app.ui.components.friendlyError
+import com.workoutmaker.app.ui.theme.BandAmber
+import com.workoutmaker.app.ui.theme.BandGreen
+import com.workoutmaker.app.ui.theme.amberAccent
+import com.workoutmaker.app.util.AppLog
+import com.workoutmaker.app.util.friendlyFnError
 
 // Full detail page for a past workout/run/ride — rich data from Intervals.icu.
 // Non-private so the dedicated Workout History screen can reuse it.
 @Composable
 fun ActivityDetailScreen(activity: CompletedActivity, planned: PlannedWorkout?, onBack: () -> Unit) {
     Column(
-        Modifier.fillMaxWidth().fillMaxHeight().verticalScroll(androidx.compose.foundation.rememberScrollState())
+        Modifier.fillMaxWidth().fillMaxHeight().verticalScroll(rememberScrollState())
             .padding(16.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
@@ -170,7 +186,7 @@ fun ActivityDetailScreen(activity: CompletedActivity, planned: PlannedWorkout?, 
 class ActivityAnalysisViewModel @Inject constructor(
     private val repo: WorkoutRepository,
 ) : ViewModel() {
-    val results = MutableStateFlow<Map<String, com.workoutmaker.app.data.ActivityAnalysis>>(emptyMap())
+    val results = MutableStateFlow<Map<String, ActivityAnalysis>>(emptyMap())
     val busy = MutableStateFlow<String?>(null)
     val error = MutableStateFlow<String?>(null)
 
@@ -180,11 +196,11 @@ class ActivityAnalysisViewModel @Inject constructor(
         runCatching { repo.analyzeActivity(activityId, force) }
             .onSuccess { results.value = results.value + (activityId to it) }
             .onFailure {
-                com.workoutmaker.app.util.AppLog.w("analyze", "analyze-activity failed id=$activityId", it)
+                AppLog.w("analyze", "analyze-activity failed id=$activityId", it)
                 // Surface the server's own {"error": ...} text; the raw exception
                 // message carries the whole URL + headers and gets masked as the
                 // useless generic line.
-                error.value = com.workoutmaker.app.util.friendlyFnError(it)
+                error.value = friendlyFnError(it)
             }
         busy.value = null
     }
@@ -258,7 +274,7 @@ internal fun AnalysisScoreCard(
                 Text(if (busy == activity.id) "  Analyzing…" else "  Analyze this workout")
             }
             error?.let {
-                Text(com.workoutmaker.app.ui.components.friendlyError(it), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
+                Text(friendlyError(it), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
             }
             return@SectionCard
         }
@@ -354,7 +370,7 @@ private fun ActivityChartsSection(
     if (series.cadence.any { it != null }) {
         SectionCard {
             SectionLabel("Cadence · spm", color = ChartCadence)
-            com.workoutmaker.app.ui.components.LineChart(
+            LineChart(
                 t = series.t, values = series.cadence, color = ChartCadence,
                 formatY = { "${it.toInt()}" }, xLabels = timeAxis(series.t),
                 formatX = { fmtClock(it.toInt()) }, height = 120.dp,
@@ -364,7 +380,7 @@ private fun ActivityChartsSection(
     if (series.power.any { it != null }) {
         SectionCard {
             SectionLabel("Power · W", color = ChartPower)
-            com.workoutmaker.app.ui.components.LineChart(
+            LineChart(
                 t = series.t, values = series.power, color = ChartPower,
                 formatY = { "${it.toInt()}" }, xLabels = timeAxis(series.t),
                 formatX = { fmtClock(it.toInt()) }, height = 120.dp,
@@ -397,8 +413,8 @@ private fun SplitsCard(
         a.splits.forEach { s ->
             // Tint the pace by whether the split landed in the planned target band.
             val paceColor = when (s.in_band) {
-                true -> com.workoutmaker.app.ui.theme.BandGreen
-                false -> com.workoutmaker.app.ui.theme.BandAmber
+                true -> BandGreen
+                false -> BandAmber
                 null -> MaterialTheme.colorScheme.onSurface
             }
             // Swim splits are 100 m each (km carries 0.1, 0.2, ...): label in metres.
@@ -427,7 +443,7 @@ private fun SplitsCard(
 @Composable
 internal fun scoreColor(score: Int) = when {
     score >= 75 -> MaterialTheme.colorScheme.primary
-    score >= 55 -> com.workoutmaker.app.ui.theme.amberAccent()
+    score >= 55 -> amberAccent()
     else -> MaterialTheme.colorScheme.error
 }
 
@@ -436,12 +452,12 @@ internal fun ExecutionRing(score: Int) {
     val color = scoreColor(score)
     val track = MaterialTheme.colorScheme.surfaceVariant
     Box(Modifier.size(72.dp), contentAlignment = Alignment.Center) {
-        androidx.compose.foundation.Canvas(Modifier.size(72.dp)) {
+        Canvas(Modifier.size(72.dp)) {
             drawArc(track, -90f, 360f, false,
-                style = androidx.compose.ui.graphics.drawscope.Stroke(width = 14f))
+                style = Stroke(width = 14f))
             drawArc(color, -90f, 360f * (score / 100f), false,
-                style = androidx.compose.ui.graphics.drawscope.Stroke(
-                    width = 14f, cap = androidx.compose.ui.graphics.StrokeCap.Round))
+                style = Stroke(
+                    width = 14f, cap = StrokeCap.Round))
         }
         Text("$score", style = MaterialTheme.typography.titleLarge, color = color)
     }
@@ -462,7 +478,7 @@ internal fun ScoreBar(score: Int) {
 }
 
 @Composable
-private fun LegendDotSmall(label: String, color: androidx.compose.ui.graphics.Color) {
+private fun LegendDotSmall(label: String, color: Color) {
     Row(verticalAlignment = Alignment.CenterVertically) {
         Box(Modifier.size(9.dp).background(color, CircleShape))
         Text("  $label", style = MaterialTheme.typography.labelSmall)
@@ -476,7 +492,7 @@ private fun HrZoneCard(zoneTimes: List<Int>) {
     val zones = zoneTimes.dropLastWhile { it == 0 }
     if (zones.isEmpty()) return
     val total = zones.sum().coerceAtLeast(1)
-    val zoneColors = listOf(mossAccent(), MaterialTheme.colorScheme.primary, MaterialTheme.colorScheme.secondary, com.workoutmaker.app.ui.theme.amberAccent(), MaterialTheme.colorScheme.error)
+    val zoneColors = listOf(mossAccent(), MaterialTheme.colorScheme.primary, MaterialTheme.colorScheme.secondary, amberAccent(), MaterialTheme.colorScheme.error)
     SectionCard {
         SectionLabel("Time in HR zones", color = MaterialTheme.colorScheme.secondary)
         zones.forEachIndexed { i, secs ->
@@ -514,8 +530,8 @@ private fun HrZoneCard(zoneTimes: List<Int>) {
 // Y axis is inverted (faster = higher), as runners expect.
 @Composable
 private fun PaceChart(
-    series: com.workoutmaker.app.data.AnalysisSeries,
-    target: com.workoutmaker.app.data.AnalysisTarget?,
+    series: AnalysisSeries,
+    target: AnalysisTarget?,
     per100m: Boolean = false,
 ) {
     val paces = series.pace.filterNotNull()
@@ -526,11 +542,11 @@ private fun PaceChart(
     val ceil = if (per100m) 300.0 else 720.0
     val lo = paces.min().coerceAtLeast(floor).let { minOf(it, target?.pace_lo ?: it) } - 10
     val hi = paces.max().coerceAtMost(ceil).let { maxOf(it, target?.pace_hi ?: it) } + 10
-    com.workoutmaker.app.ui.components.LineChart(
+    LineChart(
         t = series.t,
         values = series.pace,
         color = ChartPace,
-        formatY = { com.workoutmaker.app.data.Zones.formatPace(it.toInt().coerceAtLeast(0)) },
+        formatY = { Zones.formatPace(it.toInt().coerceAtLeast(0)) },
         xLabels = timeAxis(series.t),
         formatX = { fmtClock(it.toInt()) },
         inverted = true,
@@ -544,12 +560,12 @@ private fun PaceChart(
 
 @Composable
 internal fun HrChart(
-    series: com.workoutmaker.app.data.AnalysisSeries,
-    target: com.workoutmaker.app.data.AnalysisTarget?,
+    series: AnalysisSeries,
+    target: AnalysisTarget?,
 ) {
     val hrs = series.hr.filterNotNull()
     if (hrs.isEmpty()) return
-    com.workoutmaker.app.ui.components.LineChart(
+    LineChart(
         t = series.t,
         values = series.hr,
         // Hard requirement: the HR line is ALWAYS red, regardless of theme.

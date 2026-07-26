@@ -26,6 +26,25 @@ import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
 import java.io.File
 import javax.inject.Inject
+import android.app.AlarmManager
+import android.app.PendingIntent
+import android.content.Intent
+import android.os.VibratorManager
+import android.util.Log
+import com.workoutmaker.app.data.PlannedWorkout
+import com.workoutmaker.app.data.RestChime
+import com.workoutmaker.app.data.Workout
+import com.workoutmaker.app.data.WorkoutRepository
+import com.workoutmaker.app.notify.RestAlarmReceiver
+import com.workoutmaker.app.notify.playCountdownTick
+import com.workoutmaker.app.notify.playRestOverSound
+import com.workoutmaker.app.notify.vibrateStrong
+import com.workoutmaker.app.work.FeedbackSyncWorker
+import com.workoutmaker.app.work.StrengthSync
+import com.workoutmaker.app.work.WorkoutForegroundService
+import java.time.Instant
+import java.time.LocalDate
+import java.time.ZoneId
 
 // --- Active-session UI state (Compose-observable holders) -------------------
 // File-scoped so it's available no matter when the VM's init runs (the restore
@@ -150,7 +169,7 @@ data class WorkoutDetailUi(
 @HiltViewModel
 class StrengthViewModel @Inject constructor(
     private val repo: StrengthRepository,
-    private val workoutRepo: com.workoutmaker.app.data.WorkoutRepository,
+    private val workoutRepo: WorkoutRepository,
     private val prefs: AppPreferences,
     private val handoff: StrengthHandoff,
     private val catalog: StrengthCatalog,
@@ -190,10 +209,10 @@ class StrengthViewModel @Inject constructor(
 
     // Today's planned strength sessions from the calendar, shown on the
     // Strength home so the plan is one tap from the logger.
-    val todayPlanned = MutableStateFlow<List<com.workoutmaker.app.data.PlannedWorkout>>(emptyList())
+    val todayPlanned = MutableStateFlow<List<PlannedWorkout>>(emptyList())
 
     /** Start logging a planned calendar session from the Strength home card. */
-    fun startPlannedFromHome(w: com.workoutmaker.app.data.PlannedWorkout) {
+    fun startPlannedFromHome(w: PlannedWorkout) {
         val s = StrengthHandoff.Start(w.workout_json, w.id, w.date)
         if (exercises.isNotEmpty()) pendingPlannedStart.value = s else startPlanned(s)
     }
@@ -283,7 +302,7 @@ class StrengthViewModel @Inject constructor(
     // Ask WorkManager to drain the offline queue (runs now if online, else when a
     // connection returns — even if the app is closed).
     private fun requestSync() {
-        com.workoutmaker.app.work.StrengthSync.request(context)
+        StrengthSync.request(context)
         viewModelScope.launch { runCatching { pendingSync.value = repo.pendingSyncCount() } }
     }
 
@@ -303,7 +322,7 @@ class StrengthViewModel @Inject constructor(
                 // an empty screen here would silently mask un-restored history.
                 // Log it: a decode failure here (not just a network blip) was
                 // invisible before and looked like a connection problem.
-                android.util.Log.w("StrengthVM", "restoreIfEmpty failed", it)
+                Log.w("StrengthVM", "restoreIfEmpty failed", it)
                 status.value = "Couldn't restore your history from the cloud, check your connection and reopen this tab"
                 0
             }
@@ -319,7 +338,7 @@ class StrengthViewModel @Inject constructor(
         }
         // Surface today's planned strength sessions (offline cache as fallback).
         runCatching {
-            val today = java.time.LocalDate.now().toString()
+            val today = LocalDate.now().toString()
             val rows = runCatching { workoutRepo.plannedWorkouts(today) }
                 .getOrElse { workoutRepo.cachedPlannedWorkouts() }
             todayPlanned.value = rows
@@ -524,7 +543,7 @@ class StrengthViewModel @Inject constructor(
     }
 
     // Pre-fill the active session from a structured Workout (AI lift or a plan).
-    private fun seedFromWorkout(w: com.workoutmaker.app.data.Workout) {
+    private fun seedFromWorkout(w: Workout) {
         w.sections.forEach { sec ->
             sec.exercises.forEach { e ->
                 // An AI-introduced exercise outside the catalog: register it as a
@@ -761,7 +780,7 @@ class StrengthViewModel @Inject constructor(
         }
         // Keep the live session alive across backgrounding/swipe with a
         // foreground-service timer notification (like a watch workout).
-        com.workoutmaker.app.work.WorkoutForegroundService.start(context, workoutName, startedAt)
+        WorkoutForegroundService.start(context, workoutName, startedAt)
         tickJob = viewModelScope.launch {
             while (true) {
                 elapsedSec.value = (System.currentTimeMillis() - startedAt) / 1000
@@ -771,7 +790,7 @@ class StrengthViewModel @Inject constructor(
     }
     private fun stopTick() {
         tickJob?.cancel(); tickJob = null
-        com.workoutmaker.app.work.WorkoutForegroundService.stop(context)
+        WorkoutForegroundService.stop(context)
     }
 
     /** Manually start/restart a rest timer (the bottom "Rest" button). */
@@ -807,17 +826,17 @@ class StrengthViewModel @Inject constructor(
                 if (remain <= 0) {
                     restRemaining.value = null
                     cancelRestAlarm() // foreground: cue in-app instead of via the alarm
-                    if (cfg.restVibrate) com.workoutmaker.app.notify.vibrateStrong(context)
-                    if (cfg.restNotify) com.workoutmaker.app.notify.playRestOverSound(context, cfg.restChime)
+                    if (cfg.restVibrate) vibrateStrong(context)
+                    if (cfg.restNotify) playRestOverSound(context, cfg.restChime)
                     break
                 }
                 // Soft 3-2-1 ticks so the buzzer is a confirmation, not a jump
                 // scare. Same gates as the cue itself: sound on + not silent.
                 if (remain <= 3 && remain != lastTicked &&
-                    cfg.restNotify && cfg.restChime != com.workoutmaker.app.data.RestChime.SILENT
+                    cfg.restNotify && cfg.restChime != RestChime.SILENT
                 ) {
                     lastTicked = remain
-                    com.workoutmaker.app.notify.playCountdownTick(context)
+                    playCountdownTick(context)
                 }
                 restRemaining.value = remain
                 delay(200) // smooth updates; value comes from the clock, not a decrement
@@ -838,25 +857,25 @@ class StrengthViewModel @Inject constructor(
     private fun stopRest() { restJob?.cancel(); restRemaining.value = null; restEndAt = 0L; cancelRestAlarm() }
 
     // Backup alarm so the "rest over" alert fires even if the app is killed.
-    private fun restAlarmIntent(): android.app.PendingIntent {
-        val i = android.content.Intent(context, com.workoutmaker.app.notify.RestAlarmReceiver::class.java)
-        return android.app.PendingIntent.getBroadcast(
+    private fun restAlarmIntent(): PendingIntent {
+        val i = Intent(context, RestAlarmReceiver::class.java)
+        return PendingIntent.getBroadcast(
             context, 7001, i,
-            android.app.PendingIntent.FLAG_UPDATE_CURRENT or android.app.PendingIntent.FLAG_IMMUTABLE,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
         )
     }
     private fun scheduleRestAlarm(sec: Int) {
         if (!cfg.restNotify) return // user disabled rest-timer notifications
-        val am = context.getSystemService(Context.ALARM_SERVICE) as? android.app.AlarmManager ?: return
+        val am = context.getSystemService(Context.ALARM_SERVICE) as? AlarmManager ?: return
         val at = System.currentTimeMillis() + sec * 1000L
         try {
-            am.setExactAndAllowWhileIdle(android.app.AlarmManager.RTC_WAKEUP, at, restAlarmIntent())
+            am.setExactAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, at, restAlarmIntent())
         } catch (_: SecurityException) {
-            am.set(android.app.AlarmManager.RTC_WAKEUP, at, restAlarmIntent())
+            am.set(AlarmManager.RTC_WAKEUP, at, restAlarmIntent())
         }
     }
     private fun cancelRestAlarm() {
-        (context.getSystemService(Context.ALARM_SERVICE) as? android.app.AlarmManager)?.cancel(restAlarmIntent())
+        (context.getSystemService(Context.ALARM_SERVICE) as? AlarmManager)?.cancel(restAlarmIntent())
     }
 
     // --- finish / routines / stats ----------------------------------------
@@ -925,9 +944,9 @@ class StrengthViewModel @Inject constructor(
                     requestSync()
                     // Durably submit the session effort + refresh memory — survives
                     // being offline at the gym or an app kill (WorkManager retries).
-                    val date = java.time.Instant.ofEpochMilli(p.ended)
-                        .atZone(java.time.ZoneId.systemDefault()).toLocalDate().toString()
-                    com.workoutmaker.app.work.FeedbackSyncWorker.request(
+                    val date = Instant.ofEpochMilli(p.ended)
+                        .atZone(ZoneId.systemDefault()).toLocalDate().toString()
+                    FeedbackSyncWorker.request(
                         context, date, rpe, difficulty, p.note.ifBlank { null },
                     )
                 }
@@ -992,7 +1011,7 @@ class StrengthViewModel @Inject constructor(
     private fun vibrate() {
         if (!cfg.restVibrate) return // user disabled rest-over vibration
         val vib = if (Build.VERSION.SDK_INT >= 31) {
-            (context.getSystemService(Context.VIBRATOR_MANAGER_SERVICE) as? android.os.VibratorManager)?.defaultVibrator
+            (context.getSystemService(Context.VIBRATOR_MANAGER_SERVICE) as? VibratorManager)?.defaultVibrator
         } else {
             @Suppress("DEPRECATION") context.getSystemService(Context.VIBRATOR_SERVICE) as? Vibrator
         }

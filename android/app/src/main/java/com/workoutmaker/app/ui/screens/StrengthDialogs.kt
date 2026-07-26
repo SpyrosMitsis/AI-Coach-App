@@ -56,9 +56,14 @@ import com.workoutmaker.app.strength.ExerciseCatalog
 import com.workoutmaker.app.strength.RoutineWithItems
 import com.workoutmaker.app.strength.PlateMath
 import com.workoutmaker.app.data.format
+import com.workoutmaker.app.data.AppSettings
+import com.workoutmaker.app.data.WeightUnit
+import com.workoutmaker.app.strength.PrHit
+import com.workoutmaker.app.strength.RoutineItemEntity
+import java.util.UUID
 
 @Composable
-internal fun PrCelebrationDialog(prs: List<com.workoutmaker.app.strength.PrHit>, onClose: () -> Unit) {
+internal fun PrCelebrationDialog(prs: List<PrHit>, onClose: () -> Unit) {
     AlertDialog(
         onDismissRequest = onClose,
         confirmButton = { TextButton(onClick = onClose) { Text("Nice!") } },
@@ -95,12 +100,12 @@ internal fun PrCelebrationDialog(prs: List<com.workoutmaker.app.strength.PrHit>,
 @Composable
 internal fun RoutineEditorDialog(
     routine: RoutineWithItems,
-    onSave: (String, List<com.workoutmaker.app.strength.RoutineItemEntity>) -> Unit,
+    onSave: (String, List<RoutineItemEntity>) -> Unit,
     onCancel: () -> Unit,
 ) {
     var name by remember { mutableStateOf(routine.routine.name) }
     val items = remember {
-        mutableStateListOf<com.workoutmaker.app.strength.RoutineItemEntity>().apply {
+        mutableStateListOf<RoutineItemEntity>().apply {
             addAll(routine.items.sortedBy { it.position })
         }
     }
@@ -151,8 +156,8 @@ internal fun RoutineEditorDialog(
         ExerciseAddDialog(
             onPick = { picked ->
                 items.add(
-                    com.workoutmaker.app.strength.RoutineItemEntity(
-                        id = java.util.UUID.randomUUID().toString(),
+                    RoutineItemEntity(
+                        id = UUID.randomUUID().toString(),
                         routineId = routine.routine.id,
                         exerciseName = picked,
                         position = items.size,
@@ -171,7 +176,7 @@ internal fun RoutineEditorDialog(
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 internal fun RoutineEditItemRow(
-    item: com.workoutmaker.app.strength.RoutineItemEntity,
+    item: RoutineItemEntity,
     canUp: Boolean,
     canDown: Boolean,
     onSets: (Int) -> Unit,
@@ -288,11 +293,11 @@ internal fun CreateExerciseDialog(onClose: () -> Unit, onCreate: (String, String
 }
 
 @Composable
-internal fun PlateCalcDialog(settings: com.workoutmaker.app.data.AppSettings, onClose: () -> Unit) {
+internal fun PlateCalcDialog(settings: AppSettings, onClose: () -> Unit) {
     val unit = settings.units
     var target by remember { mutableStateOf(unit.format(100.0)) }
     // Interpret the input in the user's unit, then load in real (kg) plates.
-    val targetKg = com.workoutmaker.app.data.WeightUnit.displayToKg(target.toDoubleOrNull() ?: 0.0, unit)
+    val targetKg = WeightUnit.displayToKg(target.toDoubleOrNull() ?: 0.0, unit)
     val plates = PlateMath.perSide(targetKg, settings.barbellKg)
     AlertDialog(
         onDismissRequest = onClose,

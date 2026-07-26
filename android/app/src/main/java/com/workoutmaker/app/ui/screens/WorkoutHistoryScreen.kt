@@ -59,6 +59,20 @@ import java.time.Instant
 import java.time.LocalDate
 import java.time.ZoneId
 import javax.inject.Inject
+import androidx.activity.compose.BackHandler
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.material3.TextButton
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.vector.ImageVector
+import com.workoutmaker.app.data.StrengthAnalysis
+import com.workoutmaker.app.strength.StrengthHandoff
+import com.workoutmaker.app.ui.components.ChartHr
+import com.workoutmaker.app.ui.components.GhostButton
+import com.workoutmaker.app.ui.components.SkeletonCard
+import com.workoutmaker.app.util.AppLog
+import com.workoutmaker.app.util.friendlyFnError
+import java.time.format.TextStyle
+import java.util.Locale
 
 // ===========================================================================
 // Dedicated, full-screen STRENGTH history: every logged lifting session, one
@@ -85,7 +99,7 @@ private fun dateOf(epoch: Long): LocalDate =
 class HistoryViewModel @Inject constructor(
     private val strength: StrengthRepository,
     private val repo: WorkoutRepository,
-    private val handoff: com.workoutmaker.app.strength.StrengthHandoff,
+    private val handoff: StrengthHandoff,
 ) : ViewModel() {
     // Ask the Strength tab to open this workout in its edit mode; the caller
     // then navigates to the tab.
@@ -147,7 +161,7 @@ fun WorkoutHistoryScreen(
 
     // Detail is a full sub-screen.
     selected?.let { row ->
-        androidx.activity.compose.BackHandler { selected = null }
+        BackHandler { selected = null }
         LaunchedEffect(row.workout.id) { vm.loadSets(row.workout.id) }
         StrengthSessionDetailScreen(
             w = row.workout,
@@ -186,7 +200,7 @@ fun WorkoutHistoryScreen(
         )
 
         if (loading && rows.isEmpty()) {
-            repeat(4) { com.workoutmaker.app.ui.components.SkeletonCard() }
+            repeat(4) { SkeletonCard() }
             return@ScreenScaffold
         }
 
@@ -203,7 +217,7 @@ fun WorkoutHistoryScreen(
         var lastHeader: String? = null
         filtered.forEach { row ->
             val header = dateOf(row.epoch).let { d ->
-                d.dayOfWeek.getDisplayName(java.time.format.TextStyle.SHORT, java.util.Locale.getDefault()) +
+                d.dayOfWeek.getDisplayName(TextStyle.SHORT, Locale.getDefault()) +
                     " · " + d
             }
             if (header != lastHeader) {
@@ -253,11 +267,11 @@ private fun HistoryCard(row: StrengthHistoryRow, onClick: () -> Unit) {
 // ---------------------------------------------------------------------------
 // Strength execution analysis (analyze-strength edge function)
 // ---------------------------------------------------------------------------
-@dagger.hilt.android.lifecycle.HiltViewModel
+@HiltViewModel
 class StrengthAnalysisViewModel @javax.inject.Inject constructor(
     private val repo: WorkoutRepository,
-) : androidx.lifecycle.ViewModel() {
-    val results = MutableStateFlow<Map<String, com.workoutmaker.app.data.StrengthAnalysis>>(emptyMap())
+) : ViewModel() {
+    val results = MutableStateFlow<Map<String, StrengthAnalysis>>(emptyMap())
     val busy = MutableStateFlow<String?>(null)
     val error = MutableStateFlow<String?>(null)
 
@@ -267,8 +281,8 @@ class StrengthAnalysisViewModel @javax.inject.Inject constructor(
         runCatching { repo.analyzeStrength(date, force) }
             .onSuccess { results.value = results.value + (date to it) }
             .onFailure {
-                com.workoutmaker.app.util.AppLog.w("analyze", "analyze-strength failed date=$date", it)
-                error.value = com.workoutmaker.app.util.friendlyFnError(it)
+                AppLog.w("analyze", "analyze-strength failed date=$date", it)
+                error.value = friendlyFnError(it)
             }
         busy.value = null
     }
@@ -302,7 +316,7 @@ internal fun StrengthAnalysisSection(
             SectionLabel("Workout analysis", color = MaterialTheme.colorScheme.primary)
             Spacer(Modifier.weight(1f))
             if (a != null) {
-                androidx.compose.material3.TextButton(
+                TextButton(
                     onClick = { vm.analyze(date, force = true) },
                     enabled = busy == null,
                 ) { Text("Re-analyze") }
@@ -315,7 +329,7 @@ internal fun StrengthAnalysisSection(
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
-            com.workoutmaker.app.ui.components.GhostButton(
+            GhostButton(
                 onClick = { vm.analyze(date) },
                 enabled = busy == null,
                 modifier = Modifier.fillMaxWidth(),
@@ -404,7 +418,7 @@ internal fun StrengthAnalysisSection(
     a?.series?.let { s ->
         if (s.hr.any { it != null }) {
             SectionCard {
-                SectionLabel("Heart rate", color = com.workoutmaker.app.ui.components.ChartHr)
+                SectionLabel("Heart rate", color = ChartHr)
                 HrChart(s, null)
             }
         }
@@ -412,10 +426,10 @@ internal fun StrengthAnalysisSection(
 }
 
 @Composable
-private fun SourceIcon(icon: androidx.compose.ui.graphics.vector.ImageVector, tint: androidx.compose.ui.graphics.Color) {
+private fun SourceIcon(icon: ImageVector, tint: Color) {
     Box(
         Modifier.size(40.dp)
-            .clip(androidx.compose.foundation.shape.CircleShape)
+            .clip(CircleShape)
             .background(tint.copy(alpha = 0.16f)),
         contentAlignment = Alignment.Center,
     ) { Icon(icon, null, tint = tint, modifier = Modifier.size(22.dp)) }

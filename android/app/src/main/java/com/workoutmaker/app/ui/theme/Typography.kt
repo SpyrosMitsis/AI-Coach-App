@@ -7,12 +7,13 @@ import androidx.compose.ui.text.font.FontVariation
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.sp
 import com.workoutmaker.app.R
+import androidx.compose.ui.text.ExperimentalTextApi
 
 // Serene Vanguard uses Hanken Grotesk exclusively — tight tracking + bold weights
 // for headlines, generous line height for body. We bundle the variable TTF and
 // pull each weight off the wght axis (minSdk 26 supports FontVariation).
 
-@OptIn(androidx.compose.ui.text.ExperimentalTextApi::class)
+@OptIn(ExperimentalTextApi::class)
 private fun hanken(weight: Int) = Font(
     R.font.hanken_grotesk,
     weight = FontWeight(weight),

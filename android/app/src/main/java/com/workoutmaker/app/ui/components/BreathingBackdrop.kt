@@ -16,6 +16,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.draw.drawBehind
+import androidx.compose.foundation.layout.Box
 
 // The login/onboarding signature: three enormous soft color washes that
 // inhale and exhale on mismatched slow periods, like breath. Radial-gradient
@@ -68,7 +69,7 @@ fun BreathingBackdrop(modifier: Modifier = Modifier, intensity: Float = 1f) {
         )
     }
 
-    androidx.compose.foundation.layout.Box(
+    Box(
         modifier.drawBehind {
             val w = size.width
             val h = size.height

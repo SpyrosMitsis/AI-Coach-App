@@ -3,6 +3,8 @@ package com.workoutmaker.app.data
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
 import org.junit.Test
+import com.workoutmaker.app.ui.screens.bodyFocusOf
+import java.time.LocalDate
 
 class BodyMathTest {
     @Test
@@ -17,7 +19,7 @@ class BodyMathTest {
     @Test
     fun `slope recovers a linear weekly change`() {
         val series = (0 until 8).map { week ->
-            java.time.LocalDate.parse("2026-06-01").plusWeeks(week.toLong()).toString() to (78.0 - 0.3 * week)
+            LocalDate.parse("2026-06-01").plusWeeks(week.toLong()).toString() to (78.0 - 0.3 * week)
         }
         assertEquals(-0.3, slopePerWeek(series)!!, 1e-9)
     }
@@ -37,11 +39,11 @@ class BodyMathTest {
     @Test
     fun `focus mapping mirrors the backend`() {
         // bodyFocusOf lives in ui.screens; imported via its package below.
-        assertEquals("muscle", com.workoutmaker.app.ui.screens.bodyFocusOf(listOf("Build muscle")))
-        assertEquals("fat_loss", com.workoutmaker.app.ui.screens.bodyFocusOf(listOf("Lose fat")))
-        assertEquals("recomp", com.workoutmaker.app.ui.screens.bodyFocusOf(listOf("Body recomposition")))
-        assertEquals("recomp", com.workoutmaker.app.ui.screens.bodyFocusOf(listOf("Build muscle", "Lose fat")))
-        assertEquals("general", com.workoutmaker.app.ui.screens.bodyFocusOf(listOf("Get stronger")))
-        assertEquals("general", com.workoutmaker.app.ui.screens.bodyFocusOf(emptyList()))
+        assertEquals("muscle", bodyFocusOf(listOf("Build muscle")))
+        assertEquals("fat_loss", bodyFocusOf(listOf("Lose fat")))
+        assertEquals("recomp", bodyFocusOf(listOf("Body recomposition")))
+        assertEquals("recomp", bodyFocusOf(listOf("Build muscle", "Lose fat")))
+        assertEquals("general", bodyFocusOf(listOf("Get stronger")))
+        assertEquals("general", bodyFocusOf(emptyList()))
     }
 }
