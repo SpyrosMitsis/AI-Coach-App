@@ -3,7 +3,7 @@ package com.workoutmaker.app.data
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
 import org.junit.Test
-import com.workoutmaker.app.ui.screens.bodyFocusOf
+import com.workoutmaker.app.ui.screens.history.bodyFocusOf
 import java.time.LocalDate
 
 class BodyMathTest {

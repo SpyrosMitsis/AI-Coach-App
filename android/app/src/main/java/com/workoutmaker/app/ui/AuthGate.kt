@@ -25,7 +25,7 @@ import androidx.lifecycle.viewModelScope
 import com.workoutmaker.app.data.BackendConfig
 import com.workoutmaker.app.util.friendlyAuthError
 import com.workoutmaker.app.data.WorkoutRepository
-import com.workoutmaker.app.ui.screens.LoginScreen
+import com.workoutmaker.app.ui.screens.auth.LoginScreen
 import dagger.hilt.android.lifecycle.HiltViewModel
 import io.github.jan.supabase.gotrue.SessionStatus
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -33,8 +33,8 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.launch
 import javax.inject.Inject
-import com.workoutmaker.app.ui.screens.OnboardingScreen
-import com.workoutmaker.app.ui.screens.OnboardingViewModel
+import com.workoutmaker.app.ui.screens.onboarding.OnboardingScreen
+import com.workoutmaker.app.ui.screens.onboarding.OnboardingViewModel
 
 @HiltViewModel
 class AuthViewModel @Inject constructor(
