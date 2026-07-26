@@ -480,15 +480,39 @@ async function gemini(args: GenArgs): Promise<LlmResult> {
 
 // ---------------------------------------------------------------------------
 // Streaming. Each provider family is parsed from its SSE format; onToken fires
-// per text delta. Returns the assembled full text. Used by the coach chat.
+// per text delta. Used by the coach chat.
+//
+// COST IS THE HARD PART, not the parsing. Every LLM call has to land a
+// generation_logs row (see generation_log.ts), hosted_spend() SUMs those rows,
+// and quota.ts fails CLOSED on them. A streamed turn that reports zero tokens
+// is a turn the spend cap cannot see, so llmStream returns a full LlmResult
+// with real usage, and flags `usageEstimated` when a provider gave us nothing
+// and we had to fall back to the ~4-chars/token estimate.
 // ---------------------------------------------------------------------------
-async function* sseLines(res: Response): AsyncGenerator<string> {
-  const reader = res.body!.getReader();
+
+/** Wall-clock ceiling for a whole stream, and the no-data-received watchdog. */
+const STREAM_IDLE_MS = envInt("WM_LLM_STREAM_IDLE_MS", 30_000);
+const STREAM_TOTAL_MS = envInt("WM_LLM_STREAM_TOTAL_MS", 300_000);
+
+export interface StreamResult extends LlmResult {
+  /** True when usage came from estTokens rather than the provider. */
+  usageEstimated: boolean;
+}
+
+interface Usage {
+  prompt?: number;
+  completion?: number;
+}
+
+async function* sseLines(res: Response, onIdleReset: () => void): AsyncGenerator<string> {
+  if (!res.body) throw new Error("stream response had no body");
+  const reader = res.body.getReader();
   const decoder = new TextDecoder();
   let buf = "";
   while (true) {
     const { value, done } = await reader.read();
     if (done) break;
+    onIdleReset();
     buf += decoder.decode(value, { stream: true });
     const parts = buf.split("\n");
     buf = parts.pop() ?? "";
@@ -499,93 +523,234 @@ async function* sseLines(res: Response): AsyncGenerator<string> {
   }
 }
 
+/**
+ * A stream must not inherit the flat request timeout: a long, healthy reply
+ * would be killed mid-sentence. Abort on SILENCE instead (no chunk for
+ * STREAM_IDLE_MS), with a hard total ceiling as a backstop.
+ */
+function streamAbort(): { signal: AbortSignal; reset: () => void; done: () => void } {
+  const ctl = new AbortController();
+  let idle = setTimeout(() => ctl.abort(), STREAM_IDLE_MS);
+  const total = setTimeout(() => ctl.abort(), STREAM_TOTAL_MS);
+  return {
+    signal: ctl.signal,
+    reset: () => {
+      clearTimeout(idle);
+      idle = setTimeout(() => ctl.abort(), STREAM_IDLE_MS);
+    },
+    done: () => {
+      clearTimeout(idle);
+      clearTimeout(total);
+    },
+  };
+}
+
+/** Settle provider usage against the estimate, and say which one we used. */
+function settleUsage(
+  usage: Usage,
+  provider: LlmProvider,
+  model: string,
+  args: GenArgs,
+  text: string,
+): StreamResult {
+  const estimated = usage.prompt == null || usage.completion == null;
+  if (estimated) {
+    // Loud on purpose: silent zero-token rows are how streamed spend goes dark.
+    log.warn("stream usage missing, estimating", { provider, model });
+  }
+  return {
+    text,
+    promptTokens: usage.prompt ?? estTokens(promptText(args)),
+    completionTokens: usage.completion ?? estTokens(text),
+    provider,
+    model,
+    usageEstimated: estimated,
+  };
+}
+
+/**
+ * Providers whose /chat/completions accepts `stream_options.include_usage`.
+ * Deliberately excludes `custom`: an unknown body key can 400 a strict
+ * self-hosted endpoint, so those fall back to the token estimate instead.
+ */
+function acceptsStreamUsage(provider: LlmProvider): boolean {
+  return provider === "openai" || provider === "deepseek" ||
+    provider === "groq" || provider === "openrouter";
+}
+
 export async function llmStream(
   provider: LlmProvider,
   args: GenArgs,
   onToken: (t: string) => void,
-): Promise<string> {
+): Promise<StreamResult> {
   const model = args.model ?? PROVIDERS[provider].model;
+  const started = Date.now();
+  const usage: Usage = {};
   let full = "";
+  const abort = streamAbort();
 
-  if (provider === "openai" || provider === "deepseek" || provider === "groq" || provider === "openrouter" || provider === "custom") {
-    if (provider === "custom" && !args.baseUrl) throw new Error("custom provider: base URL not configured");
-    const base = provider === "openai" ? "https://api.openai.com/v1"
-      : provider === "deepseek" ? "https://api.deepseek.com/v1"
-      : provider === "openrouter" ? "https://openrouter.ai/api/v1"
-      : provider === "custom" ? args.baseUrl!
-      : "https://api.groq.com/openai/v1";
-    const body: Record<string, unknown> = {
+  const finish = (r: StreamResult): StreamResult => {
+    abort.done();
+    log.info("stream", {
+      provider,
       model,
-      messages: [{ role: "system", content: args.systemPrompt }, ...turns(args)],
-      stream: true,
-      ...deepseekBodyExtras(provider, model),
-    };
-    if (openAiModernParams(provider, model)) {
-      body.max_completion_tokens = maxTokensOf(args);
-    } else {
-      body.temperature = 0.6;
-      body.max_tokens = maxTokensOf(args);
-    }
-    const res = await fetch(`${base}/chat/completions`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json", Authorization: `Bearer ${args.apiKey}`, ...openRouterHeaders(provider) },
-      body: JSON.stringify(body),
+      ms: Date.now() - started,
+      promptTokens: r.promptTokens,
+      completionTokens: r.completionTokens,
+      estimated: r.usageEstimated,
     });
-    if (!res.ok) throw new Error(`${provider} HTTP ${res.status}: ${await res.text()}`);
-    for await (const data of sseLines(res)) {
-      if (data === "[DONE]") break;
-      try {
-        const tok = JSON.parse(data).choices?.[0]?.delta?.content ?? "";
-        if (tok) { full += tok; onToken(tok); }
-      } catch { /* ignore keep-alives */ }
-    }
-    return full;
-  }
+    return r;
+  };
 
-  if (provider === "anthropic") {
-    const streamBody: Record<string, unknown> = {
-      model, max_tokens: maxTokensOf(args), stream: true,
-      system: args.systemPrompt, messages: turns(args),
-    };
-    if (anthropicAcceptsTemperature(model)) streamBody.temperature = 0.6;
-    const res = await fetch("https://api.anthropic.com/v1/messages", {
+  try {
+    if (
+      provider === "openai" || provider === "deepseek" || provider === "groq" ||
+      provider === "openrouter" || provider === "custom"
+    ) {
+      if (provider === "custom" && !args.baseUrl) {
+        throw new Error("custom provider: base URL not configured");
+      }
+      const base = provider === "openai"
+        ? "https://api.openai.com/v1"
+        : provider === "deepseek"
+        ? "https://api.deepseek.com/v1"
+        : provider === "openrouter"
+        ? "https://openrouter.ai/api/v1"
+        : provider === "custom"
+        ? args.baseUrl!
+        : "https://api.groq.com/openai/v1";
+      const body: Record<string, unknown> = {
+        model,
+        messages: [{ role: "system", content: args.systemPrompt }, ...turns(args)],
+        stream: true,
+        ...(acceptsStreamUsage(provider) ? { stream_options: { include_usage: true } } : {}),
+        ...deepseekBodyExtras(provider, model),
+      };
+      if (openAiModernParams(provider, model)) {
+        body.max_completion_tokens = maxTokensOf(args);
+      } else {
+        // Was hardcoded 0.6, which silently ignored deterministic/eval runs.
+        body.temperature = tempOf(args);
+        body.max_tokens = maxTokensOf(args);
+      }
+      if (args.deterministic && typeof args.seed === "number") body.seed = args.seed;
+
+      const res = await fetch(`${base}/chat/completions`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${args.apiKey}`,
+          ...openRouterHeaders(provider),
+        },
+        body: JSON.stringify(body),
+        signal: abort.signal,
+      });
+      if (!res.ok) throw new Error(`${provider} HTTP ${res.status}: ${await res.text()}`);
+      for await (const data of sseLines(res, abort.reset)) {
+        if (data === "[DONE]") break;
+        try {
+          const chunk = JSON.parse(data);
+          // Read usage off EVERY chunk. Measured against the live DeepSeek API:
+          // usage rides the LAST content chunk, which still has choices, not a
+          // separate empty-choices chunk as the OpenAI docs imply. Groq puts it
+          // under x_groq. Gating this on "choices is empty" loses it entirely.
+          const u = chunk.usage ?? chunk.x_groq?.usage;
+          if (u) {
+            usage.prompt = u.prompt_tokens ?? usage.prompt;
+            usage.completion = u.completion_tokens ?? usage.completion;
+          }
+          const tok = chunk.choices?.[0]?.delta?.content ?? "";
+          if (tok) {
+            full += tok;
+            onToken(tok);
+          }
+        } catch { /* ignore keep-alives */ }
+      }
+      return finish(settleUsage(usage, provider, model, args, full));
+    }
+
+    if (provider === "anthropic") {
+      const streamBody: Record<string, unknown> = {
+        model,
+        max_tokens: maxTokensOf(args),
+        stream: true,
+        system: args.systemPrompt,
+        messages: turns(args),
+      };
+      if (anthropicAcceptsTemperature(model)) streamBody.temperature = tempOf(args);
+      const res = await fetch("https://api.anthropic.com/v1/messages", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "x-api-key": args.apiKey,
+          "anthropic-version": "2023-06-01",
+        },
+        body: JSON.stringify(streamBody),
+        signal: abort.signal,
+      });
+      if (!res.ok) throw new Error(`anthropic HTTP ${res.status}: ${await res.text()}`);
+      for await (const data of sseLines(res, abort.reset)) {
+        try {
+          const ev = JSON.parse(data);
+          // Input tokens land once up front; output_tokens is CUMULATIVE on
+          // each message_delta, so last write wins rather than summing.
+          if (ev.type === "message_start") {
+            usage.prompt = ev.message?.usage?.input_tokens ?? usage.prompt;
+            usage.completion = ev.message?.usage?.output_tokens ?? usage.completion;
+          }
+          if (ev.type === "message_delta" && ev.usage?.output_tokens != null) {
+            usage.completion = ev.usage.output_tokens;
+          }
+          if (ev.type === "content_block_delta") {
+            const tok = ev.delta?.text ?? "";
+            if (tok) {
+              full += tok;
+              onToken(tok);
+            }
+          }
+        } catch { /* ignore */ }
+      }
+      return finish(settleUsage(usage, provider, model, args, full));
+    }
+
+    // gemini
+    const url =
+      `https://generativelanguage.googleapis.com/v1beta/models/${model}:streamGenerateContent?alt=sse&key=${args.apiKey}`;
+    const res = await fetch(url, {
       method: "POST",
-      headers: { "Content-Type": "application/json", "x-api-key": args.apiKey, "anthropic-version": "2023-06-01" },
-      body: JSON.stringify(streamBody),
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        systemInstruction: { parts: [{ text: args.systemPrompt }] },
+        contents: turns(args).map((m) => ({
+          role: m.role === "assistant" ? "model" : "user",
+          parts: [{ text: m.content }],
+        })),
+        generationConfig: { temperature: tempOf(args), maxOutputTokens: maxTokensOf(args) },
+      }),
+      signal: abort.signal,
     });
-    if (!res.ok) throw new Error(`anthropic HTTP ${res.status}: ${await res.text()}`);
-    for await (const data of sseLines(res)) {
+    if (!res.ok) throw new Error(`gemini HTTP ${res.status}: ${await res.text()}`);
+    for await (const data of sseLines(res, abort.reset)) {
       try {
-        const ev = JSON.parse(data);
-        if (ev.type === "content_block_delta") {
-          const tok = ev.delta?.text ?? "";
-          if (tok) { full += tok; onToken(tok); }
+        const chunk = JSON.parse(data);
+        // usageMetadata repeats and grows; the last one seen is the total.
+        if (chunk.usageMetadata) {
+          usage.prompt = chunk.usageMetadata.promptTokenCount ?? usage.prompt;
+          usage.completion = chunk.usageMetadata.candidatesTokenCount ?? usage.completion;
+        }
+        const tok = chunk.candidates?.[0]?.content?.parts
+          ?.map((p: { text: string }) => p.text).join("") ?? "";
+        if (tok) {
+          full += tok;
+          onToken(tok);
         }
       } catch { /* ignore */ }
     }
-    return full;
+    return finish(settleUsage(usage, provider, model, args, full));
+  } catch (e) {
+    abort.done();
+    throw e;
   }
-
-  // gemini
-  const url =
-    `https://generativelanguage.googleapis.com/v1beta/models/${model}:streamGenerateContent?alt=sse&key=${args.apiKey}`;
-  const res = await fetch(url, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      systemInstruction: { parts: [{ text: args.systemPrompt }] },
-      contents: turns(args).map((m) => ({ role: m.role === "assistant" ? "model" : "user", parts: [{ text: m.content }] })),
-      generationConfig: { temperature: 0.6, maxOutputTokens: maxTokensOf(args) },
-    }),
-  });
-  if (!res.ok) throw new Error(`gemini HTTP ${res.status}: ${await res.text()}`);
-  for await (const data of sseLines(res)) {
-    try {
-      const tok = JSON.parse(data).candidates?.[0]?.content?.parts?.map((p: { text: string }) => p.text).join("") ?? "";
-      if (tok) { full += tok; onToken(tok); }
-    } catch { /* ignore */ }
-  }
-  return full;
 }
 
 export async function llmGenerate(

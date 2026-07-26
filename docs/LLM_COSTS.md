@@ -56,9 +56,21 @@ Rate precedence, highest first:
 It is an **estimate**: it does not know about prompt caching, batch discounts, or
 provider-side rounding. Treat it as a good signal, not an invoice.
 
-> **Note:** `llmStream()` captures no usage at all, so a streamed turn logs no
-> tokens. `coach-chat` does not currently use it (see the follow-ups in the
-> sprint plan), but if it ever does, streamed spend goes dark.
+> **Streaming is costed too.** `llmStream()` returns a full `LlmResult` with
+> real usage, so a streamed turn logs tokens like any other. Usage is read off
+> every SSE chunk: OpenAI-compatible providers get
+> `stream_options.include_usage` (never `custom`, where an unknown body key can
+> 400 a self-hosted endpoint), Groq's copy under `x_groq.usage` is also
+> accepted, Anthropic's `output_tokens` is cumulative so last-write-wins, and
+> Gemini's last `usageMetadata` is the total. Note that DeepSeek attaches usage
+> to the **last content chunk**, not to a separate empty-`choices` chunk as the
+> OpenAI docs imply, so the reader must not gate on empty choices.
+>
+> When a provider returns nothing, usage falls back to the ~4-chars/token
+> estimate, `usageEstimated` is set, and a `warn` line lands in `fn:logs`. That
+> matters because `hosted_spend()` SUMs `generation_logs` and `quota.ts` fails
+> closed on it: a streamed turn reporting zero tokens would be spend the cap
+> cannot see. `llm_stream_test.ts` pins the non-zero guarantee.
 
 ---
 
