@@ -5,6 +5,7 @@ import androidx.compose.foundation.gestures.scrollBy
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -244,7 +245,9 @@ fun CoachScreen(vm: CoachViewModel = hiltViewModel(), onOpenCalendar: () -> Unit
                     // bottom while text is streaming in. Skip it on that one bubble.
                     val isStreamingTail = revealing && i == messages.lastIndex && msg.role == "assistant"
                     val itemModifier = if (isStreamingTail) Modifier else Modifier.animateItem()
-                    Box(itemModifier) { Bubble(msg, showAvatar = msg.role != prevRole) }
+                    Box(itemModifier) {
+                        Bubble(msg, showAvatar = msg.role != prevRole, streaming = isStreamingTail)
+                    }
                 }
                 // A failed turn gets a one-tap retry directly under it.
                 val last = messages.lastOrNull()
@@ -320,7 +323,11 @@ fun CoachScreen(vm: CoachViewModel = hiltViewModel(), onOpenCalendar: () -> Unit
         val chips = if (messages.size <= 1) suggestions else followUps
         if (chips.isNotEmpty() && !sending && !revealing) {
             LazyRow(
-                Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 4.dp),
+                Modifier.fillMaxWidth().padding(vertical = 4.dp),
+                // contentPadding, not padding: with an outer horizontal padding
+                // the last chip was clipped flat against the screen edge instead
+                // of scrolling clear of it.
+                contentPadding = PaddingValues(horizontal = 12.dp),
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
             ) {
                 items(chips) { sgn ->
@@ -346,8 +353,16 @@ fun CoachScreen(vm: CoachViewModel = hiltViewModel(), onOpenCalendar: () -> Unit
         // shows above). This appears just for the rare turn where the coach
         // proposed sessions in prose without applying them — a manual escape hatch.
         // Saving a reusable template is tucked into the small "Save" menu.
+        // lastAction is the reliable "the coach actually wrote something" signal:
+        // it is set synchronously for EVERY write tool, whereas actionWeek only
+        // loads for plan_week/generate_workout/move_workout and does so
+        // asynchronously, leaving a window where this banner could claim a
+        // successful plan "wasn't applied". A day-by-day table makes that far
+        // likelier to be seen, since looksLikeWorkoutProposal matches on day names.
         val lastAssistant = messages.lastOrNull { it.role == "assistant" }?.content ?: ""
-        if (!revealing && messages.size > 2 && actionWeek == null && looksLikeWorkoutProposal(lastAssistant)) {
+        if (!revealing && messages.size > 2 && actionWeek == null && lastAction == null &&
+            looksLikeWorkoutProposal(lastAssistant)
+        ) {
             Text(
                 "Coach proposed this but didn't apply it:",
                 style = MaterialTheme.typography.labelSmall,

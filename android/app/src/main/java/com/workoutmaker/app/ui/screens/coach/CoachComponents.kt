@@ -286,7 +286,7 @@ internal fun TypingDots() {
 }
 
 @Composable
-internal fun Bubble(msg: ChatMessage, showAvatar: Boolean = true) {
+internal fun Bubble(msg: ChatMessage, showAvatar: Boolean = true, streaming: Boolean = false) {
     val isUser = msg.role == "user"
 
     // Some agentic replies leak raw JSON — either the protocol envelope
@@ -295,7 +295,7 @@ internal fun Bubble(msg: ChatMessage, showAvatar: Boolean = true) {
         val obj = runCatching { coachJson.parseToJsonElement(msg.content) }.getOrNull() as? JsonObject
         val unwrapped = (obj?.get("message") as? JsonPrimitive)?.contentOrNull
         when {
-            unwrapped != null -> AssistantProse(unwrapped, showAvatar)
+            unwrapped != null -> AssistantProse(unwrapped, showAvatar, streaming)
             obj != null && isWorkoutShape(obj) -> WorkoutCard(obj)
             else -> DataCard(msg.content)
         }
@@ -308,7 +308,7 @@ internal fun Bubble(msg: ChatMessage, showAvatar: Boolean = true) {
     }
 
     if (!isUser) {
-        AssistantProse(msg.content, showAvatar)
+        AssistantProse(msg.content, showAvatar, streaming)
         return
     }
 
@@ -334,7 +334,7 @@ internal fun Bubble(msg: ChatMessage, showAvatar: Boolean = true) {
 // avatar appears only on the first, follow-ons indent to the same text column.
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
-private fun AssistantProse(text: String, showAvatar: Boolean = true) {
+private fun AssistantProse(text: String, showAvatar: Boolean = true, streaming: Boolean = false) {
     val clipboard = LocalClipboardManager.current
     val haptics = LocalHapticFeedback.current
     val snackbar = LocalAppSnackbar.current
@@ -365,6 +365,7 @@ private fun AssistantProse(text: String, showAvatar: Boolean = true) {
                 text,
                 color = MaterialTheme.colorScheme.onSurface,
                 style = MaterialTheme.typography.bodyMedium.copy(lineHeight = 22.sp),
+                streaming = streaming,
             )
         }
     }

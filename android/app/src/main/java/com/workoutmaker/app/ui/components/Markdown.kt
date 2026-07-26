@@ -1,9 +1,15 @@
 package com.workoutmaker.app.ui.components
 
+import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.ui.draw.clip
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
@@ -81,24 +87,98 @@ private val BULLET = Regex("""^\s*[-*•]\s+(.*)$""")
 private val NUMBERED = Regex("""^\s*(\d+)[.)]\s+(.*)$""")
 private val HEADER = Regex("""^(#{1,4})\s+(.*)$""")
 
+// --- GFM tables -------------------------------------------------------------
+// Models reach for tables for day-by-day plans, and rendering them line by line
+// leaked raw pipes into the chat. Parsing is kept pure and separate from the
+// composable so it can be unit-tested; the rendering choice (a card per row,
+// header cells as field labels) is in TableBlock, because a 3-column table of
+// prose does not fit a phone's width as a grid.
+
+/** One parsed GFM table: the header cells plus one list of cells per body row. */
+internal data class MarkdownTable(val headers: List<String>, val rows: List<List<String>>)
+
+private val DELIMITER_ROW = Regex("""^\s*\|?\s*:?-{1,}:?\s*(\|\s*:?-{1,}:?\s*)*\|?\s*$""")
+
+private fun looksLikeRow(line: String): Boolean = line.trimStart().startsWith("|")
+
+/** Split "| a | b |" into ["a", "b"], tolerating the optional outer pipes. */
+private fun cellsOf(line: String): List<String> =
+    line.trim().removePrefix("|").removeSuffix("|").split("|").map { it.trim() }
+
+/**
+ * Parse a GFM table starting at [start], or null if one does not begin there.
+ * Requires a header row AND a delimiter row, which is what makes a half-streamed
+ * table (header only, no delimiter yet) correctly not-a-table until it completes.
+ * Returns the table and the index just past its last row.
+ */
+internal fun parseMarkdownTable(lines: List<String>, start: Int): Pair<MarkdownTable, Int>? {
+    if (start + 1 >= lines.size) return null
+    if (!looksLikeRow(lines[start])) return null
+    if (!DELIMITER_ROW.matches(lines[start + 1]) || !lines[start + 1].contains('-')) return null
+
+    val headers = cellsOf(lines[start])
+    var i = start + 2
+    val rows = mutableListOf<List<String>>()
+    while (i < lines.size && looksLikeRow(lines[i])) {
+        val cells = cellsOf(lines[i])
+        // Ragged rows are common from LLMs; pad/trim to the header width so the
+        // renderer can always pair a cell with its label.
+        rows += List(headers.size) { cells.getOrElse(it) { "" } }
+        i++
+    }
+    if (rows.isEmpty()) return null
+    return MarkdownTable(headers, rows) to i
+}
+
+/**
+ * Index of the trailing run of pipe lines that is not yet a complete table.
+ * While a reply is still streaming, those lines must be held back rather than
+ * shown as raw pipes: the delimiter row may simply not have arrived yet.
+ * Returns lines.size when there is nothing to hold back.
+ */
+internal fun streamingHoldbackFrom(lines: List<String>): Int {
+    var i = lines.size
+    while (i > 0 && looksLikeRow(lines[i - 1])) i--
+    // A trailing run that already parses as a whole table is safe to render.
+    if (i < lines.size && parseMarkdownTable(lines, i)?.second == lines.size) return lines.size
+    return i
+}
+
 @Composable
 fun MarkdownText(
     text: String,
     color: Color,
     style: TextStyle,
     modifier: Modifier = Modifier,
+    // True while the reply is still arriving. Only affects incomplete trailing
+    // tables, which are held back instead of flashing as raw pipes.
+    streaming: Boolean = false,
 ) {
     val linkColor = MaterialTheme.colorScheme.primary
+    val all = text.trim().lines().map { it.trimEnd() }
+    val limit = if (streaming) streamingHoldbackFrom(all) else all.size
+
     Column(modifier, verticalArrangement = Arrangement.spacedBy(2.dp)) {
         var lastBlank = false
-        text.trim().lines().forEach { raw ->
-            val line = raw.trimEnd()
+        var i = 0
+        while (i < limit) {
+            val line = all[i]
+
+            val table = parseMarkdownTable(all, i)
+            if (table != null && table.second <= limit) {
+                TableBlock(table.first, color, style, linkColor)
+                i = table.second
+                lastBlank = false
+                continue
+            }
+            i++
+
             when {
                 line.isBlank() -> {
                     // Collapse runs of blank lines into one paragraph gap.
                     if (!lastBlank) Spacer(Modifier.height(6.dp))
                     lastBlank = true
-                    return@forEach
+                    continue
                 }
                 HEADER.matches(line) -> {
                     val (_, body) = HEADER.find(line)!!.destructured
@@ -130,6 +210,61 @@ fun MarkdownText(
                 else -> Text(inlineMarkdown(line, linkColor), color = color, style = style)
             }
             lastBlank = false
+        }
+    }
+}
+
+// A table row per card, header cells as field labels. A grid loses on a phone:
+// the chat's content column is ~350dp, so three columns of prose wrap to one or
+// two words each. Stacking keeps every cell readable and matches how the coach
+// screen already renders structured data (DataCard, CalendarResultCard).
+@Composable
+private fun TableBlock(
+    table: MarkdownTable,
+    color: Color,
+    style: TextStyle,
+    linkColor: Color,
+) {
+    val muted = MaterialTheme.colorScheme.onSurfaceVariant
+    Column(
+        Modifier.padding(vertical = 4.dp),
+        verticalArrangement = Arrangement.spacedBy(6.dp),
+    ) {
+        table.rows.forEach { cells ->
+            Column(
+                Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(12.dp))
+                    .background(MaterialTheme.colorScheme.surfaceContainerHigh)
+                    .border(1.dp, MaterialTheme.colorScheme.outlineVariant, RoundedCornerShape(12.dp))
+                    .padding(horizontal = 12.dp, vertical = 10.dp),
+                verticalArrangement = Arrangement.spacedBy(3.dp),
+            ) {
+                // First cell titles the row (the day, date or exercise). Its own
+                // header label is dropped: "Mon" needs no "Day:" in front of it.
+                val title = cells.firstOrNull().orEmpty()
+                if (title.isNotBlank()) {
+                    Text(
+                        inlineMarkdown(title, linkColor),
+                        color = color,
+                        style = style.copy(fontWeight = FontWeight.SemiBold),
+                    )
+                }
+                cells.drop(1).forEachIndexed { idx, cell ->
+                    if (cell.isBlank()) return@forEachIndexed
+                    val label = table.headers.getOrNull(idx + 1).orEmpty()
+                    Text(
+                        buildAnnotatedString {
+                            if (label.isNotBlank()) {
+                                withStyle(SpanStyle(color = muted)) { append("$label  ") }
+                            }
+                            append(inlineMarkdown(cell, linkColor))
+                        },
+                        color = color,
+                        style = style,
+                    )
+                }
+            }
         }
     }
 }
