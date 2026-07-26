@@ -25,6 +25,17 @@ import java.time.DayOfWeek
 import java.time.LocalDate
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
+import com.workoutmaker.app.data.applyChatSettings
+import com.workoutmaker.app.data.cachedDailySummary
+import com.workoutmaker.app.data.coachAgenticStream
+import com.workoutmaker.app.data.coachChat
+import com.workoutmaker.app.data.coachConversations
+import com.workoutmaker.app.data.coachFinalizeRaw
+import com.workoutmaker.app.data.deleteCoachConversation
+import com.workoutmaker.app.data.planWeek
+import com.workoutmaker.app.data.plannedWorkouts
+import com.workoutmaker.app.data.setCoachConversationPinned
+import com.workoutmaker.app.data.templates
 
 @HiltViewModel
 class CoachViewModel @Inject constructor(

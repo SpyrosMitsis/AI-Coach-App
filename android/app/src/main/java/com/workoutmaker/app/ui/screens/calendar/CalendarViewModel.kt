@@ -26,6 +26,27 @@ import com.workoutmaker.app.strength.StrengthRepository
 import com.workoutmaker.app.strength.WorkoutEntity
 import java.time.Instant
 import java.time.ZoneId
+import com.workoutmaker.app.data.adaptWeek
+import com.workoutmaker.app.data.cachedPlannedWorkouts
+import com.workoutmaker.app.data.completedActivities
+import com.workoutmaker.app.data.deletePlannedWorkout
+import com.workoutmaker.app.data.intervalsConnection
+import com.workoutmaker.app.data.loadProfile
+import com.workoutmaker.app.data.logManualActivity
+import com.workoutmaker.app.data.markPlannedComplete
+import com.workoutmaker.app.data.planWeek
+import com.workoutmaker.app.data.plannedWorkouts
+import com.workoutmaker.app.data.pushWorkout
+import com.workoutmaker.app.data.requestSession
+import com.workoutmaker.app.data.reschedulePlanned
+import com.workoutmaker.app.data.savePlannedWorkout
+import com.workoutmaker.app.data.scheduleTemplate
+import com.workoutmaker.app.data.setLocked
+import com.workoutmaker.app.data.syncHealth
+import com.workoutmaker.app.data.syncIntervals
+import com.workoutmaker.app.data.templates
+import com.workoutmaker.app.data.undoSkip
+import com.workoutmaker.app.data.weekPlan
 
 @HiltViewModel
 class CalendarViewModel @Inject constructor(

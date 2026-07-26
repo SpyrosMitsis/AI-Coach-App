@@ -34,6 +34,18 @@ import com.workoutmaker.app.util.AppLog
 import com.workoutmaker.app.util.friendlyFnError
 import java.time.LocalDate
 import kotlinx.coroutines.delay
+import com.workoutmaker.app.data.addRace
+import com.workoutmaker.app.data.connectIntervalsVerified
+import com.workoutmaker.app.data.dailySummary
+import com.workoutmaker.app.data.isOnboardingComplete
+import com.workoutmaker.app.data.planStatus
+import com.workoutmaker.app.data.planWeek
+import com.workoutmaker.app.data.races
+import com.workoutmaker.app.data.saveProfile
+import com.workoutmaker.app.data.setActiveProvider
+import com.workoutmaker.app.data.setGoalRace
+import com.workoutmaker.app.data.syncIntervals
+import com.workoutmaker.app.data.testLlmKey
 
 @HiltViewModel
 class OnboardingViewModel @Inject constructor(

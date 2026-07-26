@@ -50,6 +50,7 @@ import com.workoutmaker.app.ui.components.InfoIcon
 import com.workoutmaker.app.ui.components.Metrics
 import com.workoutmaker.app.ui.components.fmtPace
 import com.workoutmaker.app.ui.theme.amberAccent
+import com.workoutmaker.app.data.weekPlan
 
 // Where this week sits in the bigger arc: the four phases as a strip with a
 // marker at the athlete's position, plus the week's focus from the planner.

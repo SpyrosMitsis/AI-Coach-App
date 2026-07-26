@@ -49,6 +49,11 @@ import java.time.LocalDate
 import java.time.ZoneOffset
 import java.time.format.DateTimeFormatter
 import java.time.temporal.ChronoUnit
+import com.workoutmaker.app.data.addThresholdTest
+import com.workoutmaker.app.data.races
+import com.workoutmaker.app.data.saveProfile
+import com.workoutmaker.app.data.saveThresholds
+import com.workoutmaker.app.data.thresholdTests
 
 // Theme-aware: the raw band constants are dark-palette pastels that wash out on
 // light paper (theme-aware-accents rule).

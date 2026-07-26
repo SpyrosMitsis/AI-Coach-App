@@ -21,6 +21,9 @@ import java.time.ZoneId
 import java.time.format.DateTimeFormatter
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonPrimitive
+import com.workoutmaker.app.data.analyzeStrength
+import com.workoutmaker.app.data.generateWorkout
+import com.workoutmaker.app.data.logStrengthSet
 
 // Domain types passed from the active-session ViewModel when a workout finishes.
 data class FinishedSet(val weightKg: Double, val reps: Int, val rpe: Int?, val isWarmup: Boolean, val note: String = "")

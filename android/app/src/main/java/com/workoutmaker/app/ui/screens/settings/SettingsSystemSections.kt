@@ -55,6 +55,8 @@ import com.workoutmaker.app.strength.ImportSummary
 import com.workoutmaker.app.ui.components.EmptyState
 import java.time.LocalDate
 import java.time.temporal.ChronoUnit
+import com.workoutmaker.app.data.connectIntervals
+import com.workoutmaker.app.data.syncHealth
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable

@@ -35,6 +35,7 @@ import kotlinx.coroutines.launch
 import javax.inject.Inject
 import com.workoutmaker.app.ui.screens.onboarding.OnboardingScreen
 import com.workoutmaker.app.ui.screens.onboarding.OnboardingViewModel
+import com.workoutmaker.app.data.accountExists
 
 @HiltViewModel
 class AuthViewModel @Inject constructor(

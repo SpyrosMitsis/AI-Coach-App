@@ -46,6 +46,14 @@ import androidx.compose.ui.platform.LocalUriHandler
 import com.workoutmaker.app.billing.TIP_FALLBACK_PRICES
 import com.workoutmaker.app.billing.TIP_PRODUCT_IDS
 import com.workoutmaker.app.ui.screens.onboarding.InjuryEditor
+import com.workoutmaker.app.data.modelOverrides
+import com.workoutmaker.app.data.planStatus
+import com.workoutmaker.app.data.refreshMemory
+import com.workoutmaker.app.data.saveKnowledge
+import com.workoutmaker.app.data.saveMemory
+import com.workoutmaker.app.data.saveProfile
+import com.workoutmaker.app.data.saveSoul
+import com.workoutmaker.app.data.setUseHostedAi
 
 // "What your coach knows about you" — the three coach-memory documents in one
 // place: hard constraints (coach_knowledge ≈ user.md), the rolling notes

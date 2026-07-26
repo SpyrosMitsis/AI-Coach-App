@@ -44,6 +44,43 @@ import com.workoutmaker.app.strength.ImportSummary
 import com.workoutmaker.app.strength.StrengthRepository
 import com.workoutmaker.app.util.AppLog
 import java.time.LocalDate
+import com.workoutmaker.app.data.addRace
+import com.workoutmaker.app.data.addThresholdTest
+import com.workoutmaker.app.data.autoPlanEnabled
+import com.workoutmaker.app.data.connectIntervals
+import com.workoutmaker.app.data.connectIntervalsVerified
+import com.workoutmaker.app.data.customLlmPricing
+import com.workoutmaker.app.data.deleteRace
+import com.workoutmaker.app.data.generationLogs
+import com.workoutmaker.app.data.intervalsConnection
+import com.workoutmaker.app.data.listModels
+import com.workoutmaker.app.data.llmKeyRows
+import com.workoutmaker.app.data.loadKnowledge
+import com.workoutmaker.app.data.loadMemory
+import com.workoutmaker.app.data.loadProfile
+import com.workoutmaker.app.data.loadSoul
+import com.workoutmaker.app.data.modelOverrides
+import com.workoutmaker.app.data.planStatus
+import com.workoutmaker.app.data.races
+import com.workoutmaker.app.data.refreshMemory
+import com.workoutmaker.app.data.saveKnowledge
+import com.workoutmaker.app.data.saveMemory
+import com.workoutmaker.app.data.saveProfile
+import com.workoutmaker.app.data.saveSoul
+import com.workoutmaker.app.data.saveThresholds
+import com.workoutmaker.app.data.serverHostedAi
+import com.workoutmaker.app.data.setActiveProvider
+import com.workoutmaker.app.data.setAutoPlan
+import com.workoutmaker.app.data.setCustomLlmPricing
+import com.workoutmaker.app.data.setGoalRace
+import com.workoutmaker.app.data.setModelOverride
+import com.workoutmaker.app.data.setUseHostedAi
+import com.workoutmaker.app.data.syncHealth
+import com.workoutmaker.app.data.syncIntervals
+import com.workoutmaker.app.data.syncPlanToDeviceCalendar
+import com.workoutmaker.app.data.testLlmKey
+import com.workoutmaker.app.data.thresholdTests
+import com.workoutmaker.app.data.verifyPurchase
 
 internal val DAYS = listOf("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun")
 

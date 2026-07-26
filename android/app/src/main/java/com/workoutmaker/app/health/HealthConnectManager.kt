@@ -25,6 +25,7 @@ import java.time.ZoneId
 import javax.inject.Inject
 import javax.inject.Singleton
 import androidx.health.connect.client.records.Record
+import com.workoutmaker.app.data.adaptWeek
 
 /** A day's wellness snapshot read from Health Connect. All fields are optional. */
 data class HealthSnapshot(

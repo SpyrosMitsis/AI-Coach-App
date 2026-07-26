@@ -52,6 +52,11 @@ import com.workoutmaker.app.data.Periodization
 import com.workoutmaker.app.ui.components.EmptyState
 import java.time.LocalDate
 import java.time.temporal.ChronoUnit
+import com.workoutmaker.app.data.addRace
+import com.workoutmaker.app.data.deleteRace
+import com.workoutmaker.app.data.races
+import com.workoutmaker.app.data.saveProfile
+import com.workoutmaker.app.data.setAutoPlan
 
 // The one-page "Profile & week" grew too crowded, so it's now three pages
 // (About you / Sports & goals / Your training week). They all edit the same

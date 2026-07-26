@@ -31,6 +31,25 @@ import java.time.LocalDate
 import java.time.ZoneId
 import kotlinx.serialization.json.JsonPrimitive
 import com.workoutmaker.app.ui.screens.calendar.looksLike
+import com.workoutmaker.app.data.adjustWorkout
+import com.workoutmaker.app.data.cachedDailySummary
+import com.workoutmaker.app.data.coachBrief
+import com.workoutmaker.app.data.completedActivities
+import com.workoutmaker.app.data.dailySummary
+import com.workoutmaker.app.data.generateWorkout
+import com.workoutmaker.app.data.hasCachedBrief
+import com.workoutmaker.app.data.intervalsStats
+import com.workoutmaker.app.data.loadProfile
+import com.workoutmaker.app.data.markPlannedComplete
+import com.workoutmaker.app.data.refreshMemory
+import com.workoutmaker.app.data.submitFeedback
+import com.workoutmaker.app.data.syncHealth
+import com.workoutmaker.app.data.syncIntervals
+import com.workoutmaker.app.data.undoSkip
+import com.workoutmaker.app.data.upsertManualRecovery
+import com.workoutmaker.app.data.upsertWellness
+import com.workoutmaker.app.data.weekReview
+import com.workoutmaker.app.data.wellnessCheckin
 
 @HiltViewModel
 class HomeViewModel @Inject constructor(

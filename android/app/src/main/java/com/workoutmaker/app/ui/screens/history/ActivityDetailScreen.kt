@@ -75,6 +75,7 @@ import com.workoutmaker.app.ui.screens.calendar.fmtPaceSec
 import com.workoutmaker.app.ui.screens.calendar.looksLike
 import com.workoutmaker.app.ui.screens.home.HomeViewModel
 import com.workoutmaker.app.ui.screens.strength.fmtClock
+import com.workoutmaker.app.data.analyzeActivity
 
 // Full detail page for a past workout/run/ride — rich data from Intervals.icu.
 // Non-private so the dedicated Workout History screen can reuse it.

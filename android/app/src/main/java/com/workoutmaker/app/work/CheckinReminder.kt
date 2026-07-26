@@ -28,6 +28,10 @@ import kotlinx.coroutines.flow.first
 import android.app.PendingIntent
 import com.workoutmaker.app.data.AppPreferences
 import com.workoutmaker.app.data.DailySummary
+import com.workoutmaker.app.data.cachedDailySummary
+import com.workoutmaker.app.data.dailySummary
+import com.workoutmaker.app.data.syncHealth
+import com.workoutmaker.app.data.wellnessCheckin
 
 // Daily morning readiness notification, timed to the athlete's actual WAKE-UP:
 // the worker starts at 06:00 and keeps retrying (30-min backoff) until last

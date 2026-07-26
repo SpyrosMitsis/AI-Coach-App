@@ -79,6 +79,8 @@ import java.time.temporal.ChronoUnit
 import com.workoutmaker.app.ui.screens.history.ActivityDetailScreen
 import com.workoutmaker.app.ui.screens.history.StrengthSessionDetailScreen
 import com.workoutmaker.app.ui.screens.settings.DAYS
+import com.workoutmaker.app.data.submitFeedback
+import com.workoutmaker.app.data.undoSkip
 
 
 @OptIn(ExperimentalLayoutApi::class)

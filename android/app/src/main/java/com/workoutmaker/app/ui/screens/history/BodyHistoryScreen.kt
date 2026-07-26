@@ -50,6 +50,10 @@ import androidx.compose.runtime.LaunchedEffect
 import com.workoutmaker.app.ui.components.LocalAppSnackbar
 import com.workoutmaker.app.ui.theme.amberAccent
 import java.time.LocalDate
+import com.workoutmaker.app.data.bodyHistory
+import com.workoutmaker.app.data.loadProfile
+import com.workoutmaker.app.data.saveProfile
+import com.workoutmaker.app.data.upsertBodyMetrics
 
 // The goal decides which trend matters — same mapping as the backend's
 // body_trend.ts bodyFocus, keyed on the strength goal strings.

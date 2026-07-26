@@ -68,6 +68,11 @@ import java.time.ZoneOffset
 import com.workoutmaker.app.ui.screens.history.ActivityDetailScreen
 import com.workoutmaker.app.ui.screens.history.StrengthSessionDetailScreen
 import com.workoutmaker.app.ui.screens.home.WorkoutDetail
+import com.workoutmaker.app.data.planWeek
+import com.workoutmaker.app.data.requestSession
+import com.workoutmaker.app.data.templates
+import com.workoutmaker.app.data.undoSkip
+import com.workoutmaker.app.data.weekPlan
 
 // Same "primary session first" rule the Home dashboard uses (still-pending
 // before done/skipped, real work before rest, newest first) so the top card on

@@ -54,6 +54,7 @@ import com.workoutmaker.app.ui.components.ScreenScaffold
 import com.workoutmaker.app.ui.components.SectionCard
 import com.workoutmaker.app.ui.components.LocalAppSnackbar
 import com.workoutmaker.app.util.friendlyError
+import com.workoutmaker.app.data.races
 
 // Grouped by INTENT, in the order a user reasons: who I am (everything the
 // coach knows about the athlete, in one place), how it plans, phone/app

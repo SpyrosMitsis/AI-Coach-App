@@ -24,6 +24,9 @@ import java.util.Calendar
 import java.util.concurrent.TimeUnit
 import kotlinx.serialization.Serializable
 import android.app.PendingIntent
+import com.workoutmaker.app.data.analyzeActivity
+import com.workoutmaker.app.data.completedActivities
+import com.workoutmaker.app.data.plannedWorkouts
 
 // Evening prompt: if a completed activity matched today's planned session, lead
 // with the coach's measured debrief when the analysis is ready ("Coach debrief:

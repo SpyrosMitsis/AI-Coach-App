@@ -2,6 +2,7 @@ package com.workoutmaker.app.billing
 
 import android.app.Activity
 import com.workoutmaker.app.data.WorkoutRepository
+import com.workoutmaker.app.data.verifyPurchase
 
 // One purchase story, shared by Settings and onboarding: launch the Play flow
 // tagged with the buyer's user id, then have the server verify + flip the plan.

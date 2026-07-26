@@ -57,6 +57,7 @@ import com.workoutmaker.app.ui.components.EmptyState
 import com.workoutmaker.app.ui.components.ScreenScaffold
 import com.workoutmaker.app.ui.theme.amberAccent
 import java.time.LocalDate
+import com.workoutmaker.app.data.recoveryHistory
 
 @HiltViewModel
 class RecoveryHistoryViewModel @Inject constructor(

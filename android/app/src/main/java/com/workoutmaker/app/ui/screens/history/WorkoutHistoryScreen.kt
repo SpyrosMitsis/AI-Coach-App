@@ -74,6 +74,8 @@ import com.workoutmaker.app.util.friendlyFnError
 import java.time.format.TextStyle
 import java.util.Locale
 import com.workoutmaker.app.ui.screens.strength.ConfirmDeleteDialog
+import com.workoutmaker.app.data.analyzeStrength
+import com.workoutmaker.app.data.completedActivities
 
 // ===========================================================================
 // Dedicated, full-screen STRENGTH history: every logged lifting session, one
