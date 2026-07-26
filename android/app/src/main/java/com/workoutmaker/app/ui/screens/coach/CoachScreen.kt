@@ -55,6 +55,7 @@ import kotlinx.coroutines.launch
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
+import androidx.compose.animation.slideOutVertically
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.material3.AssistChip
 import androidx.compose.material3.DropdownMenu
@@ -87,7 +88,8 @@ fun CoachScreen(vm: CoachViewModel = hiltViewModel(), onOpenCalendar: () -> Unit
     val suggestions by vm.suggestions.collectAsStateSafe()
     val showHistory by vm.showHistory.collectAsStateSafe()
     val conversations by vm.conversations.collectAsStateSafe()
-    val toolSteps by vm.toolSteps.collectAsStateSafe()
+    val currentStep by vm.currentStep.collectAsStateSafe()
+    val displayName by vm.displayName.collectAsStateSafe()
     val followUps by vm.followUps.collectAsStateSafe()
     // While the reply is typing out, hold back everything that would pop in
     // beneath it (result card, banner, chips): each arrival reflowed the layout
@@ -193,13 +195,17 @@ fun CoachScreen(vm: CoachViewModel = hiltViewModel(), onOpenCalendar: () -> Unit
             Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 14.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
+            // On the landing state the hero below IS the heading, so the title
+            // collapses to the label alone rather than giving the screen two.
             Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
                 SectionLabel(if (incognito) "AI COACH · INCOGNITO" else "AI COACH")
-                Text(
-                    "Coach",
-                    style = MaterialTheme.typography.headlineSmall,
-                    fontWeight = FontWeight.Bold,
-                )
+                if (messages.isNotEmpty()) {
+                    Text(
+                        "Coach",
+                        style = MaterialTheme.typography.headlineSmall,
+                        fontWeight = FontWeight.Bold,
+                    )
+                }
             }
             IconButton(onClick = { vm.toggleIncognito() }) {
                 Icon(
@@ -226,6 +232,20 @@ fun CoachScreen(vm: CoachViewModel = hiltViewModel(), onOpenCalendar: () -> Unit
         }
 
         Box(Modifier.weight(1f).fillMaxWidth()) {
+            // The landing state. Fades and lifts away as the first message
+            // lands, leaving the thread as the whole screen.
+            androidx.compose.animation.AnimatedVisibility(
+                visible = messages.isEmpty(),
+                modifier = Modifier.align(Alignment.Center),
+                enter = fadeIn(),
+                exit = fadeOut() + slideOutVertically { -it / 6 },
+            ) {
+                ChatHero(
+                    name = displayName,
+                    starters = suggestions,
+                    onStarter = { vm.send(it.prompt) },
+                )
+            }
             LazyColumn(
                 state = listState,
                 modifier = Modifier.fillMaxSize().padding(horizontal = 12.dp),
@@ -271,12 +291,13 @@ fun CoachScreen(vm: CoachViewModel = hiltViewModel(), onOpenCalendar: () -> Unit
                 }
                 if (sending) {
                     item {
-                        // The agentic turn made visible: each tool the coach uses
-                        // becomes a step that checks off, so a 30s plan feels like
-                        // work happening rather than a stuck spinner. Before the
-                        // first tool event, the plain typing indicator.
-                        Column(Modifier.padding(8.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                            if (toolSteps.isEmpty()) {
+                        // The agentic turn made visible as one line: it names the
+                        // tool the coach is using right now, so a 30s plan feels
+                        // like work happening rather than a stuck spinner. Before
+                        // the first tool event, the plain typing indicator.
+                        Column(Modifier.padding(8.dp)) {
+                            val step = currentStep
+                            if (step == null) {
                                 Row(verticalAlignment = Alignment.CenterVertically) {
                                     TypingDots()
                                     Text(
@@ -287,7 +308,7 @@ fun CoachScreen(vm: CoachViewModel = hiltViewModel(), onOpenCalendar: () -> Unit
                                     )
                                 }
                             } else {
-                                toolSteps.forEach { step -> ToolStepRow(step) }
+                                ToolStepRow(step)
                             }
                         }
                     }
@@ -317,10 +338,11 @@ fun CoachScreen(vm: CoachViewModel = hiltViewModel(), onOpenCalendar: () -> Unit
             }
         }
 
-        // Quick-reply chips: starters on a fresh thread, contextual follow-ups
-        // after a coach action ("Explain the week", "Make it easier", ...). One
-        // row, one component; follow-ups clear on tap or when a new turn starts.
-        val chips = if (messages.size <= 1) suggestions else followUps
+        // Contextual follow-ups after a coach action ("Explain the week", "Make
+        // it easier", ...); they clear on tap or when a new turn starts. The
+        // starters for a fresh thread now live in the hero above, so this row
+        // is follow-ups only.
+        val chips = followUps
         if (chips.isNotEmpty() && !sending && !revealing) {
             LazyRow(
                 Modifier.fillMaxWidth().padding(vertical = 4.dp),
@@ -360,7 +382,7 @@ fun CoachScreen(vm: CoachViewModel = hiltViewModel(), onOpenCalendar: () -> Unit
         // successful plan "wasn't applied". A day-by-day table makes that far
         // likelier to be seen, since looksLikeWorkoutProposal matches on day names.
         val lastAssistant = messages.lastOrNull { it.role == "assistant" }?.content ?: ""
-        if (!revealing && messages.size > 2 && actionWeek == null && lastAction == null &&
+        if (!revealing && messages.size > 1 && actionWeek == null && lastAction == null &&
             looksLikeWorkoutProposal(lastAssistant)
         ) {
             Text(

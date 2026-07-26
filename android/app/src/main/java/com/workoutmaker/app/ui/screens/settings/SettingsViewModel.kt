@@ -67,7 +67,6 @@ import com.workoutmaker.app.data.saveKnowledge
 import com.workoutmaker.app.data.saveMemory
 import com.workoutmaker.app.data.saveProfile
 import com.workoutmaker.app.data.saveSoul
-import com.workoutmaker.app.data.saveThresholds
 import com.workoutmaker.app.data.serverHostedAi
 import com.workoutmaker.app.data.setActiveProvider
 import com.workoutmaker.app.data.setAutoPlan
@@ -451,14 +450,8 @@ class SettingsViewModel @Inject constructor(
             .onFailure { saveStatus.value = it.message }
     }
 
-    fun saveThresholds(lthr: Int?, ftp: Int?, pace: String?) = viewModelScope.launch {
-        busy.value = true
-        runCatching { repo.saveThresholds(lthr, ftp, pace); repo.loadProfile()?.let { profile.value = it } }
-            .onSuccess { saveStatus.value = "✓ Thresholds saved" }
-            .onFailure { saveStatus.value = it.message }
-        busy.value = false
-    }
-
+    // Thresholds are set by logging a test and nothing else, so the value and
+    // the date it was measured can never disagree.
     fun addThresholdTest(t: ThresholdTest) = viewModelScope.launch {
         runCatching {
             repo.addThresholdTest(t)

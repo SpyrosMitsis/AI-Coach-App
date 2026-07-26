@@ -12,10 +12,18 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material3.AssistChip
+import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.material.icons.filled.PushPin
 import androidx.compose.material.icons.outlined.Delete
@@ -61,8 +69,58 @@ import com.workoutmaker.app.ui.components.SectionCard
 import com.workoutmaker.app.ui.components.SectionLabel
 import com.workoutmaker.app.ui.theme.amberAccent
 import java.time.LocalDate
+import java.time.LocalTime
 import java.time.format.TextStyle
 import java.util.Locale
+
+// The empty-thread landing: a large greeting, one line of invitation, and the
+// starter chips. It replaces the canned assistant bubble a fresh chat used to
+// open with, and the screen fades it out as soon as the first message lands.
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+internal fun ChatHero(
+    name: String?,
+    starters: List<CoachStarter>,
+    onStarter: (CoachStarter) -> Unit,
+) {
+    // Recomposition-stable within a session; the hour only matters at first
+    // paint, and re-reading the clock on every recomposition would be churn.
+    val greeting = remember { timeGreeting(LocalTime.now().hour) }
+    Column(
+        Modifier.fillMaxWidth().padding(horizontal = 28.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.Center,
+    ) {
+        LogoMark(Modifier.padding(bottom = 24.dp))
+        Text(
+            if (name.isNullOrBlank()) greeting else "$greeting, $name",
+            style = MaterialTheme.typography.displaySmall,
+            // Light, not bold: this is a welcome, not a headline shouting at
+            // someone who just opened the tab.
+            fontWeight = FontWeight.Light,
+            color = MaterialTheme.colorScheme.onSurface,
+            textAlign = TextAlign.Center,
+        )
+        Text(
+            HERO_SUBTITLE,
+            style = MaterialTheme.typography.bodyLarge,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            textAlign = TextAlign.Center,
+            modifier = Modifier.padding(top = 10.dp),
+        )
+        // Wrapping, not a scrolling row: at rest the athlete should be able to
+        // see every way in at once, without discovering the rest by swiping.
+        FlowRow(
+            Modifier.padding(top = 28.dp),
+            horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.CenterHorizontally),
+            verticalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            starters.forEach { s ->
+                AssistChip(onClick = { onStarter(s) }, label = { Text(s.label) })
+            }
+        }
+    }
+}
 
 @Composable
 internal fun ConversationRow(
@@ -225,37 +283,43 @@ internal fun CalendarResultCard(
     }
 }
 
-// One row of the live tool timeline: a pulsing dot while the tool runs, a ✓
-// once the next event arrives. Write tools (they change the calendar) carry the
-// amber accent so "about to modify your plan" is visually distinct from reads.
+// The single live tool line: a pulsing dot, and a label that crossfades as the
+// coach moves from one tool to the next. Write tools (they change the calendar)
+// carry the amber accent so "about to modify your plan" is visually distinct
+// from reads. One line, not a growing list: see CoachViewModel.currentStep.
 @Composable
 internal fun ToolStepRow(step: CoachViewModel.ToolStep) {
     val accent = if (step.write) amberAccent()
     else MaterialTheme.colorScheme.onSurfaceVariant
     Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-        if (step.done) {
-            Text("✓", style = MaterialTheme.typography.labelMedium, color = accent)
-        } else {
-            val pulse = rememberInfiniteTransition(label = "step")
-            val alpha by pulse.animateFloat(
-                initialValue = 0.3f,
-                targetValue = 1f,
-                animationSpec = infiniteRepeatable(
-                    animation = tween(600),
-                    repeatMode = RepeatMode.Reverse,
-                ),
-                label = "stepAlpha",
-            )
-            Box(
-                Modifier.size(7.dp).clip(CircleShape)
-                    .background(accent.copy(alpha = alpha)),
+        val pulse = rememberInfiniteTransition(label = "step")
+        val alpha by pulse.animateFloat(
+            initialValue = 0.3f,
+            targetValue = 1f,
+            animationSpec = infiniteRepeatable(
+                animation = tween(600),
+                repeatMode = RepeatMode.Reverse,
+            ),
+            label = "stepAlpha",
+        )
+        Box(
+            Modifier.size(7.dp).clip(CircleShape)
+                .background(accent.copy(alpha = alpha)),
+        )
+        // Keyed on the label, not the step: a read following a read should
+        // still crossfade, and two tools can share a label ("Looking at your
+        // week…"), where holding the text still is exactly right.
+        AnimatedContent(
+            targetState = step.label,
+            transitionSpec = { fadeIn(tween(180)) togetherWith fadeOut(tween(120)) },
+            label = "toolStep",
+        ) { label ->
+            Text(
+                label,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurface,
             )
         }
-        Text(
-            step.label,
-            style = MaterialTheme.typography.bodySmall,
-            color = if (step.done) MaterialTheme.colorScheme.onSurfaceVariant else MaterialTheme.colorScheme.onSurface,
-        )
     }
 }
 

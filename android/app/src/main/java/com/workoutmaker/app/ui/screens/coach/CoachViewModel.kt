@@ -32,6 +32,7 @@ import com.workoutmaker.app.data.coachChat
 import com.workoutmaker.app.data.coachConversations
 import com.workoutmaker.app.data.coachFinalizeRaw
 import com.workoutmaker.app.data.deleteCoachConversation
+import com.workoutmaker.app.data.loadProfile
 import com.workoutmaker.app.data.planWeek
 import com.workoutmaker.app.data.plannedWorkouts
 import com.workoutmaker.app.data.setCoachConversationPinned
@@ -42,7 +43,12 @@ class CoachViewModel @Inject constructor(
     private val repo: WorkoutRepository,
     private val planChanges: PlanChangeBus,
 ) : ViewModel() {
-    val messages = MutableStateFlow(listOf(ChatMessage("assistant", GREETING)))
+    // Empty until someone speaks. A fresh thread used to open with a canned
+    // assistant bubble, which read as the coach having already talked at you;
+    // the screen now shows a greeting hero over the empty thread instead.
+    val messages = MutableStateFlow<List<ChatMessage>>(emptyList())
+    // First name for that hero. Null keeps the greeting to the time of day.
+    val displayName = MutableStateFlow<String?>(null)
     val sending = MutableStateFlow(false)
     val banner = MutableStateFlow<String?>(null)
     // When a send fails outright, the failed text is parked here so the screen can
@@ -50,15 +56,18 @@ class CoachViewModel @Inject constructor(
     val draftRestore = MutableStateFlow<String?>(null)
     // Live tool-progress line while the agentic loop runs.
     val liveStatus = MutableStateFlow<String?>(null)
-    // The agentic turn as visible steps: each tool event appends a running row,
-    // and the next event checks the previous one off. Collapses to the banner
-    // summary when the turn ends. Write tools are accented in the UI.
-    data class ToolStep(val label: String, val write: Boolean, val done: Boolean)
-    val toolSteps = MutableStateFlow<List<ToolStep>>(emptyList())
+    // The agentic turn made visible as ONE line that swaps text as the coach
+    // moves tool to tool. It used to accumulate a row per tool, which on a real
+    // planning turn (a dozen tools) grew into a wall that pushed the composer
+    // down the screen and fought the auto-scroll. What the coach actually
+    // changed is reported afterwards by [lastAction] and the result card, both
+    // built from the server's toolsUsed, so nothing is lost by not stacking
+    // them here. Write tools are accented in the UI.
+    data class ToolStep(val label: String, val write: Boolean)
+    val currentStep = MutableStateFlow<ToolStep?>(null)
     private fun advanceTool(tool: String) {
-        liveStatus.value = null // the step list replaces the generic line
-        toolSteps.value = toolSteps.value.map { it.copy(done = true) } +
-            ToolStep(friendlyToolProgress(tool), tool in WRITE_TOOL_NAMES, done = false)
+        liveStatus.value = null // the step line replaces the generic one
+        currentStep.value = ToolStep(friendlyToolProgress(tool), tool in WRITE_TOOL_NAMES)
     }
     // Contextual quick replies after a coach turn (never after a plain answer).
     val followUps = MutableStateFlow<List<CoachStarter>>(emptyList())
@@ -196,6 +205,12 @@ class CoachViewModel @Inject constructor(
 
     init {
         viewModelScope.launch {
+            // Cached profile read, so this costs nothing on a warm start and
+            // simply leaves the hero nameless if it fails.
+            displayName.value = runCatching { repo.loadProfile()?.display_name }
+                .getOrNull()?.takeIf { it.isNotBlank() }
+        }
+        viewModelScope.launch {
             val cached = runCatching { repo.cachedDailySummary() }.getOrNull()?.first
             val chips = mutableListOf(CoachStarter("How's my fitness?", STARTER_FITNESS))
             val today = cached?.today_workout
@@ -324,7 +339,7 @@ class CoachViewModel @Inject constructor(
         cancelReveal() // never type a stale reply into the newly opened thread
         incognito.value = false // saved threads are by definition not incognito
         conversationId = c.id
-        messages.value = listOf(ChatMessage("assistant", GREETING)) + c.messages
+        messages.value = c.messages
         banner.value = null
         showHistory.value = false
     }
@@ -334,7 +349,7 @@ class CoachViewModel @Inject constructor(
         cancelReveal()
         if (!keepIncognito) incognito.value = false
         conversationId = null
-        messages.value = listOf(ChatMessage("assistant", GREETING))
+        messages.value = emptyList()
         banner.value = null
         showHistory.value = false
     }
@@ -349,9 +364,12 @@ class CoachViewModel @Inject constructor(
         lastAction.value = null
         showReplan.value = false
         followUps.value = emptyList()
-        toolSteps.value = emptyList()
+        currentStep.value = null
         liveStatus.value = "Thinking…"
-        val history = outgoing.drop(1) // drop the local greeting
+        // Every message here is real: the greeting that used to occupy slot 0
+        // (and had to be dropped before sending) is now a screen-level hero and
+        // never enters the thread.
+        val history = outgoing
 
         // Agentic + streamed: the server emits a progress event per tool while
         // the loop runs, then the reply. Falls back to the plain request if the
@@ -419,9 +437,9 @@ class CoachViewModel @Inject constructor(
             }
             sending.value = false
             liveStatus.value = null
-            // The step list collapses into the banner summary; the reveal job
+            // The step line collapses into the banner summary; the reveal job
             // (if still typing) carries on, it owns only message text.
-            toolSteps.value = emptyList()
+            currentStep.value = null
             // Settle the gate if nothing is left to reveal. Normally the drain
             // loop clears this itself, but a turn that ended on a reset (coach
             // narrated, then called a tool, then said nothing more) leaves no

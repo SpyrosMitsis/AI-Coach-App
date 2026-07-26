@@ -4,11 +4,21 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 
-internal const val GREETING =
-    "Hey! I'm your coach, and I can see your real data. Ask me things like " +
-        "“how's my fitness looking?”, “plan my week”, “am I overtraining?”, or " +
-        "“set my goal race to the Berlin marathon on 2026-09-27”. I'll check your " +
-        "numbers, then plan, generate, or adjust your training for you."
+// The landing hero's heading. Deliberately NOT Notifications.greeting(): that
+// one rotates variants by day of year to keep a daily notification from reading
+// identically, which is right for a notification and wrong for a heading you
+// see several times an hour ("New day, Spyros" at 9pm). This one is a pure
+// function of the hour and nothing else.
+internal fun timeGreeting(hour: Int): String = when (hour) {
+    in 0..4 -> "Still up"
+    in 5..11 -> "Good morning"
+    in 12..16 -> "Good afternoon"
+    else -> "Good evening"
+}
+
+// What sits under the greeting. One line, an invitation rather than a manual:
+// the starter chips below it already show what the coach can be asked for.
+internal const val HERO_SUBTITLE = "What are we training today?"
 
 // A conversation starter: the short text shown on the chip, plus the richer,
 // directive prompt actually sent to the coach. The chip stays terse; the prompt

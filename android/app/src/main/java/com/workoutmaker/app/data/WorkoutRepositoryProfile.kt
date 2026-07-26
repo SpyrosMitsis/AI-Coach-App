@@ -191,8 +191,6 @@ suspend fun WorkoutRepository.applyThreshold(kind: String, value: Double) {
     saveProfile(updated)
 }
 
-// E1: directly edit thresholds from the zones screen.
-suspend fun WorkoutRepository.saveThresholds(lthr: Int?, ftp: Int?, pace: String?) {
-    val p = loadProfile() ?: TrainingProfile()
-    saveProfile(p.copy(lthr = lthr, ftp = ftp, threshold_pace_per_km = pace))
-}
+// (A saveThresholds() that wrote all three at once lived here. The zones screen
+// no longer edits them directly: applyThreshold above, driven by logging a
+// test, is the single writer, so a threshold always carries a measured date.)

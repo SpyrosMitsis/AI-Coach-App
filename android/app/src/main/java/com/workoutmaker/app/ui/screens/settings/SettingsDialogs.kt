@@ -52,7 +52,6 @@ import java.time.temporal.ChronoUnit
 import com.workoutmaker.app.data.addThresholdTest
 import com.workoutmaker.app.data.races
 import com.workoutmaker.app.data.saveProfile
-import com.workoutmaker.app.data.saveThresholds
 import com.workoutmaker.app.data.thresholdTests
 
 // Theme-aware: the raw band constants are dark-palette pastels that wash out on
@@ -260,31 +259,76 @@ internal fun goalTargetHint(sport: String): String = when (sport) {
 // ---------------------------------------------------------------------------
 // E1 + E4 — training zones & threshold tests
 // ---------------------------------------------------------------------------
+
+/**
+ * When [kind]'s threshold was last set by a logged test, or null.
+ *
+ * Null is a normal answer, not a missing one: a threshold can also arrive from
+ * onboarding, an Intervals.icu sync, or the coach's update_profile tool, and
+ * none of those leave a test row. The UI shows the value with no date.
+ *
+ * Does not assume the caller's ordering (the repository sorts by date
+ * descending, but a max is cheap and survives that changing).
+ */
+internal fun latestTestDate(tests: List<ThresholdTest>, kind: String): String? =
+    tests.filter { it.kind == kind }.maxByOrNull { it.date }?.date
+
+/** One read-only threshold: what it is, what it's set to, and when. */
+@Composable
+private fun ThresholdRow(label: String, value: String?, setOn: String?) {
+    Row(
+        Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(label, style = MaterialTheme.typography.bodyMedium)
+        Column(horizontalAlignment = Alignment.End) {
+            Text(
+                value ?: "Not set",
+                style = MaterialTheme.typography.titleMedium,
+                color = if (value != null) MaterialTheme.colorScheme.primary
+                else MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            setOn?.let {
+                Text(
+                    "set $it",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        }
+    }
+}
 @Composable
 internal fun ZonesSection(vm: SettingsViewModel) {
     val profile by vm.profile.collectAsStateSafe()
     val tests by vm.thresholdTests.collectAsStateSafe()
     val busy by vm.busy.collectAsStateSafe()
 
-    var lthr by remember(profile.lthr) { mutableStateOf(profile.lthr?.toString() ?: "") }
-    var pace by remember(profile.threshold_pace_per_km) { mutableStateOf(profile.threshold_pace_per_km ?: "") }
-    var ftp by remember(profile.ftp) { mutableStateOf(profile.ftp?.toString() ?: "") }
     var showTest by remember { mutableStateOf(false) }
 
     if (showTest) LogTestDialog(onClose = { showTest = false }) { vm.addThresholdTest(it); showTest = false }
 
+    // ONE way in. This card used to hold three editable fields and a Save
+    // button, while "Log a test" below did the same three numbers again via
+    // applyThreshold — the same value settable two ways, one of which quietly
+    // recorded a date and one of which didn't. Logging a test is now the only
+    // editor, so every threshold the app holds knows when it was set.
     SectionCard(title = "Thresholds") {
-        Text("Set your thresholds; zones below are derived automatically. LTHR = lactate-threshold HR, threshold pace ≈ your 1-hour race pace.",
+        Text("Your current thresholds; the zones below are derived from them. LTHR = lactate-threshold HR, threshold pace ≈ your 1-hour race pace.",
             style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-        OutlinedTextField(lthr, { lthr = it }, label = { Text("LTHR (bpm)") }, singleLine = true,
-            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-            modifier = Modifier.fillMaxWidth())
-        OutlinedTextField(pace, { pace = it }, label = { Text("Threshold pace /km (m:ss)") }, singleLine = true, modifier = Modifier.fillMaxWidth())
-        OutlinedTextField(ftp, { ftp = it }, label = { Text("FTP (watts, optional)") }, singleLine = true,
-            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-            modifier = Modifier.fillMaxWidth())
-        Button(onClick = { vm.saveThresholds(lthr.toIntOrNull(), ftp.toIntOrNull(), pace.ifBlank { null }) },
-            enabled = !busy, modifier = Modifier.fillMaxWidth()) { Text("Save thresholds") }
+        ThresholdRow("LTHR", profile.lthr?.let { "$it bpm" }, latestTestDate(tests, "lthr"))
+        ThresholdRow(
+            "Threshold pace",
+            profile.threshold_pace_per_km?.let { "$it /km" },
+            latestTestDate(tests, "threshold_pace"),
+        )
+        ThresholdRow("FTP", profile.ftp?.let { "$it W" }, latestTestDate(tests, "ftp"))
+        OutlinedButton(onClick = { showTest = true }, enabled = !busy, modifier = Modifier.fillMaxWidth()) {
+            Text("Log a test")
+        }
+        Text("Logging a test updates the threshold and its zones automatically.",
+            style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
     }
 
     // The two "Your numbers" anchors onboarding now collects that existed
@@ -314,22 +358,23 @@ internal fun ZonesSection(vm: SettingsViewModel) {
         ) { Text("Save") }
     }
 
-    SectionCard(title = "Threshold tests") {
-        Text("Log a test result and your threshold (and zones) update automatically.",
-            style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-        tests.take(10).forEach { t ->
-            val label = when (t.kind) {
-                "lthr" -> "${t.value.toInt()} bpm LTHR"
-                "ftp" -> "${t.value.toInt()} W FTP"
-                "threshold_pace" -> "${com.workoutmaker.app.data.Zones.formatPace(t.value.toInt())}/km threshold"
-                else -> "${t.value}"
-            }
-            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                Text(t.date, style = MaterialTheme.typography.bodySmall)
-                Text(label, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.primary)
+    // History only — the button that adds to it now lives with the values it
+    // changes, one card up.
+    if (tests.isNotEmpty()) {
+        SectionCard(title = "Test history") {
+            tests.take(10).forEach { t ->
+                val label = when (t.kind) {
+                    "lthr" -> "${t.value.toInt()} bpm LTHR"
+                    "ftp" -> "${t.value.toInt()} W FTP"
+                    "threshold_pace" -> "${com.workoutmaker.app.data.Zones.formatPace(t.value.toInt())}/km threshold"
+                    else -> "${t.value}"
+                }
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                    Text(t.date, style = MaterialTheme.typography.bodySmall)
+                    Text(label, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.primary)
+                }
             }
         }
-        OutlinedButton(onClick = { showTest = true }, modifier = Modifier.fillMaxWidth()) { Text("Log a test") }
     }
 
     // Derived reference tables last — outputs of the inputs above, not settings.
@@ -382,7 +427,7 @@ internal fun LogTestDialog(onClose: () -> Unit, onLog: (ThresholdTest) -> Unit) 
             ) { Text("Log") }
         },
         dismissButton = { TextButton(onClick = onClose) { Text("Cancel") } },
-        title = { Text("Log threshold test") },
+        title = { Text("Update a threshold") },
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {

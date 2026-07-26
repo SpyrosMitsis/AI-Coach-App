@@ -162,15 +162,7 @@ internal fun LoginScreen(vm: AuthViewModel) {
                     OutlinedTextField(
                         pw, { pw = it }, label = { Text("Password") },
                         visualTransformation = if (showPw) VisualTransformation.None else PasswordVisualTransformation(),
-                        trailingIcon = {
-                            IconButton(onClick = { showPw = !showPw }) {
-                                Icon(
-                                    if (showPw) Icons.Outlined.VisibilityOff else Icons.Outlined.Visibility,
-                                    contentDescription = if (showPw) "Hide password" else "Show password",
-                                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                                )
-                            }
-                        },
+                        trailingIcon = { PasswordEye(showPw) { showPw = !showPw } },
                         modifier = Modifier.fillMaxWidth().padding(top = 8.dp).focusRequester(pwFocus),
                         singleLine = true,
                         keyboardOptions = KeyboardOptions(
@@ -358,12 +350,29 @@ private fun CustomServerDialog(backend: BackendConfig, onDismiss: () -> Unit) {
     )
 }
 
+// The reveal toggle every password field in the app hangs off its trailing
+// edge. Shared so sign-in and the reset dialog can never drift apart on icon,
+// wording or accessibility label.
+@Composable
+private fun PasswordEye(shown: Boolean, onToggle: () -> Unit) {
+    IconButton(onClick = onToggle) {
+        Icon(
+            if (shown) Icons.Outlined.VisibilityOff else Icons.Outlined.Visibility,
+            contentDescription = if (shown) "Hide password" else "Show password",
+            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+    }
+}
+
 // Shown (over whatever screen is up) after a password-recovery deep link has
 // imported its session; saving calls auth.updateUser with the new password.
 @Composable
 fun SetNewPasswordDialog(repo: WorkoutRepository) {
     var pw by remember { mutableStateOf("") }
     var confirm by remember { mutableStateOf("") }
+    // One toggle for both fields: the point of repeating the password is to
+    // catch a typo, and revealing only half of the pair wouldn't show it.
+    var showPw by rememberSaveable { mutableStateOf(false) }
     var msg by remember { mutableStateOf<String?>(null) }
     var busy by remember { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
@@ -393,13 +402,15 @@ fun SetNewPasswordDialog(repo: WorkoutRepository) {
                 )
                 OutlinedTextField(
                     pw, { pw = it }, label = { Text("New password") },
-                    visualTransformation = PasswordVisualTransformation(),
+                    visualTransformation = if (showPw) VisualTransformation.None else PasswordVisualTransformation(),
+                    trailingIcon = { PasswordEye(showPw) { showPw = !showPw } },
                     modifier = Modifier.fillMaxWidth().padding(top = 12.dp),
                     singleLine = true,
                 )
                 OutlinedTextField(
                     confirm, { confirm = it }, label = { Text("Repeat new password") },
-                    visualTransformation = PasswordVisualTransformation(),
+                    visualTransformation = if (showPw) VisualTransformation.None else PasswordVisualTransformation(),
+                    trailingIcon = { PasswordEye(showPw) { showPw = !showPw } },
                     modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
                     singleLine = true,
                 )
