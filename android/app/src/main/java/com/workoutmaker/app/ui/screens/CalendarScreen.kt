@@ -60,7 +60,7 @@ import com.workoutmaker.app.strength.WorkoutEntity
 import com.workoutmaker.app.ui.components.DetailOverlay
 import com.workoutmaker.app.ui.components.EmptyState
 import com.workoutmaker.app.ui.components.LocalAppSnackbar
-import com.workoutmaker.app.ui.components.friendlyError
+import com.workoutmaker.app.util.friendlyError
 import java.time.DayOfWeek
 import java.time.Instant
 import java.time.ZoneId

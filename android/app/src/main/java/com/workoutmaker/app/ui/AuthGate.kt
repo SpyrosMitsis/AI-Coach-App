@@ -23,6 +23,7 @@ import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.workoutmaker.app.data.BackendConfig
+import com.workoutmaker.app.util.friendlyAuthError
 import com.workoutmaker.app.data.WorkoutRepository
 import com.workoutmaker.app.ui.screens.LoginScreen
 import dagger.hilt.android.lifecycle.HiltViewModel
@@ -34,27 +35,6 @@ import kotlinx.coroutines.launch
 import javax.inject.Inject
 import com.workoutmaker.app.ui.screens.OnboardingScreen
 import com.workoutmaker.app.ui.screens.OnboardingViewModel
-
-// Supabase auth errors are terse and technical. Translate the common ones.
-internal fun friendlyAuthError(t: Throwable): String {
-    val m = t.message ?: return "Something went wrong. Please try again."
-    return when {
-        m.contains("Invalid login credentials", true) -> "Wrong email or password."
-        m.contains("Email not confirmed", true) ->
-            "Your email isn't confirmed yet. Check your inbox for the confirmation link."
-        m.contains("already registered", true) ->
-            "An account with this email already exists. Sign in instead."
-        m.contains("Password should be", true) -> "Password is too short. Use at least 6 characters."
-        m.contains("rate limit", true) || m.contains("too many", true) ->
-            "Too many attempts. Wait a minute and try again."
-        m.contains("is invalid", true) || m.contains("validate email", true) ->
-            "That doesn't look like a valid email address."
-        m.contains("Unable to resolve host", true) || m.contains("Failed to connect", true) ||
-            m.contains("timeout", true) || m.contains("No address associated", true) ->
-            "Can't reach the server. Check your internet connection."
-        else -> m
-    }
-}
 
 @HiltViewModel
 class AuthViewModel @Inject constructor(

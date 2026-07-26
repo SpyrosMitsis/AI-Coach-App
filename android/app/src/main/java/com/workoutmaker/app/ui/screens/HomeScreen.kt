@@ -127,7 +127,7 @@ import com.workoutmaker.app.strength.WorkoutEntity
 import com.workoutmaker.app.ui.components.DetailOverlay
 import com.workoutmaker.app.ui.components.EmptyState
 import com.workoutmaker.app.ui.components.LocalAppSnackbar
-import com.workoutmaker.app.ui.components.friendlyError
+import com.workoutmaker.app.util.friendlyError
 import com.workoutmaker.app.ui.theme.amberAccent
 import com.workoutmaker.app.util.AppLog
 import java.time.Instant

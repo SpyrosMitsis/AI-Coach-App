@@ -65,7 +65,7 @@ import com.workoutmaker.app.data.AnalysisSeries
 import com.workoutmaker.app.data.AnalysisTarget
 import com.workoutmaker.app.data.Zones
 import com.workoutmaker.app.ui.components.LineChart
-import com.workoutmaker.app.ui.components.friendlyError
+import com.workoutmaker.app.util.friendlyError
 import com.workoutmaker.app.ui.theme.BandAmber
 import com.workoutmaker.app.ui.theme.BandGreen
 import com.workoutmaker.app.ui.theme.amberAccent
