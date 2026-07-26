@@ -201,11 +201,59 @@ cmd_fn_deploy() {
   supabase functions deploy "$@" --project-ref "$PROJECT_REF"
 }
 
+# The Management API personal access token, WITHOUT keeping a second copy of it.
+# The CLI already stores one in the OS keyring when you `supabase login`, so read
+# it from there rather than asking for it again in dev.local.sh (this repo is
+# public; the fewer places a token lives, the better). $SUPABASE_ACCESS_TOKEN
+# still wins if it is set, which is what CI would use.
+mgmt_token() {
+  if [[ -n "${SUPABASE_ACCESS_TOKEN:-}" ]]; then printf '%s' "$SUPABASE_ACCESS_TOKEN"; return; fi
+  command -v secret-tool >/dev/null 2>&1 || return 0
+  secret-tool lookup service "Supabase CLI" username access-token 2>/dev/null || true
+}
+
+# fn:logs <name> [minutes]
+#   `supabase functions logs` does not exist in the pinned CLI (2.34.3 ships
+#   delete/deploy/download/list/new/serve only), so this used to fail with an
+#   "unknown flag: --project-ref" wall of help text that read like a broken
+#   project. Query the Management API's analytics endpoint directly instead:
+#   version-independent, and it survives a CLI upgrade.
 cmd_fn_logs() {
-  need supabase; need_ref
-  [[ $# -eq 1 ]] || die "usage: fn:logs <name>"
-  say "logs $1 -> $PROJECT_REF  (tip: WM_LOG=debug for verbose JSON lines)"
-  supabase functions logs "$1" --project-ref "$PROJECT_REF"
+  need curl; need jq; need_ref
+  [[ $# -ge 1 ]] || die "usage: fn:logs <name> [minutes, default 60]"
+  local name="$1" mins="${2:-60}"
+
+  local token; token="$(mgmt_token)"
+  [[ -n "$token" ]] || die "no Management API token: run 'supabase login', or set SUPABASE_ACCESS_TOKEN"
+
+  # Log rows identify the function by UUID, not by name.
+  local fid
+  fid="$(curl -fsS "https://api.supabase.com/v1/projects/$PROJECT_REF/functions" \
+    -H "Authorization: Bearer $token" \
+    | jq -r --arg n "$name" '.[] | select(.name == $n) | .id')"
+  [[ -n "$fid" && "$fid" != "null" ]] || die "no deployed function named '$name' in $PROJECT_REF"
+
+  # An explicit window is REQUIRED: with no timestamps the endpoint answers from
+  # a window so narrow it reliably returns zero rows, which looks like "logging
+  # is broken" rather than "you asked about the wrong minute".
+  local start end
+  start="$(date -u -d "$mins minutes ago" +%Y-%m-%dT%H:%M:%SZ)"
+  end="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+
+  say "logs $name (last ${mins}m) -> $PROJECT_REF  (tip: WM_LOG=debug for verbose JSON lines)"
+  curl -fsS -G "https://api.supabase.com/v1/projects/$PROJECT_REF/analytics/endpoints/logs.all" \
+    --data-urlencode "sql=select t.timestamp, t.event_message from function_logs t cross join unnest(t.metadata) as m where m.function_id = '$fid' order by t.timestamp desc limit 200" \
+    --data-urlencode "iso_timestamp_start=$start" \
+    --data-urlencode "iso_timestamp_end=$end" \
+    -H "Authorization: Bearer $token" \
+    | jq -r '
+        if .error then "error: \(.error)"
+        elif (.result | length) == 0 then "(no log lines in the window, try a larger \"minutes\")"
+        # Oldest first, so a turn reads top to bottom like a transcript. The
+        # timestamp is microseconds since the epoch.
+        else (.result | reverse | .[] |
+              "\((.timestamp / 1000000) | strftime("%H:%M:%S"))  \(.event_message | sub("\\s+$"; ""))")
+        end'
 }
 
 # fn:call <name> [jsonBody] [--remote]
@@ -395,7 +443,7 @@ ${c_green}Edge functions (Deno)${c_off}
   deno:check [fn ...]     type-check named functions (default: all)
   fn:serve                serve functions locally (--env-file functions/.env)
   fn:deploy <name ...>    deploy named functions to the project
-  fn:logs <name>          tail a deployed function's logs
+  fn:logs <name> [mins]   a deployed function's logs (default last 60 min)
   fn:call <name> [json] [--remote]
                           call a function with a seeded-user JWT; prints JSON
 
