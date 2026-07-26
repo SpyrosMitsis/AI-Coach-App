@@ -431,13 +431,57 @@ async function callFunction(auth: string, name: string, body: unknown): Promise<
 }
 
 /** Execute a coach tool; returns a concise observation string for the LLM. */
+const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
+
+/**
+ * Reject a date a write tool must not accept, or null when it is fine.
+ *
+ * THE BUG THIS FIXES: generate_workout passed `args.date` through with no
+ * validation whatsoever, not even a format check. Asked for a ride "on Sunday",
+ * the model reasoned that Sunday was not an available training day, walked
+ * BACKWARDS to the nearest allowed one, and scheduled the session on yesterday.
+ * A session in the past cannot be done, cannot be pushed to the watch, and
+ * quietly counts against plan-versus-reality forever.
+ *
+ * [minDate] is the earliest date a write may target, computed by the caller
+ * from the CLIENT's local date. Deliberately not derived here from the server
+ * clock: this runs in UTC and the athlete may not, so a server-side "today"
+ * would reject a legitimate today for anyone west of it.
+ *
+ * The message is written for the model, not the athlete: it has to say what to
+ * do next, because this error is fed straight back into the tool loop.
+ */
+export function dateError(
+  value: unknown,
+  minDate: string,
+  opts: { field: string; required: boolean },
+): string | null {
+  const raw = typeof value === "string" ? value.trim() : "";
+  if (!raw) {
+    return opts.required ? `error: ${opts.field} (YYYY-MM-DD) is required` : null;
+  }
+  if (!ISO_DATE.test(raw)) {
+    return `error: ${opts.field} must be a real date as YYYY-MM-DD, got "${raw}"`;
+  }
+  if (raw < minDate) {
+    return `error: ${raw} has already passed (today is ${minDate}). ` +
+      `Pick ${minDate} or later. If the athlete's preferred weekday is gone this week, use the NEXT one, never an earlier date.`;
+  }
+  return null;
+}
+
 export async function executeTool(
   admin: SupabaseClient,
   userId: string,
   auth: string,
   name: string,
   args: Record<string, unknown>,
+  // The athlete's local today. Optional so existing callers and tests keep
+  // working; when absent, date checks fall back to the server's UTC date less
+  // one day, which is tolerant enough for any timezone offset.
+  today?: string,
 ): Promise<string> {
+  const minDate = today && ISO_DATE.test(today) ? today : iso(Date.now() - DAY);
   try {
     switch (name) {
       case "get_fitness": {
@@ -588,7 +632,8 @@ export async function executeTool(
       }
       case "move_workout": {
         const newDate = String(args.new_date ?? "");
-        if (!/^\d{4}-\d{2}-\d{2}$/.test(newDate)) return "error: new_date (YYYY-MM-DD) is required";
+        const badMove = dateError(newDate, minDate, { field: "new_date", required: true });
+        if (badMove) return badMove;
         let workoutId = typeof args.workout_id === "string" ? args.workout_id : null;
         if (!workoutId && typeof args.date === "string") {
           const { data: rows } = await admin.from("planned_workouts")
@@ -603,7 +648,8 @@ export async function executeTool(
       }
       case "set_rest_day": {
         const d = String(args.date ?? "");
-        if (!/^\d{4}-\d{2}-\d{2}$/.test(d)) return "error: date (YYYY-MM-DD) is required";
+        const badRest = dateError(d, minDate, { field: "date", required: true });
+        if (badRest) return badRest;
         // Clear every non-rest planned session that day; delete-workout removes the
         // watch event too (same path the app's delete uses).
         const { data: rows } = await admin.from("planned_workouts")
@@ -645,19 +691,80 @@ export async function executeTool(
         return JSON.stringify({ ok: true });
       }
       case "make_easier": {
+        const bad = dateError(args.date, minDate, { field: "date", required: false });
+        if (bad) return bad;
+        const day = typeof args.date === "string" && args.date ? args.date : minDate;
+
+        // THE BUG THIS FIXES: this passed type "auto", so "make it easier"
+        // regenerated the day with a FREE choice of sport. Measured live, four
+        // easy runs came back as four identical strength sessions. Easing a run
+        // must produce an easier run: read what is actually planned and pin it.
+        const { data: planned } = await admin.from("planned_workouts")
+          .select("id, type, workout_json").eq("user_id", userId).eq("date", day)
+          .neq("type", "rest").order("created_at", { ascending: false });
+        const current = (planned ?? [])[0];
+        if (!current) {
+          return `error: nothing is planned on ${day} to make easier. Check get_planned_week first.`;
+        }
+
         const r = await callFunction(auth, "generate-workout", {
-          date: args.date, type: "auto",
-          request: "Make this day noticeably easier, lower the intensity and volume, keep it aerobic/recovery.",
+          date: day,
+          type: current.type ?? "auto",
+          request: "Make this day noticeably easier, lower the intensity and volume, keep it aerobic/recovery. " +
+            `Keep it the same kind of session (${current.type}), do not switch sport.`,
           push: true,
         }) as Record<string, unknown>;
         const w = r.workout as { title?: string } | undefined;
-        return JSON.stringify({ ok: !!r.workout_id, title: w?.title ?? null, date: args.date ?? "today", error: r.error ?? null });
+        return JSON.stringify({
+          ok: !!r.workout_id,
+          date: day,
+          // Report the sport both ways so a swap is visible in the observation
+          // rather than only on the athlete's calendar.
+          was: { type: current.type, title: (current.workout_json as { title?: string } | null)?.title ?? null },
+          now: { type: current.type, title: w?.title ?? null },
+          error: r.error ?? null,
+        });
       }
       case "plan_week": {
+        const badWeek = dateError(args.start_date, minDate, { field: "start_date", required: false });
+        // A week may legitimately START in the past (the current week's Monday),
+        // so only the FORMAT is enforced here, not the floor.
+        if (badWeek && !badWeek.includes("has already passed")) return badWeek;
+
         const r = await callFunction(auth, "plan-week", { start_date: args.start_date }) as Record<string, unknown>;
-        return JSON.stringify({ ok: !r.error, error: r.error ?? null, scheduled: r.scheduled, week_focus: r.week_focus, pushed: r.pushed });
+
+        // THE BUG THIS FIXES: this returned `scheduled: 5` and nothing else, so
+        // the model had no way to describe the week it had just created and
+        // described the one it MEANT to create instead. Measured live, it
+        // reported "3 easy runs and 2 strength sessions" for a week that
+        // actually held 4 strength sessions and no runs at all. Read the days
+        // back from the database so the summary is grounded in what exists.
+        const start = typeof args.start_date === "string" && ISO_DATE.test(args.start_date)
+          ? args.start_date
+          : mondayOf(new Date(minDate));
+        const end = iso(new Date(start).getTime() + 6 * DAY);
+        const { data: days } = await admin.from("planned_workouts")
+          .select("date, type, workout_json")
+          .eq("user_id", userId).gte("date", start).lte("date", end)
+          .order("date", { ascending: true });
+
+        return JSON.stringify({
+          ok: !r.error,
+          error: r.error ?? null,
+          week_start: start,
+          week_focus: r.week_focus,
+          pushed: r.pushed,
+          // The authoritative answer to "what is on the calendar now".
+          days: (days ?? []).map((d) => ({
+            date: d.date,
+            type: d.type,
+            title: (d.workout_json as { title?: string } | null)?.title ?? null,
+          })),
+        });
       }
       case "generate_workout": {
+        const bad = dateError(args.date, minDate, { field: "date", required: false });
+        if (bad) return bad;
         const r = await callFunction(auth, "generate-workout", {
           date: args.date, type: args.type ?? "auto",
           // Only pin a duration when explicitly requested — otherwise the
@@ -666,7 +773,16 @@ export async function executeTool(
           request: args.request, lock: args.lock === true, push: true,
         }) as Record<string, unknown>;
         const w = r.workout as { title?: string } | undefined;
-        return JSON.stringify({ ok: !!r.workout_id, title: w?.title ?? null, date: args.date ?? "today", error: r.error ?? null });
+        return JSON.stringify({
+          ok: !!r.workout_id,
+          title: w?.title ?? null,
+          // The date the workout actually landed on, echoed from the generator
+          // where it knows it. "today" was a guess the model then repeated to
+          // the athlete as fact.
+          date: (typeof r.date === "string" ? r.date : null) ?? args.date ?? minDate,
+          type: args.type ?? "auto",
+          error: r.error ?? null,
+        });
       }
       case "assess_goal": {
         if (!args.goal || !args.date) return "error: goal and date are required";

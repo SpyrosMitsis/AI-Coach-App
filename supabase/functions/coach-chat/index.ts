@@ -72,6 +72,7 @@ RULES:
 - NEVER ask the athlete to describe past workouts, sessions, or numbers you can look up yourself. Questions like "how did my last workouts go?" mean: call get_recent_activities and get_execution_analysis (plus get_strength_summary for lifting), then answer from the data.
 - DRIVE the task to completion in this turn. When the athlete's message already asks for or agrees to an action (e.g. "plan my week and put it on my calendar", "make me today's workout", "apply that"), TAKE the action (plan_week, generate_workout, move_workout, set_goal_race) now, don't stop to ask "shall I?" again. Then confirm what you did and why.
 - NEVER promise an action instead of performing it. There is only THIS turn, the athlete cannot grant you a "next turn", so phrases like "I'll adjust your plan", "let me review your week", "I will proceed with these adjustments", "I'm going to update…", or "give me a moment" are FORBIDDEN unless you call the matching tool in this same turn. If you intend to change the plan, call plan_week / generate_workout / move_workout / set_goal_race NOW, read back the result, and report what you DID in the past tense, never what you will do.
+- REPORT WHAT THE TOOL RETURNED, NOT WHAT YOU ASKED FOR. A write tool tells you what actually landed: plan_week returns the real day list, make_easier returns the session before and after, generate_workout returns the date and title it created. Describe THAT. If the result differs from what you intended, say what really happened, do not describe your intention as though it came true. The athlete is looking at the same calendar you just wrote.
 - A request that signals intent IS consent to act. "I have an exam until June 30, adjust my plan", "lighten this week", "move my long run" all mean: do it now. Don't re-ask. For a destructive overwrite (regenerating an existing/partly-locked week, changing a goal-race date) just give a one-line heads-up of what you replaced as part of the report, don't stop to ask first.
 - Only pause to ask first when the action is genuinely ambiguous AND unsignalled. When you do ask, ask once and propose a specific default.
 - Don't end a turn by handing trivial work back ("want me to schedule it?") when the request already implied yes, just do it and report.
@@ -221,7 +222,14 @@ Deno.serve(async (req) => {
 
     const since28 = new Date(Date.now() - 28 * DAY).toISOString().slice(0, 10);
     const since7 = new Date(Date.now() - 7 * DAY).toISOString().slice(0, 10);
-    const today = new Date().toISOString().slice(0, 10);
+    // CLAUDE.md: "today" is the CLIENT's local date, never UTC. This function
+    // runs in UTC and the athlete does not, so a server-computed today is the
+    // wrong day for part of every 24 hours. Clients send theirs; fall back to
+    // UTC only for older ones that do not.
+    const clientToday = typeof body.today === "string" && /^\d{4}-\d{2}-\d{2}$/.test(body.today)
+      ? body.today
+      : null;
+    const today = clientToday ?? new Date().toISOString().slice(0, 10);
     // Monday of the current week, for the inline adherence line.
     const weekStart = (() => {
       const d = new Date(today);
@@ -389,7 +397,10 @@ Deno.serve(async (req) => {
                 ...(rejected.length ? { rejected } : {}),
               }));
             })()
-            : executeTool(admin, userId, auth, name, targs);
+            // clientToday, not today: a write must only be refused for being in
+            // the past when we KNOW the athlete's date. With the UTC fallback,
+            // executeTool applies a day of slack instead.
+            : executeTool(admin, userId, auth, name, targs, clientToday ?? undefined);
           if (writeKey) writeCache.set(writeKey, obs);
           return obs;
         };

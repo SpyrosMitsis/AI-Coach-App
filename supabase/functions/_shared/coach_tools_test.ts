@@ -1,6 +1,7 @@
 import { assert, assertEquals } from "jsr:@std/assert@1";
 import { matchDemand } from "./feasibility.ts";
 import {
+  dateError,
   executeTool,
   goalTextFor,
   matchesGoal,
@@ -291,7 +292,7 @@ function writeStub(byTable: Record<string, unknown>) {
   const writes: Array<{ table: string; op: string; row: Any }> = [];
   const chainFor = (table: string, data: unknown): Any => {
     const c: Any = {};
-    for (const m of ["select", "eq", "gte", "lte", "not", "order", "limit"]) c[m] = () => c;
+    for (const m of ["select", "eq", "neq", "gte", "lte", "not", "order", "limit"]) c[m] = () => c;
     // Captured, not ignored: a delete is only correct if it names the right
     // ids, and .in() is where they are.
     c.in = (_col: string, ids: Any) => { c._in = ids; return c; };
@@ -571,4 +572,161 @@ Deno.test("a goal whose distance is a target time still gets a real verdict", as
   // standard training demand", i.e. saved with no judgement at all.
   assertEquals(obs.feasibility.verdict, "unrealistic");
   assertEquals(obs.feasibility.push_back, true);
+});
+
+// ---------------------------------------------------------------------------
+// dateError: write tools must not accept a date that has already passed.
+//
+// THE BUG: generate_workout passed args.date straight through with NO checks.
+// Asked for a ride "on Sunday", the model decided Sunday was not an available
+// training day, walked BACKWARDS to the nearest allowed one, and scheduled the
+// session on yesterday. Confirmed live in planned_workouts.
+// ---------------------------------------------------------------------------
+
+Deno.test("dateError rejects a date before today", () => {
+  const e = dateError("2026-07-25", "2026-07-26", { field: "date", required: true });
+  assert(e, "yesterday must be refused");
+  assert(e!.includes("has already passed"));
+  // The message is read by the MODEL, so it has to say what to do instead.
+  assert(/next one|later/i.test(e!), `unhelpful error: ${e}`);
+});
+
+Deno.test("dateError allows today and the future", () => {
+  assertEquals(dateError("2026-07-26", "2026-07-26", { field: "date", required: true }), null);
+  assertEquals(dateError("2027-01-01", "2026-07-26", { field: "date", required: true }), null);
+});
+
+Deno.test("dateError distinguishes missing from malformed", () => {
+  // Optional and absent means "today", which is a normal call, not an error.
+  assertEquals(dateError(undefined, "2026-07-26", { field: "date", required: false }), null);
+  assertEquals(dateError("", "2026-07-26", { field: "date", required: false }), null);
+  assert(dateError(undefined, "2026-07-26", { field: "date", required: true })?.includes("required"));
+  // "next Sunday" is the shape a model actually sends when it gives up on dates.
+  assert(dateError("next Sunday", "2026-07-26", { field: "date", required: true })?.includes("YYYY-MM-DD"));
+  assert(dateError("2026-7-5", "2026-07-26", { field: "date", required: true })?.includes("YYYY-MM-DD"));
+});
+
+Deno.test("generate_workout refuses to schedule into the past", async () => {
+  const s = writeStub({ user_profiles: [{ onboarding: {} }], planned_workouts: [] });
+  const obs = await executeTool(
+    s.admin, "u1", "auth", "generate_workout", { date: "2026-07-25" }, "2026-07-26",
+  );
+  assert(obs.startsWith("error:"), obs);
+  assertEquals(s.writes.length, 0, "nothing may be written for a past date");
+});
+
+Deno.test("set_rest_day and move_workout refuse the past too", async () => {
+  const s = writeStub({ planned_workouts: [] });
+  for (const [tool, args] of [
+    ["set_rest_day", { date: "2026-07-01" }],
+    ["move_workout", { workout_id: "w1", new_date: "2026-07-01" }],
+  ] as const) {
+    const obs = await executeTool(s.admin, "u1", "auth", tool, args, "2026-07-26");
+    assert(obs.startsWith("error:"), `${tool} accepted a past date: ${obs}`);
+  }
+});
+
+Deno.test("with no client date, a day of slack is allowed rather than a wrong refusal", async () => {
+  // The server runs in UTC and the athlete may not. Without a client-supplied
+  // today, refusing strictly would reject a legitimate "today" for anyone in a
+  // timezone behind UTC, which is worse than accepting one stale day.
+  const s = writeStub({ planned_workouts: [] });
+  const yesterday = new Date(Date.now() - 86400000).toISOString().slice(0, 10);
+  const obs = await executeTool(s.admin, "u1", "auth", "set_rest_day", { date: yesterday });
+  assert(!obs.startsWith("error:"), `slack date should be accepted, got ${obs}`);
+});
+
+// ---------------------------------------------------------------------------
+// Grounding: a write tool must report what LANDED, not what was asked for.
+//
+// THE BUG: "make next week easier" produced a reply describing "3 easy runs and
+// 2 short strength sessions" for a week that actually held 4 strength sessions
+// and no runs. Two causes, both here:
+//   - make_easier regenerated the day with type "auto", so easing a run was
+//     free to return a strength session instead;
+//   - plan_week reported only `scheduled: <count>`, so the model had nothing to
+//     describe and described its own intention instead.
+// ---------------------------------------------------------------------------
+
+Deno.test("make_easier keeps the session's sport instead of regenerating freely", async () => {
+  let sentType: unknown = "NOT SENT";
+  const s = writeStub({
+    planned_workouts: [{ id: "w1", type: "run", workout_json: { title: "Easy Run with Strides" } }],
+  });
+  const origFetch = globalThis.fetch;
+  globalThis.fetch = ((_u: string | URL | Request, init?: RequestInit) => {
+    sentType = JSON.parse(String(init?.body ?? "{}")).type;
+    return Promise.resolve(
+      new Response(JSON.stringify({ workout_id: "w2", workout: { title: "Easy Recovery Run" } }), {
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
+  }) as typeof fetch;
+  try {
+    const obs = JSON.parse(
+      await executeTool(s.admin, "u1", "auth", "make_easier", { date: "2026-07-27" }, "2026-07-26"),
+    );
+    // The whole point: a run stays a run.
+    assertEquals(sentType, "run", "the existing sport must be pinned, never 'auto'");
+    assertEquals(obs.was.type, "run");
+    assertEquals(obs.now.type, "run");
+  } finally {
+    globalThis.fetch = origFetch;
+  }
+});
+
+Deno.test("make_easier refuses a day with nothing planned instead of inventing one", async () => {
+  const s = writeStub({ planned_workouts: [] });
+  const obs = await executeTool(s.admin, "u1", "auth", "make_easier", { date: "2026-07-27" }, "2026-07-26");
+  assert(obs.startsWith("error:"), obs);
+  assert(obs.includes("nothing is planned"), obs);
+});
+
+Deno.test("plan_week reports the real days, not just how many", async () => {
+  const s = writeStub({
+    planned_workouts: [
+      { date: "2026-07-27", type: "run", workout_json: { title: "Easy Run" } },
+      { date: "2026-07-28", type: "strength", workout_json: { title: "Full Body" } },
+    ],
+  });
+  const origFetch = globalThis.fetch;
+  globalThis.fetch = (() =>
+    Promise.resolve(
+      new Response(JSON.stringify({ scheduled: 2, week_focus: "base", pushed: 2 }), {
+        headers: { "Content-Type": "application/json" },
+      }),
+    )) as typeof fetch;
+  try {
+    const obs = JSON.parse(
+      await executeTool(s.admin, "u1", "auth", "plan_week", { start_date: "2026-07-27" }, "2026-07-26"),
+    );
+    // A bare count is what let the model describe a week it had not created.
+    assertEquals(obs.days.length, 2);
+    assertEquals(obs.days[0], { date: "2026-07-27", type: "run", title: "Easy Run" });
+    assertEquals(obs.days[1].type, "strength");
+    assertEquals(obs.week_start, "2026-07-27");
+  } finally {
+    globalThis.fetch = origFetch;
+  }
+});
+
+Deno.test("plan_week still accepts the current week's Monday, which is in the past", async () => {
+  // A week legitimately starts before today; only the FORMAT is enforced.
+  const s = writeStub({ planned_workouts: [] });
+  const origFetch = globalThis.fetch;
+  globalThis.fetch = (() =>
+    Promise.resolve(new Response(JSON.stringify({ scheduled: 0 }), {
+      headers: { "Content-Type": "application/json" },
+    }))) as typeof fetch;
+  try {
+    const obs = await executeTool(
+      s.admin, "u1", "auth", "plan_week", { start_date: "2026-07-20" }, "2026-07-26",
+    );
+    assert(!obs.startsWith("error:"), `a past week start must be allowed, got ${obs}`);
+    // But garbage is still refused.
+    const bad = await executeTool(s.admin, "u1", "auth", "plan_week", { start_date: "next week" }, "2026-07-26");
+    assert(bad.startsWith("error:"), bad);
+  } finally {
+    globalThis.fetch = origFetch;
+  }
 });

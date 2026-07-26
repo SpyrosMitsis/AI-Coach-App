@@ -1,6 +1,7 @@
 package com.workoutmaker.app.data
 
 import kotlinx.serialization.Serializable
+import java.time.LocalDate
 
 // Kotlin mirror of /shared/types.ts. Keep field names in sync with the schema.
 //
@@ -133,6 +134,12 @@ data class CoachChatRequest(
     // Incognito turn: the server answers with full context but persists nothing
     // (no conversation row, no knowledge/summary updates).
     val incognito: Boolean = false,
+    // OUR local date. The edge function runs in UTC and the athlete does not,
+    // so a server-computed "today" is the wrong day for part of every 24 hours:
+    // the coach would plan around yesterday, and its write tools would refuse a
+    // session for today as being in the past. Same rule the rest of the app
+    // follows (see CLAUDE.md); the server falls back to UTC without it.
+    val today: String = LocalDate.now().toString(),
 )
 
 // A device setting the coach changed via the update_app_settings tool. Values
