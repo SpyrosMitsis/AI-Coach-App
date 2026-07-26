@@ -35,7 +35,6 @@ import com.workoutmaker.app.ui.components.InfoIcon
 import com.workoutmaker.app.ui.components.Metrics
 import com.workoutmaker.app.ui.components.SectionCard
 import com.workoutmaker.app.ui.components.SectionLabel
-import android.os.Build
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
