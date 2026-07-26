@@ -53,6 +53,57 @@ async function feasibilityInputs(
   };
 }
 
+/**
+ * Does a goal (a race row, or the profile's anchor) answer to what the athlete
+ * asked to remove?
+ *
+ * Loose on the name deliberately: people say "the Ironman", not "Ironman
+ * Barcelona 2027". Substring either way, so both a shorter and a longer phrase
+ * than the stored name match. A date alone matches every goal on that date; a
+ * name AND a date must both agree, which is what disambiguates two events
+ * sharing a name.
+ *
+ * Exported for tests: the matching is the part with teeth, since a rule that is
+ * too loose deletes the wrong race and one too tight silently deletes nothing.
+ */
+export function matchesGoal(
+  goal: { name: string; date: string },
+  name: string,
+  date: string,
+): boolean {
+  const byDate = date ? goal.date === date : true;
+  if (!name) return date ? byDate : false;
+  const a = goal.name.trim().toLowerCase();
+  const b = name.trim().toLowerCase();
+  if (!a) return false;
+  const byName = a.includes(b) || b.includes(a);
+  return byName && byDate;
+}
+
+/**
+ * Give the profile's goal anchor a row in `races` if it has none.
+ *
+ * An anchor set before set_goal_race wrote to `races` exists only in
+ * onboarding.goal: Home shows it, Goals and races does not, and the athlete has
+ * no way to delete something they cannot see. Backfilling makes the two agree
+ * without ever discarding a goal.
+ */
+async function backfillAnchorRace(admin: SupabaseClient, userId: string): Promise<void> {
+  const { data: p } = await admin.from("user_profiles")
+    .select("onboarding").eq("id", userId).single();
+  const o = (p?.onboarding ?? {}) as Record<string, unknown>;
+  const name = typeof o.goal === "string" ? o.goal.trim() : "";
+  const date = typeof o.goal_date === "string" ? o.goal_date.trim() : "";
+  if (!name || !/^\d{4}-\d{2}-\d{2}$/.test(date)) return;
+
+  const { data: existing } = await admin.from("races")
+    .select("id").eq("user_id", userId).eq("name", name).eq("date", date).maybeSingle();
+  if (existing?.id) return;
+  await admin.from("races").insert({
+    user_id: userId, name, date, priority: "A", sport: "run",
+  });
+}
+
 function mondayOf(date = new Date()): string {
   const d = new Date(date);
   d.setDate(d.getDate() - ((d.getDay() + 6) % 7));
@@ -198,6 +249,20 @@ export const TOOL_CATALOG: ToolDef[] = [
     },
     description:
       "Save a goal event to the athlete's goals and races list. An A-priority goal also anchors periodization and taper. Returns a FEASIBILITY assessment from the athlete's real numbers: if it says push_back, do NOT plan a training block, talk to them about the verdict first.",
+  },
+  {
+    name: "remove_goal_race",
+    kind: "act",
+    args: "{ name?: string, date?: 'YYYY-MM-DD' }",
+    schema: {
+      type: "object",
+      properties: {
+        name: { type: "string", description: "Event name to remove, e.g. 'Ironman Barcelona'. Matched loosely." },
+        date: { type: "string", description: "YYYY-MM-DD, to disambiguate two events with the same name." },
+      },
+    },
+    description:
+      "Remove a goal event from the athlete's goals and races list when they say they are not doing it any more. Give at least one of name or date. Also clears it from Home if it was the goal anchoring their training. Returns what was actually removed: if it removed nothing, say so rather than claiming the goal is gone.",
   },
   {
     name: "assess_goal",
@@ -644,6 +709,13 @@ export async function executeTool(
             onboarding: { ...o, goal: name, goal_date: date, ...pace },
           }).eq("id", userId);
           anchored = true;
+        } else {
+          // A B/C goal leaves the anchor alone, which is correct, but an anchor
+          // set before this tool wrote to `races` has no row backing it and is
+          // therefore invisible (and un-deletable) in Goals and races. Give it
+          // one now, so adding a second goal surfaces the first rather than
+          // leaving a goal that only Home can see.
+          await backfillAnchorRace(admin, userId);
         }
 
         // Return the verdict WITH the write, so the coach cannot save a goal
@@ -664,6 +736,79 @@ export async function executeTool(
             weeks_needed: f.weeksNeeded,
             push_back: f.pushBack,
           },
+        });
+      }
+      case "remove_goal_race": {
+        // The bug this fixes: there was no way to take a goal back. Asked to
+        // "remove the Ironman", the coach had no tool for it, so it said it had
+        // and nothing was written. The goal stayed in onboarding.goal, Home
+        // kept reading it, and it reappeared the moment anything refreshed.
+        const name = typeof args.name === "string" ? args.name.trim() : "";
+        const date = typeof args.date === "string" ? args.date.trim() : "";
+        if (!name && !date) return "error: give a name or a date to remove";
+        if (date && !/^\d{4}-\d{2}-\d{2}$/.test(date)) {
+          return "error: date must be YYYY-MM-DD";
+        }
+
+        const { data: rows } = await admin.from("races")
+          .select("id, name, date, priority").eq("user_id", userId);
+        const all = (rows ?? []) as Array<
+          { id: string; name: string; date: string; priority: string | null }
+        >;
+        const doomed = all.filter((r) => matchesGoal(r, name, date));
+
+        if (doomed.length) {
+          await admin.from("races").delete()
+            .eq("user_id", userId).in("id", doomed.map((r) => r.id));
+        }
+
+        // The anchor lives in onboarding, separately from the races list, so
+        // deleting the row is only half the job: clear it here too when it
+        // pointed at what was just removed. This also covers a legacy anchor
+        // that never had a race row at all, which is the case that made a
+        // "removed" goal come back.
+        const { data: p } = await admin.from("user_profiles")
+          .select("onboarding").eq("id", userId).single();
+        const o = (p?.onboarding ?? {}) as Record<string, unknown>;
+        const anchor = {
+          name: typeof o.goal === "string" ? o.goal : "",
+          date: typeof o.goal_date === "string" ? o.goal_date : "",
+        };
+        const hadAnchor = Boolean(anchor.name || anchor.date);
+        const clearing = hadAnchor && matchesGoal(anchor, name, date);
+
+        let newAnchor: { name: string; date: string } | null = null;
+        if (clearing) {
+          // Promote the soonest remaining A goal rather than leaving the
+          // athlete with no anchor at all: periodization, phase and taper all
+          // read it, so an empty anchor quietly flattens their plan.
+          const today = new Date().toISOString().slice(0, 10);
+          const next = all
+            .filter((r) => !doomed.some((d) => d.id === r.id))
+            .filter((r) => (r.priority ?? "A").toUpperCase() === "A" && r.date >= today)
+            .sort((a, b) => a.date.localeCompare(b.date))[0];
+          newAnchor = next ? { name: next.name, date: next.date } : null;
+          await admin.from("user_profiles").update({
+            onboarding: {
+              ...o,
+              goal: newAnchor?.name ?? null,
+              goal_date: newAnchor?.date ?? null,
+            },
+          }).eq("id", userId);
+        }
+
+        // Report what happened, not what was asked for: nothing matched has to
+        // be distinguishable from removed, or the coach confirms a deletion
+        // that never occurred, which is exactly how this went wrong before.
+        return JSON.stringify({
+          ok: true,
+          removed: doomed.map((r) => ({ name: r.name, date: r.date })),
+          removed_count: doomed.length,
+          cleared_from_home: clearing,
+          new_goal_anchor: newAnchor,
+          note: doomed.length === 0 && !clearing
+            ? "nothing matched, so nothing was removed. Tell the athlete, and check the name against get_profile."
+            : undefined,
         });
       }
       case "update_profile": {

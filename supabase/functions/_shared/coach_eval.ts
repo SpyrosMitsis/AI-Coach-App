@@ -148,6 +148,7 @@ export const WRITE_TOOLS = [
   "generate_workout",
   "move_workout",
   "set_goal_race",
+  "remove_goal_race",
   "set_rest_day",
   "make_easier",
 ];

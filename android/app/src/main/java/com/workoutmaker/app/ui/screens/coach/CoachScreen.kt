@@ -240,11 +240,7 @@ fun CoachScreen(vm: CoachViewModel = hiltViewModel(), onOpenCalendar: () -> Unit
                 enter = fadeIn(),
                 exit = fadeOut() + slideOutVertically { -it / 6 },
             ) {
-                ChatHero(
-                    name = displayName,
-                    starters = suggestions,
-                    onStarter = { vm.send(it.prompt) },
-                )
+                ChatHero(name = displayName)
             }
             LazyColumn(
                 state = listState,
@@ -338,11 +334,12 @@ fun CoachScreen(vm: CoachViewModel = hiltViewModel(), onOpenCalendar: () -> Unit
             }
         }
 
-        // Contextual follow-ups after a coach action ("Explain the week", "Make
-        // it easier", ...); they clear on tap or when a new turn starts. The
-        // starters for a fresh thread now live in the hero above, so this row
-        // is follow-ups only.
-        val chips = followUps
+        // Quick-reply chips: starters on a fresh thread, contextual follow-ups
+        // after a coach action ("Explain the week", "Make it easier", ...). One
+        // row, one component; follow-ups clear on tap or when a new turn starts.
+        // They belong HERE and not in the hero: the hero sits under the message
+        // list, which covers it at fillMaxSize and eats every tap.
+        val chips = if (messages.isEmpty()) suggestions else followUps
         if (chips.isNotEmpty() && !sending && !revealing) {
             LazyRow(
                 Modifier.fillMaxWidth().padding(vertical = 4.dp),

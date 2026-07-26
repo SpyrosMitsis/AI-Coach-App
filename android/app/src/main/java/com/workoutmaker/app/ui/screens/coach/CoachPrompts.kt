@@ -69,6 +69,7 @@ internal fun friendlyToolProgress(tool: String): String = when (tool) {
     "make_easier" -> "Making the session easier…"
     "assess_goal" -> "Checking if that goal is realistic…"
     "set_goal_race" -> "Saving your goal race…"
+    "remove_goal_race" -> "Removing that goal…"
     "remember" -> "Noting that down…"
     "update_profile" -> "Updating your profile…"
     "update_app_settings" -> "Updating your app settings…"
@@ -77,7 +78,8 @@ internal fun friendlyToolProgress(tool: String): String = when (tool) {
 
 // Tools that mutate the calendar/plan — used to drive the "✓ Updated" result card.
 internal val WRITE_TOOL_NAMES = setOf(
-    "plan_week", "generate_workout", "move_workout", "set_goal_race", "set_rest_day", "make_easier",
+    "plan_week", "generate_workout", "move_workout", "set_goal_race", "remove_goal_race",
+    "set_rest_day", "make_easier",
 )
 
 // Contextual quick replies for the turn that just finished. Deterministic from
@@ -155,6 +157,7 @@ internal fun friendlyTools(tools: List<String>): String {
             "set_rest_day" -> "set a rest day"
             "make_easier" -> "made the session easier"
             "set_goal_race" -> "set your goal race"
+            "remove_goal_race" -> "removed that goal"
             "remember" -> "noted that for next time"
             "update_profile" -> "updated your profile"
             "update_app_settings" -> "updated your app settings"

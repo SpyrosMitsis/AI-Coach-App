@@ -1,5 +1,11 @@
 import { assert, assertEquals } from "jsr:@std/assert@1";
-import { executeTool, nativeToolDefs, TOOL_CATALOG, toolCatalogPrompt } from "./coach_tools.ts";
+import {
+  executeTool,
+  matchesGoal,
+  nativeToolDefs,
+  TOOL_CATALOG,
+  toolCatalogPrompt,
+} from "./coach_tools.ts";
 // deno-lint-ignore no-explicit-any
 type Any = any;
 
@@ -283,11 +289,19 @@ function writeStub(byTable: Record<string, unknown>) {
   const writes: Array<{ table: string; op: string; row: Any }> = [];
   const chainFor = (table: string, data: unknown): Any => {
     const c: Any = {};
-    for (const m of ["select", "eq", "gte", "lte", "in", "not", "order", "limit"]) c[m] = () => c;
+    for (const m of ["select", "eq", "gte", "lte", "not", "order", "limit"]) c[m] = () => c;
+    // Captured, not ignored: a delete is only correct if it names the right
+    // ids, and .in() is where they are.
+    c.in = (_col: string, ids: Any) => { c._in = ids; return c; };
     c.single = () => Promise.resolve({ data: Array.isArray(data) ? data[0] : data });
     c.maybeSingle = () => Promise.resolve({ data: Array.isArray(data) ? (data[0] ?? null) : data });
     c.insert = (row: Any) => { writes.push({ table, op: "insert", row }); return c; };
     c.update = (row: Any) => { writes.push({ table, op: "update", row }); return c; };
+    c.delete = () => {
+      const w = { table, op: "delete", row: c };
+      writes.push(w);
+      return c;
+    };
     c.then = (res: Any, rej: Any) => Promise.resolve({ data }).then(res, rej);
     return c;
   };
@@ -404,3 +418,118 @@ Deno.test("both goal tools are advertised to the model", () => {
 function iso6WeeksOut(): string {
   return new Date(Date.now() + 42 * 86400000).toISOString().slice(0, 10);
 }
+
+// ---------------------------------------------------------------------------
+// remove_goal_race.
+//
+// THE BUG: there was no removal tool at all. Asked to "remove the Ironman", the
+// coach confirmed it had, because confirming is all it could do. onboarding.goal
+// still said Ironman, so Home kept showing it and it reappeared as soon as
+// anything refreshed, even after another goal was added.
+// ---------------------------------------------------------------------------
+
+const IRONMAN = { id: "r1", name: "Ironman Barcelona", date: "2027-10-03", priority: "A" };
+const MARATHON = { id: "r2", name: "February Marathon", date: "2027-02-14", priority: "B" };
+
+/** Athlete whose anchor and races list both hold the Ironman. */
+function withIronman(races = [IRONMAN, MARATHON]) {
+  return writeStub({
+    user_profiles: [{ onboarding: { goal: IRONMAN.name, goal_date: IRONMAN.date } }],
+    races,
+    completed_activities: [],
+  });
+}
+
+Deno.test("remove_goal_race deletes the race AND clears the anchor Home reads", async () => {
+  const s = withIronman();
+  const obs = JSON.parse(
+    await executeTool(s.admin, "u1", "auth", "remove_goal_race", { name: "Ironman" }),
+  );
+
+  const del = s.of("races").find((w) => w.op === "delete");
+  assert(del, "the races row must actually be deleted");
+  assertEquals((del!.row as Any)._in, ["r1"], "only the Ironman, not the marathon");
+
+  // The half that was missing: without this the goal comes straight back.
+  const prof = s.of("user_profiles").find((w) => w.op === "update");
+  assert(prof, "the periodization anchor must be cleared too");
+  assertEquals((prof!.row.onboarding as Any).goal, null);
+  assertEquals((prof!.row.onboarding as Any).goal_date, null);
+
+  assertEquals(obs.removed_count, 1);
+  assertEquals(obs.cleared_from_home, true);
+});
+
+Deno.test("removing the anchor promotes the next A goal rather than leaving none", async () => {
+  const nextA = { id: "r3", name: "Autumn Marathon", date: iso6WeeksOut(), priority: "A" };
+  const s = withIronman([IRONMAN, MARATHON, nextA]);
+  const obs = JSON.parse(
+    await executeTool(s.admin, "u1", "auth", "remove_goal_race", { name: "Ironman" }),
+  );
+  // Phase, taper and weeks-to-goal all read the anchor; an empty one quietly
+  // flattens the plan. The B-priority marathon must NOT be promoted.
+  assertEquals(obs.new_goal_anchor?.name, "Autumn Marathon");
+  const prof = s.of("user_profiles").find((w) => w.op === "update");
+  assertEquals((prof!.row.onboarding as Any).goal, "Autumn Marathon");
+});
+
+Deno.test("a legacy goal with no race row is still removable", async () => {
+  // Exactly the reported state: set before the tool wrote to `races`, so it
+  // lives only in onboarding.goal. Deleting rows alone would not touch it.
+  const s = writeStub({
+    user_profiles: [{ onboarding: { goal: "Ironman Barcelona", goal_date: "2027-10-03" } }],
+    races: [],
+    completed_activities: [],
+  });
+  const obs = JSON.parse(
+    await executeTool(s.admin, "u1", "auth", "remove_goal_race", { name: "ironman" }),
+  );
+  assertEquals(obs.removed_count, 0);
+  assertEquals(obs.cleared_from_home, true, "the anchor is the only copy, and it must go");
+});
+
+Deno.test("removing something that does not exist says so instead of confirming", async () => {
+  const s = withIronman();
+  const obs = JSON.parse(
+    await executeTool(s.admin, "u1", "auth", "remove_goal_race", { name: "Berlin" }),
+  );
+  assertEquals(obs.removed_count, 0);
+  assertEquals(obs.cleared_from_home, false);
+  assert(/nothing matched/i.test(obs.note ?? ""), "the coach must be able to tell it failed");
+  assertEquals(s.of("races").filter((w) => w.op === "delete").length, 0);
+});
+
+Deno.test("remove_goal_race needs something to match on", async () => {
+  const s = withIronman();
+  const obs = await executeTool(s.admin, "u1", "auth", "remove_goal_race", {});
+  assert(obs.startsWith("error:"), obs);
+  assertEquals(s.writes.length, 0, "an unqualified remove must never delete everything");
+});
+
+Deno.test("matchesGoal: loose on the name, strict when a date is given", () => {
+  const g = { name: "Ironman Barcelona", date: "2027-10-03" };
+  // People say "the Ironman", not the full stored name, and vice versa.
+  assert(matchesGoal(g, "Ironman", ""));
+  assert(matchesGoal(g, "ironman barcelona 2027", ""));
+  assert(matchesGoal(g, "IRONMAN", ""));
+  // A date narrows it: same name, different year, must not match.
+  assert(matchesGoal(g, "Ironman", "2027-10-03"));
+  assert(!matchesGoal(g, "Ironman", "2028-10-03"));
+  // A date alone removes everything on that day.
+  assert(matchesGoal(g, "", "2027-10-03"));
+  assert(!matchesGoal(g, "", "2027-10-04"));
+  // Neither is not a licence to match everything.
+  assert(!matchesGoal(g, "", ""));
+  assert(!matchesGoal(g, "Berlin", ""));
+  // An empty stored name must not swallow every query by substring.
+  assert(!matchesGoal({ name: "", date: "2027-10-03" }, "Ironman", ""));
+});
+
+Deno.test("remove_goal_race is advertised to the model", () => {
+  assert(nativeToolDefs().map((t) => t.name).includes("remove_goal_race"));
+  const t = TOOL_CATALOG.find((t) => t.name === "remove_goal_race")!;
+  assertEquals(t.kind, "act");
+  // The description has to warn against confirming a removal that did not
+  // happen, since that is the behaviour this tool exists to stop.
+  assert(/removed nothing|nothing/i.test(t.description));
+});

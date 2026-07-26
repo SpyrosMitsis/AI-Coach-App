@@ -12,12 +12,9 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
-import androidx.compose.foundation.layout.ExperimentalLayoutApi
-import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material3.AssistChip
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.core.animateFloat
@@ -73,16 +70,16 @@ import java.time.LocalTime
 import java.time.format.TextStyle
 import java.util.Locale
 
-// The empty-thread landing: a large greeting, one line of invitation, and the
-// starter chips. It replaces the canned assistant bubble a fresh chat used to
-// open with, and the screen fades it out as soon as the first message lands.
-@OptIn(ExperimentalLayoutApi::class)
+// The empty-thread landing: a large greeting and one line of invitation. It
+// replaces the canned assistant bubble a fresh chat used to open with, and the
+// screen fades it out as soon as the first message lands.
+//
+// Deliberately inert. It shares a Box with the message list, which is composed
+// on top of it at fillMaxSize, so anything tappable placed here is covered by a
+// transparent LazyColumn and silently never receives the tap. The starter chips
+// live in the row above the composer for exactly that reason.
 @Composable
-internal fun ChatHero(
-    name: String?,
-    starters: List<CoachStarter>,
-    onStarter: (CoachStarter) -> Unit,
-) {
+internal fun ChatHero(name: String?) {
     // Recomposition-stable within a session; the hour only matters at first
     // paint, and re-reading the clock on every recomposition would be churn.
     val greeting = remember { timeGreeting(LocalTime.now().hour) }
@@ -108,17 +105,6 @@ internal fun ChatHero(
             textAlign = TextAlign.Center,
             modifier = Modifier.padding(top = 10.dp),
         )
-        // Wrapping, not a scrolling row: at rest the athlete should be able to
-        // see every way in at once, without discovering the rest by swiping.
-        FlowRow(
-            Modifier.padding(top = 28.dp),
-            horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.CenterHorizontally),
-            verticalArrangement = Arrangement.spacedBy(8.dp),
-        ) {
-            starters.forEach { s ->
-                AssistChip(onClick = { onStarter(s) }, label = { Text(s.label) })
-            }
-        }
     }
 }
 
