@@ -743,9 +743,10 @@ export function buildBriefPrompt(c: BriefContext): string {
   const freshness = freshnessWord(c.tsb);
   const readWord = recoveryWord(c.band);
   const noObjective = c.objectiveData === false;
-  // Three states, not two. "No watch data, so I'm going off how you feel" is
-  // itself a fabrication when they never checked in either: the score is then
-  // the neutral placeholder, and the brief must not read it as a person.
+  // basis "none" should not reach here at all: coach-brief returns early rather
+  // than spend a generation on a placeholder readiness. Kept as a backstop, so
+  // a future caller that skips that guard still cannot have the coach narrate a
+  // number nobody measured.
   const readLine = c.readinessBasis === "none"
     ? `- Recovery: NOTHING measured today, no check-in and no watch data, so there is NO readiness read at all. Do not mention a readiness score or how recovered they are. If it fits naturally, invite a check-in.`
     : noObjective

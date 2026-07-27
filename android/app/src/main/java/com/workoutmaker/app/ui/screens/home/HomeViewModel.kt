@@ -247,7 +247,11 @@ class HomeViewModel @Inject constructor(
             energy = energy, soreness = soreness,
         )
         runCatching { repo.upsertWellness(checkin) }
-            .onSuccess { wellnessToday.value = checkin; load() } // readiness uses it
+            // load() re-requests the brief, which is the point: with no check-in
+            // and no watch data the server writes nothing (it will not spend a
+            // generation on a placeholder readiness), so THIS is the moment the
+            // day's note becomes worth generating.
+            .onSuccess { wellnessToday.value = checkin; load() }
             .onFailure { error.value = it.message }
         wellnessBusy.value = false
     }

@@ -57,6 +57,10 @@ suspend fun WorkoutRepository.coachBrief(date: String = LocalDate.now().toString
         )
     }.logFailure("coachBrief").getOrNull() ?: return null
     val text = resp.brief?.takeIf { it.isNotBlank() }
+    // Only a real brief is cached. The server returns none while there is no
+    // readiness to speak of (skipped = "no_readiness_data") rather than spending
+    // a generation on its placeholder score, and caching that would mean today's
+    // check-in never produced the note it just earned.
     if (text != null) runCatching { cache.upsertBrief(CachedBrief(date, text)) }.logFailure("coachBrief/cache")
     return text
 }

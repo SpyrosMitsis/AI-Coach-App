@@ -116,6 +116,20 @@ Deno.serve(async (req) => {
       weeksToGoal = d >= 0 ? Math.round(d) : null;
     }
 
+    // NOTHING MEASURED, NOTHING SAID. No check-in and no synced watch data means
+    // the brief would be a paragraph of coach voice built on the placeholder
+    // readiness, and it costs a real LLM call to write. Return empty and spend
+    // nothing: Home shows "Readiness not measured" with the check-in card right
+    // below it, and the moment either arrives (the athlete checks in, or the
+    // watch syncs) the next Home open generates the day's brief for real.
+    //
+    // Deliberately NOT cached client-side: a null brief is never written to the
+    // Room cache, so the retry after a check-in costs one cheap DB read here,
+    // not a wasted generation.
+    if (recovery.basis === "none") {
+      return json({ brief: null, date: today, skipped: "no_readiness_data" });
+    }
+
     // Did any objective recovery signal sync for today? If not, the brief should
     // go off subjective feel rather than stating recovery as fact.
     const objectiveData = recovery.hrv?.latest != null ||
