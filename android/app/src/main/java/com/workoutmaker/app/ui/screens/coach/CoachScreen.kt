@@ -9,6 +9,7 @@ import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
@@ -85,7 +86,7 @@ fun CoachScreen(vm: CoachViewModel = hiltViewModel(), onOpenCalendar: () -> Unit
     val actionWeek by vm.actionWeek.collectAsStateSafe()
     val lastAction by vm.lastAction.collectAsStateSafe()
     val showReplan by vm.showReplan.collectAsStateSafe()
-    val describedExistingPlan by vm.describedExistingPlan.collectAsStateSafe()
+    val turnTools by vm.turnTools.collectAsStateSafe()
     val suggestions by vm.suggestions.collectAsStateSafe()
     val showHistory by vm.showHistory.collectAsStateSafe()
     val conversations by vm.conversations.collectAsStateSafe()
@@ -190,7 +191,13 @@ fun CoachScreen(vm: CoachViewModel = hiltViewModel(), onOpenCalendar: () -> Unit
         if (overflow > 0) listState.scrollBy(overflow.toFloat())
     }
 
-    Column(Modifier.fillMaxSize().padding(top = 8.dp)) {
+    // imePadding, or the keyboard takes the whole screen with it: targetSdk 35 on
+    // Android 15+ makes the window edge-to-edge, which retires adjustResize, so an
+    // app that ignores the IME inset gets PANNED instead — the header slid off the
+    // top of the screen every time the composer was tapped. Padding the column
+    // keeps the composer visible, so there is nothing left for the system to pan:
+    // header stays put, the thread shortens, the keyboard covers the tab bar.
+    Column(Modifier.fillMaxSize().imePadding().padding(top = 8.dp)) {
         val incognito by vm.incognito.collectAsStateSafe()
         Row(
             Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 14.dp),
@@ -380,8 +387,13 @@ fun CoachScreen(vm: CoachViewModel = hiltViewModel(), onOpenCalendar: () -> Unit
         // successful plan "wasn't applied". A day-by-day table makes that far
         // likelier to be seen, since looksLikeWorkoutProposal matches on day names.
         val lastAssistant = messages.lastOrNull { it.role == "assistant" }?.content ?: ""
+        // turnTools == null: nothing ran in this session (a thread reopened from
+        // history), so there is no proposal to apply and no tool record to rule
+        // one out either way.
+        val proposalTools = turnTools
         if (!revealing && messages.size > 1 && actionWeek == null && lastAction == null &&
-            !describedExistingPlan && looksLikeWorkoutProposal(lastAssistant)
+            proposalTools != null && !proposalTools.contains("get_planned_week") &&
+            looksLikeWorkoutProposal(lastAssistant)
         ) {
             Text(
                 "Coach proposed this but didn't apply it:",

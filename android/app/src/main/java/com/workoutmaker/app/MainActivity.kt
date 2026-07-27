@@ -7,6 +7,7 @@ import androidx.core.splashscreen.SplashScreen.Companion.installSplashScreen
 import androidx.lifecycle.lifecycleScope
 import io.github.jan.supabase.gotrue.auth
 import io.github.jan.supabase.gotrue.handleDeeplinks
+import androidx.compose.foundation.layout.consumeWindowInsets
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Chat
@@ -293,7 +294,16 @@ private fun MainScaffold() {
         CompositionLocalProvider(
             LocalAppSnackbar provides appSnackbar,
         ) {
-        NavHost(nav, startDestination = startDestination, modifier = Modifier.padding(padding)) {
+        // consumeWindowInsets, so a screen that wants to sit above the keyboard
+        // (Modifier.imePadding, see CoachScreen) lifts by the keyboard height
+        // MINUS the bottom bar we already padded for, not the whole thing —
+        // otherwise the composer floats a nav-bar's height clear of the keys.
+        // No layout change on its own: it only re-bases inset modifiers below.
+        NavHost(
+            nav,
+            startDestination = startDestination,
+            modifier = Modifier.padding(padding).consumeWindowInsets(padding),
+        ) {
             composable("home") {
                 HomeScreen(
                     // singleTop: a fast double-tap must not stack two copies

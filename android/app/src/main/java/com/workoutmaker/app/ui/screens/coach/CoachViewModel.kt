@@ -78,9 +78,11 @@ class CoachViewModel @Inject constructor(
     val lastAction = MutableStateFlow<String?>(null)
     // Whether a full week was (re)planned this turn — gates the card's "Re-plan" escape hatch.
     val showReplan = MutableStateFlow(false)
-    // True when this turn read the planned week, so any day names in the reply
-    // describe what is already scheduled rather than a proposal.
-    val describedExistingPlan = MutableStateFlow(false)
+    // The tools the CURRENT turn used, or null when no turn has run in this
+    // session (fresh thread, or one just opened from history). The proposal
+    // banner reads it two ways: null means there is no live turn to judge, and
+    // a turn that read the planned week was describing it, not proposing.
+    val turnTools = MutableStateFlow<List<String>?>(null)
     // Contextual conversation starters, built from the cached dashboard.
     val suggestions = MutableStateFlow(
         listOf(
@@ -287,7 +289,7 @@ class CoachViewModel @Inject constructor(
         // and got a "Coach proposed this but didn't apply it" banner offering
         // to put an already-scheduled week on the calendar. If the coach read
         // the plan, the day names came FROM the plan and nothing was proposed.
-        describedExistingPlan.value = tools.contains("get_planned_week")
+        turnTools.value = tools
         if (writes.isNotEmpty()) {
             lastAction.value = friendlyTools(writes)
             showReplan.value = writes.contains("plan_week")
@@ -351,6 +353,10 @@ class CoachViewModel @Inject constructor(
         conversationId = c.id
         messages.value = c.messages
         banner.value = null
+        // No tool record survives in a saved thread, so the proposal banner has
+        // nothing to judge: on device a stored "how's my fitness?" answer showed
+        // it again the moment the thread was reopened. Null suppresses it.
+        turnTools.value = null
         showHistory.value = false
     }
 
@@ -361,6 +367,7 @@ class CoachViewModel @Inject constructor(
         conversationId = null
         messages.value = emptyList()
         banner.value = null
+        turnTools.value = null
         showHistory.value = false
     }
 
@@ -373,7 +380,7 @@ class CoachViewModel @Inject constructor(
         banner.value = null
         lastAction.value = null
         showReplan.value = false
-        describedExistingPlan.value = false
+        turnTools.value = null
         followUps.value = emptyList()
         currentStep.value = null
         liveStatus.value = "Thinking…"
