@@ -17,6 +17,8 @@
 // ============================================================================
 
 import { llmGenerate, PROVIDERS } from "./llm.ts";
+import { stripDashes } from "./dashes.ts";
+export { stripDashes };
 import type { LlmProvider } from "./types.ts";
 import { COACH_SYSTEM_PROMPT } from "./prompt.ts";
 import { toolCatalogPrompt } from "./coach_tools.ts";
@@ -98,33 +100,6 @@ export function callBudget(max: number) {
 // The JSON tool protocol occasionally leaks its envelope into the final reply
 // (fenced JSON, or {"action":"final","message":...} as raw text). Scrub it
 // server-side so leaked protocol never reaches the client or the saved thread.
-/**
- * Enforce the no-em-dash house rule on OUTPUT rather than hoping the model
- * complied. PUNCTUATION_RULE has been in every prompt for a long time and
- * models still ignore it: measured against deepseek-v4-flash, 1 in 5 replies
- * carried an em dash on the old chat prompt and 3 in 5 on the new shorter one.
- * A prompt line cannot be the enforcement point for a rule this absolute, and
- * no_dashes_test.ts only ever checked the prompts, never the replies.
- *
- * The substitution follows what PUNCTUATION_RULE itself asks for: a plain
- * hyphen inside a numeric range, otherwise a comma for a spaced parenthetical
- * dash, otherwise a plain hyphen.
- */
-export function stripDashes(text: string): string {
-  return text
-    // 5—8 reps, 20 – 30 min: ranges close up to a plain hyphen. Runs first so a
-    // spaced range is not mistaken for a parenthetical pause below.
-    .replace(/(\d)\s*[—–]\s*(\d)/g, "$1-$2")
-    // "fine — nothing alarming": a spaced dash reads as a pause, so a comma.
-    // The trailing space is preserved by the replacement, not the pattern.
-    .replace(/\s+[—–]\s+/g, ", ")
-    // Any survivor (unspaced, mid-word) becomes a hyphen rather than vanishing.
-    .replace(/[—–]/g, "-")
-    // A dash after existing punctuation can leave ", ," or ". ,".
-    .replace(/([,.:;!?])\s*,\s+/g, "$1 ")
-    .replace(/,\s*,+/g, ",");
-}
-
 export function cleanReply(text: string): string {
   let t = text.trim();
   const fence = t.match(/^```(?:json)?\s*([\s\S]*?)```$/i);

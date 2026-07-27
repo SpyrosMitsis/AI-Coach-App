@@ -393,7 +393,13 @@ async function main() {
             seed: 7,
           }, label);
           const ms = Date.now() - started;
-          const scored = sc.kind === "week" ? scoreWeek(gen.text, sc) : scoreWorkout(gen.text, sc);
+          // Score what the MODEL wrote, not what llmGenerate cleaned up. It
+          // strips em dashes on the way out, so scoring gen.text would mark the
+          // no-dash checker green for every model by construction and hide the
+          // ones that ignore the rule. `raw` is that text; production still
+          // ships the scrubbed one.
+          const output = gen.raw ?? gen.text;
+          const scored = sc.kind === "week" ? scoreWeek(output, sc) : scoreWorkout(output, sc);
 
           const cost = estimateCostUsd(
             m.provider,
@@ -406,11 +412,11 @@ async function main() {
           );
           spend += cost;
 
-          await Deno.writeTextFile(`${rawDir}/${sc.name.replace(/\//g, "_")}__${m.id.replace(/\//g, "_")}__${repeat}.txt`, gen.text);
+          await Deno.writeTextFile(`${rawDir}/${sc.name.replace(/\//g, "_")}__${m.id.replace(/\//g, "_")}__${repeat}.txt`, output);
 
           let verdict: JudgeVerdict | null = null;
           if (judgeModel && scored.ok) {
-            verdict = await judge(judgeModel, sc, gen.text, m.id);
+            verdict = await judge(judgeModel, sc, output, m.id);
             if (verdict.error) warn(`${label}: judge failed: ${verdict.error}`);
           }
 

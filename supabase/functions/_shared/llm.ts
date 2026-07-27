@@ -11,6 +11,7 @@
 // ============================================================================
 
 import type { LlmProvider, LlmResult } from "./types.ts";
+import { stripDashes } from "./dashes.ts";
 import { logger } from "./log.ts";
 
 const log = logger("llm");
@@ -783,12 +784,21 @@ export async function llmGenerate(
   };
   // One structured line per call: provider, model, latency, token usage (or the
   // error body on failure) — this is the LLM path's only observability surface.
-  return log.time("generate", dispatch(), (r) => ({
+  const out = await log.time("generate", dispatch(), (r) => ({
     provider,
     model: r.model || args.model,
     promptTokens: r.promptTokens,
     completionTokens: r.completionTokens,
   }));
+  // THE enforcement point for the no-dash rule, for every non-streaming
+  // feature: brief, week review, debrief, strength insight, workout, plan.
+  // It used to be three hand-applied call sites, which is exactly why an em
+  // dash sat on the Home screen's readiness note for weeks — coach-brief was
+  // simply not one of the three. Streaming has its own scrubber
+  // (dashScrubber in coach_stream.ts), since it must scrub mid-token.
+  // Safe on the JSON-producing features: the substitutions only ever emit
+  // hyphens and commas, never a quote or a brace.
+  return { ...out, text: stripDashes(out.text), raw: out.text };
 }
 
 export interface FallbackKeyResolver {

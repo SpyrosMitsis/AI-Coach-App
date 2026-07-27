@@ -9,7 +9,6 @@
 // Returns { brief, date, provider, disabled? }. Best-effort: any failure yields
 // { brief: null } and Home falls back to its static readiness headline.
 
-import { stripDashes } from "../_shared/coach_eval.ts";
 import { errorStatus, handleOptions, json } from "../_shared/cors.ts";
 import { adminClient, getUserId } from "../_shared/supabase.ts";
 import { llmAccess } from "../_shared/llm_keys.ts";
@@ -196,12 +195,12 @@ Deno.serve(async (req) => {
       resolveModel,
       resolveBaseUrl,
     );
-    // stripDashes, same as the chat reply: the house no-dash rule is enforced on
-    // OUTPUT because models ignore the prompt line. Seen on device, the Home
-    // readiness note read "today's full body strength session — just keep the
-    // knee happy". no_dashes_test only ever checked the PROMPTS, never what
-    // came back, so this leaked to the one piece of coach prose on Home.
-    const brief = stripDashes(outcome.text.trim().replace(/^["']|["']$/g, "")).slice(0, 400);
+    // Dashes are already gone: llmGenerate enforces the house rule for every
+    // non-streaming feature. This function is why it moved there. Seen on
+    // device, the Home readiness note read "today's full body strength session
+    // — just keep the knee happy", because the scrub was hand-applied at three
+    // call sites and this was not one of them.
+    const brief = outcome.text.trim().replace(/^["']|["']$/g, "").slice(0, 400);
 
     waitUntil(logLlmResult(admin, userId, "brief", hosted, outcome, profile));
 
