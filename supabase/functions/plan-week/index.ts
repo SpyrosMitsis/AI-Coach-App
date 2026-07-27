@@ -334,6 +334,14 @@ async function planForUser(admin: SupabaseClient, userId: string, start: string,
   // Readiness proxy (0-100) from recent subjective wellness; TSB is the objective
   // half. Matches the review's "wrecked athlete" semantics.
   const readiness = Math.round(((wellness3d.energy + (6 - wellness3d.soreness) + wellness3d.sleep) / 15) * 100);
+  // Same trap as recovery.ts: with no check-ins the neutral 3s produce 60,
+  // which is under the amber threshold and quietly capped every planned hard
+  // session at RPE 6 for an athlete who had simply never checked in.
+  const readinessBasis = wells.slice(0, 3).some((w) =>
+      isNum(w.energy) || isNum(w.soreness) || isNum(w.sleep_score)
+    )
+    ? "subjective" as const
+    : "none" as const;
   const equipment = onboarding.equipment as string | undefined;
   const sessionMuscles = (w: Workout): string[] =>
     [...new Set(w.sections.flatMap((s) => s.exercises.map((e) => muscleOf(e))))];
@@ -362,7 +370,7 @@ async function planForUser(admin: SupabaseClient, userId: string, start: string,
     const rev = reviewWorkout(session, {
       mainLifts, weeklySetsByMuscle, muscleGroupsLast48h,
       tsb: fitness.tsb, daysSinceLastHard: lastHardDate ? daysBetweenIso(lastHardDate, date) : 99,
-      experience: onboarding.experience ?? "Intermediate", injuries, readiness, equipment,
+      experience: onboarding.experience ?? "Intermediate", injuries, readiness, readinessBasis, equipment,
     });
     session = rev.corrected;
     if (session.type !== "rest" && session.sections.every((s) => s.exercises.length === 0)) {

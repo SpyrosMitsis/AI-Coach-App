@@ -9,6 +9,79 @@ Deno.test("recovery: neutral inputs land mid-scale amber/green boundary-ish", ()
   assertEquals(r.hrv, null);
   assertEquals(r.rhr, null);
   assertEquals(r.sleep, null);
+  // ...and that 50 is a placeholder, not a reading. Everything downstream keys
+  // off this rather than off the number.
+  assertEquals(r.basis, "none");
+});
+
+// ---------------------------------------------------------------------------
+// basis: what the score actually rests on
+//
+// Reported from the app: "why does it have a readiness score of 50 when it
+// doesn't have any data". It shouldn't. The maths runs on neutral defaults and
+// lands on exactly 50/amber, which read as a measurement and was treated as
+// one: amber caps every hard endurance session at RPE 6 (workout_review.ts), so
+// an athlete with no wearable and no check-in could never be given an interval.
+// ---------------------------------------------------------------------------
+
+Deno.test("basis: nothing measured says so, and does not claim a recovery state", () => {
+  const r = computeRecovery([], [], [], "2026-06-12");
+  assertEquals(r.basis, "none");
+  assert(!/recovered/i.test(r.summary), `summary claims a state: ${r.summary}`);
+  assert(/no readiness data/i.test(r.summary), r.summary);
+});
+
+Deno.test("basis: a check-in alone is subjective, a synced signal is measured", () => {
+  const checkin = computeRecovery([{ date: "2026-06-12", energy: 4, soreness: 2 }], [], [], "2026-06-12");
+  assertEquals(checkin.basis, "subjective");
+
+  const synced = computeRecovery(
+    [{ date: "2026-06-12" }],
+    [{ date: "2026-06-10", value: 60 }, { date: "2026-06-12", value: 66 }],
+    [],
+    "2026-06-12",
+  );
+  assertEquals(synced.basis, "measured");
+});
+
+Deno.test("basis: yesterday's watch data is not today's reading", () => {
+  // Taken from a live account: device HRV/RHR/sleep-minutes through yesterday,
+  // nothing today, and no subjective fields ever. wellness sits at the untouched
+  // default of 3, so the score is still the unfounded 50 and must say so.
+  // (An earlier version of this check counted zepp_sleep_minutes as subjective
+  // input and called this "subjective". It isn't: those minutes never reach the
+  // wellness composite.)
+  const wells = [
+    { date: "2026-06-11", hrv_rmssd: 123.1, resting_hr: 42, zepp_sleep_minutes: 283 },
+    { date: "2026-06-10", hrv_rmssd: 138.3, resting_hr: 43, zepp_sleep_minutes: 416 },
+    { date: "2026-06-09", hrv_rmssd: 106.2, resting_hr: 47, zepp_sleep_minutes: 427 },
+  ];
+  const dated = (k: "hrv_rmssd" | "resting_hr") =>
+    [...wells].reverse().map((w) => ({ date: w.date, value: w[k] }));
+  const r = computeRecovery(wells, dated("hrv_rmssd"), dated("resting_hr"), "2026-06-12");
+  assertEquals(r.wellness, 3);
+  assertEquals(r.score, 50);
+  assertEquals(r.basis, "none");
+});
+
+Deno.test("basis: sleep alone counts as measured", () => {
+  const r = computeRecovery(
+    [{ date: "2026-06-12", zepp_sleep_minutes: 430 }],
+    [],
+    [],
+    "2026-06-12",
+  );
+  assertEquals(r.basis, "measured");
+});
+
+Deno.test("no check-in invents no subjective driver", () => {
+  // avg([]) is 0, which sailed under the "energy <= 2.5" test and put an
+  // "Energy down" chip on the dashboard of an athlete who never checked in.
+  const r = computeRecovery([], [], [], "2026-06-12");
+  assertEquals(r.drivers, []);
+  // A real low reading still drives it.
+  const low = computeRecovery([{ date: "2026-06-12", energy: 1, soreness: 5 }], [], [], "2026-06-12");
+  assert(low.drivers.some((d) => d.label === "Energy" && d.dir === "down"));
 });
 
 Deno.test("recovery: great wellness + rising HRV + low RHR is green", () => {

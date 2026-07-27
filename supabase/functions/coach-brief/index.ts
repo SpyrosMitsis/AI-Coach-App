@@ -174,6 +174,7 @@ Deno.serve(async (req) => {
       goal: (onboarding.goal as string) ?? "general fitness",
       weeklyLoadPct,
       objectiveData,
+      readinessBasis: recovery.basis,
       yesterdayDebrief,
       todayDebrief,
       yesterdayMissed,

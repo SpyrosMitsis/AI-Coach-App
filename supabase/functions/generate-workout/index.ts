@@ -614,8 +614,10 @@ Return the revised workout as JSON only, same schema.`;
       // Structured safety: injuries on file (coach_knowledge is separate free
       // text, covered by the prompt-level instruction, not this backstop).
       injuries: injuriesOf(onboarding),
-      // Deterministic intensity ceiling + equipment hard-filter.
+      // Deterministic intensity ceiling + equipment hard-filter. The basis
+      // rides along: an unmeasured 50 must not cap anything.
       readiness: recovery.score,
+      readinessBasis: recovery.basis,
       equipment: onboarding.equipment as string | undefined,
     };
     let review = reviewWorkout(validated, reviewCtx);

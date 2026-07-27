@@ -44,6 +44,9 @@ export interface ReviewContext {
   // Today's recovery/readiness score (0-100). Low readiness + a hard session →
   // the intensity ceiling caps it deterministically (not just a flag).
   readiness?: number;
+  // What that score rests on (recovery.ts RecoveryBasis). "none" means nothing
+  // was measured and the 50 is a placeholder, so it must not cap anything.
+  readinessBasis?: "measured" | "subjective" | "none";
   // The athlete's equipment tier (onboarding.equipment) — strength lifts whose
   // catalog category isn't available get stripped.
   equipment?: string;
@@ -421,7 +424,14 @@ export function reviewWorkout(w: Workout, ctx: ReviewContext): ReviewResult {
   // week" rule, driven by load, not by today's recovery score. Endurance only:
   // strength intensity is governed by the progression snap above, and an amber
   // cap there would fight the engine's own targets.
-  const r = typeof ctx.readiness === "number" ? ctx.readiness : null;
+  //
+  // An UNMEASURED readiness caps nothing. With no wellness rows and no synced
+  // signal the model lands on exactly 50/amber, which is the neutral midpoint,
+  // not a reading — and it was silently clamping every hard session to RPE 6
+  // for anyone without a wearable. The TSB cap below still applies: form is
+  // computed from training the athlete actually did.
+  const measured = ctx.readinessBasis !== "none";
+  const r = measured && typeof ctx.readiness === "number" ? ctx.readiness : null;
   const rpeCap = r !== null && r < 34 ? 4 : ctx.tsb < -20 ? 5 : r !== null && r < 67 ? 6 : null;
   if (rpeCap !== null && isHardSession(corrected)) {
     for (const sec of corrected.sections) {

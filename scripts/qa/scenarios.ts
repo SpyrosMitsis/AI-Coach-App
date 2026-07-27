@@ -48,6 +48,21 @@ export const STEPS: Step[] = [
         throw new Error("the app is signed out — sign in on the phone, then re-run");
       }
       ok.that(dump.has({ text: "DAILY READINESS" }, d.appId), "home renders", "no DAILY READINESS label");
+
+      // The readiness card must not claim a recovery state it has no data for.
+      // With nothing measured the server still computes 50/amber from its own
+      // neutral defaults, and the card used to draw that as a real reading:
+      // ring, number, "Moderately recovered". Whatever this account's data
+      // looks like on the day, the two halves have to agree.
+      const unmeasured = dump.has({ textContains: "No readiness data yet" }, d.appId);
+      const claimsState = dump.texts(d.appId).some((t) =>
+        /^(Ready to train|Train with care|Prioritise recovery)$/.test(t)
+      );
+      ok.that(
+        !unmeasured || !claimsState,
+        "readiness card does not claim a state it cannot measure",
+        "shows both 'No readiness data yet' and a readiness headline",
+      );
       for (const tab of TABS) {
         ok.that(dump.has({ text: tab }, d.appId), `tab present: ${tab}`);
       }

@@ -673,6 +673,8 @@ export interface BriefContext {
   name: string;
   readiness: number; // 0-100
   band: string; // green | amber | red
+  // recovery.ts RecoveryBasis: "none" means the score is a placeholder.
+  readinessBasis?: "measured" | "subjective" | "none";
   tsb: number;
   tsbTrend: "rising" | "falling" | "flat";
   todayPlan: string; // human title + type, or "nothing planned"
@@ -741,7 +743,12 @@ export function buildBriefPrompt(c: BriefContext): string {
   const freshness = freshnessWord(c.tsb);
   const readWord = recoveryWord(c.band);
   const noObjective = c.objectiveData === false;
-  const readLine = noObjective
+  // Three states, not two. "No watch data, so I'm going off how you feel" is
+  // itself a fabrication when they never checked in either: the score is then
+  // the neutral placeholder, and the brief must not read it as a person.
+  const readLine = c.readinessBasis === "none"
+    ? `- Recovery: NOTHING measured today, no check-in and no watch data, so there is NO readiness read at all. Do not mention a readiness score or how recovered they are. If it fits naturally, invite a check-in.`
+    : noObjective
     ? `- Recovery: NO HRV/sleep synced from the watch today, readiness (${c.readiness}/100) is only their subjective feel. Go off how they're feeling, don't cite recovery as fact.`
     : `- Recovery/readiness: ${readWord} (${c.readiness}/100).`;
   const extras: string[] = [];

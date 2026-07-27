@@ -198,9 +198,16 @@ export function memoryBlock(profile: { training_memory?: string | null }): strin
 // Recovery signal (HRV/RHR/sleep trends → 0-100) so generation actually
 // down-regulates intensity after a poor night, not just on subjective wellness.
 export function recoveryBlock(
-  recovery: { score: number; band: string; summary: string } | null,
+  recovery: { score: number; band: string; summary: string; basis?: string } | null,
 ): string {
   if (!recovery) return "";
+  // Nothing measured: say that, and give no number. Quoting "50/100 (amber)"
+  // told the model to cap at RPE 6 on the strength of a placeholder.
+  if (recovery.basis === "none") {
+    return "\n\nRECOVERY TODAY: not measured (no check-in, no synced watch data). " +
+      "Plan from the training plan and recent load alone. Do not claim to know how " +
+      "recovered the athlete is, and do not hold intensity back on that basis.";
+  }
   const guide = recovery.band === "red"
     ? `RED (${recovery.score}/100): the athlete is under-recovered, cap at RPE 4, easy aerobic/technique or active-recovery only, and trim volume.`
     : recovery.band === "amber"

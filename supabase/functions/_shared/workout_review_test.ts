@@ -389,6 +389,31 @@ Deno.test("green recovery leaves a hard session alone", () => {
   assert(r.violations.length === 0, `unexpected: ${r.violations.join("; ")}`);
 });
 
+Deno.test("an UNMEASURED readiness caps nothing", () => {
+  // With no check-in and no synced watch data, recovery.ts still returns 50 (the
+  // neutral midpoint of its own defaults) and bands it amber. Reported from the
+  // app: "why does it have a readiness score of 50 when it doesn't have any
+  // data". Acting on it meant an athlete without a wearable was permanently
+  // held to RPE 6, on the strength of a number nobody measured.
+  const r = reviewWorkout(hardRun(), { ...EMPTY_CTX, tsb: 0, readiness: 50, readinessBasis: "none" });
+  assertEquals(r.corrected.rpe_target, 8);
+  const zones = r.corrected.sections.flatMap((s) => s.exercises.map((e) => e.pace_zone));
+  assert(zones.includes("Z4"), "an unmeasured readiness must not downgrade the zones");
+  assert(r.violations.length === 0, `unexpected: ${r.violations.join("; ")}`);
+});
+
+Deno.test("a SUBJECTIVE readiness still caps: they told us how they feel", () => {
+  const r = reviewWorkout(hardRun(), { ...EMPTY_CTX, tsb: 0, readiness: 50, readinessBasis: "subjective" });
+  assert(r.corrected.rpe_target <= 6, `rpe ${r.corrected.rpe_target} should be ≤6`);
+});
+
+Deno.test("deep TSB caps even when readiness is unmeasured: form is real training", () => {
+  // The load-driven rule survives the change above, because TSB comes from
+  // sessions the athlete actually did, not from a placeholder.
+  const r = reviewWorkout(hardRun(), { ...EMPTY_CTX, tsb: -25, readiness: 50, readinessBasis: "none" });
+  assert(r.corrected.rpe_target <= 5, `rpe ${r.corrected.rpe_target} should be ≤5 on deep TSB`);
+});
+
 Deno.test("deep TSB keeps its own RPE 5 cap independent of the recovery band", () => {
   // prompt.ts's "TSB ≤ -20 → recovery week" rule is load-driven, not
   // recovery-score-driven, so it fires even when today's readiness reads fine.

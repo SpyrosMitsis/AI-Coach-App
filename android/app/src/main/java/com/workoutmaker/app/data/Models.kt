@@ -102,6 +102,12 @@ data class RecoveryDriver(val label: String, val dir: String, val tone: String)
 data class Recovery(
     val score: Int,
     val band: String,
+    // What the score rests on: "measured" (something synced), "subjective" (a
+    // check-in only) or "none". With nothing at all the server still computes
+    // 50/amber from its neutral defaults, so the UI must not draw that as a
+    // reading. Defaults to "measured" so an older server (no field) renders
+    // exactly as it does today.
+    val basis: String = "measured",
     val wellness: Double = 3.0,
     val hrv: RecoveryTrend? = null,
     val rhr: RecoveryTrend? = null,

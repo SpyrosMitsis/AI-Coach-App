@@ -40,4 +40,22 @@ class DailySummaryDecodeTest {
         assertEquals("strength", s.debrief?.kind)
         assertNull(s.debrief?.activity_id)
     }
+
+    // recovery.basis tells the UI whether the score is a reading or the server's
+    // neutral placeholder. A cached row or an undeployed server has no such key,
+    // and must keep rendering exactly as it does today.
+    @Test fun recoveryBasisDefaultsToMeasuredWhenAbsent() {
+        val s = json.decodeFromString<DailySummary>(
+            """{$base, "recovery": {"score": 50, "band": "amber"}}""",
+        )
+        assertEquals("measured", s.recovery?.basis)
+    }
+
+    @Test fun recoveryBasisNoneIsCarriedThrough() {
+        val s = json.decodeFromString<DailySummary>(
+            """{$base, "recovery": {"score": 50, "band": "amber", "basis": "none",
+                "summary": "No readiness data yet. Check in or sync your watch."}}""",
+        )
+        assertEquals("none", s.recovery?.basis)
+    }
 }

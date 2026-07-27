@@ -300,20 +300,27 @@ fun HomeScreen(
             }
         }
 
+        // Nothing measured: no check-in, nothing synced. The server still returns
+        // 50/amber (the neutral midpoint of its own defaults), and drawing that as
+        // a ring told the athlete they were "moderately recovered" on the strength
+        // of no evidence at all. Show the absence instead, and the way to fix it.
+        val unmeasured = rec?.basis == "none"
+
         SectionCard(mod) {
-            if (isStale) RecoveryStaleBanner(s.recovery_synced_date)
+            if (isStale && !unmeasured) RecoveryStaleBanner(s.recovery_synced_date)
             Row(verticalAlignment = Alignment.CenterVertically) {
-                ReadinessRing(score, band)
+                if (unmeasured) ReadinessUnknownRing() else ReadinessRing(score, band)
                 Column(
                     Modifier.padding(start = 16.dp).weight(1f),
                     verticalArrangement = Arrangement.spacedBy(4.dp),
                 ) {
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Text(
-                            readinessHeadline(band),
+                            if (unmeasured) "Readiness not measured" else readinessHeadline(band),
                             style = MaterialTheme.typography.titleMedium,
                             fontWeight = FontWeight.SemiBold,
-                            color = readinessColor(band),
+                            color = if (unmeasured) MaterialTheme.colorScheme.onSurfaceVariant
+                            else readinessColor(band),
                         )
                         InfoIcon("Recovery & readiness", Metrics.RECOVERY)
                     }
@@ -630,6 +637,23 @@ fun ReadinessRing(score: Int, band: String) {
             drawArc(color, -90f, 360f * (score / 100f), false, style = Stroke(width = 18f, cap = StrokeCap.Round))
         }
         Text("$score", fontSize = 24.sp, color = MaterialTheme.colorScheme.onSurface)
+    }
+}
+
+// The same ring with no arc and no number: the shape of the card is preserved,
+// but nothing is claimed. A score here would be the placeholder 50.
+@Composable
+fun ReadinessUnknownRing() {
+    val track = MaterialTheme.colorScheme.surfaceVariant
+    Box(Modifier.size(88.dp), Alignment.Center) {
+        Canvas(Modifier.size(88.dp)) {
+            drawArc(track, -90f, 360f, false, style = Stroke(width = 18f))
+        }
+        Text(
+            "?",
+            fontSize = 24.sp,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
     }
 }
 

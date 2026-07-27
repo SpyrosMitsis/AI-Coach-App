@@ -637,9 +637,12 @@ export async function executeTool(
           chrono.map((w) => (w as { hrv_rmssd?: number }).hrv_rmssd).filter(isNum),
           chrono.map((w) => (w as { resting_hr?: number }).resting_hr).filter(isNum),
         );
+        // basis "none" means nothing was measured: the coach must not read the
+        // placeholder 50 back to the athlete as a state of their body.
         return JSON.stringify({
-          readiness: recoveryWord(rec.band),
+          readiness: rec.basis === "none" ? "not measured today" : recoveryWord(rec.band),
           summary: rec.summary,
+          basis: rec.basis,
           raw: {
             score: rec.score,
             band: rec.band,
