@@ -76,7 +76,9 @@ import com.workoutmaker.app.ui.components.rememberAnimationsEnabled
 
 
 
-@OptIn(ExperimentalMaterial3Api::class)
+// Wiring only: collect the view model, hand CoachContent a snapshot and a set of
+// callbacks. Everything that decides what appears on screen lives in
+// CoachContent, where a test can compose it (see CoachUiState.kt).
 @Composable
 fun CoachScreen(vm: CoachViewModel = hiltViewModel(), onOpenCalendar: () -> Unit = {}) {
     val messages by vm.messages.collectAsStateSafe()
@@ -93,17 +95,82 @@ fun CoachScreen(vm: CoachViewModel = hiltViewModel(), onOpenCalendar: () -> Unit
     val currentStep by vm.currentStep.collectAsStateSafe()
     val displayName by vm.displayName.collectAsStateSafe()
     val followUps by vm.followUps.collectAsStateSafe()
+    val incognito by vm.incognito.collectAsStateSafe()
+    val draftRestore by vm.draftRestore.collectAsStateSafe()
     // While the reply is typing out, hold back everything that would pop in
     // beneath it (result card, banner, chips): each arrival reflowed the layout
     // under the growing text and read as flicker.
     val revealing by vm.revealing.collectAsStateSafe()
-    // Saveable: a half-typed coach message must survive rotation.
-    var input by rememberSaveable { mutableStateOf("") }
-    val listState = rememberLazyListState()
 
     // Respect the system remove-animations setting: replies appear at once.
     val animationsOn = rememberAnimationsEnabled()
     LaunchedEffect(animationsOn) { vm.animateReplies.value = animationsOn }
+
+    CoachContent(
+        state = CoachState(
+            messages = messages,
+            sending = sending,
+            revealing = revealing,
+            banner = banner,
+            liveStatus = liveStatus,
+            currentStep = currentStep,
+            actionWeek = actionWeek,
+            lastAction = lastAction,
+            showReplan = showReplan,
+            turnTools = turnTools,
+            suggestions = suggestions,
+            followUps = followUps,
+            displayName = displayName,
+            incognito = incognito,
+            showHistory = showHistory,
+            conversations = conversations,
+            draftRestore = draftRestore,
+        ),
+        on = remember(vm, onOpenCalendar) {
+            CoachActions(
+                send = vm::send,
+                retryLast = vm::retryLast,
+                dismissFollowUps = vm::dismissFollowUps,
+                dismissActionCard = vm::dismissActionCard,
+                rePlanWeek = vm::rePlanWeek,
+                focusCalendar = vm::focusCalendar,
+                finalize = vm::finalize,
+                toggleIncognito = vm::toggleIncognito,
+                openHistory = vm::openHistory,
+                closeHistory = vm::closeHistory,
+                newChat = { vm.newChat() },
+                openConversation = vm::openConversation,
+                togglePin = vm::togglePin,
+                deleteConversation = vm::deleteConversation,
+                draftConsumed = { vm.draftRestore.value = null },
+                openCalendar = onOpenCalendar,
+            )
+        },
+    )
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun CoachContent(state: CoachState, on: CoachActions = CoachActions()) {
+    val messages = state.messages
+    val sending = state.sending
+    val banner = state.banner
+    val liveStatus = state.liveStatus
+    val actionWeek = state.actionWeek
+    val lastAction = state.lastAction
+    val showReplan = state.showReplan
+    val turnTools = state.turnTools
+    val suggestions = state.suggestions
+    val showHistory = state.showHistory
+    val conversations = state.conversations
+    val currentStep = state.currentStep
+    val displayName = state.displayName
+    val followUps = state.followUps
+    val revealing = state.revealing
+    val incognito = state.incognito
+    // Saveable: a half-typed coach message must survive rotation.
+    var input by rememberSaveable { mutableStateOf("") }
+    val listState = rememberLazyListState()
 
     // A soft tick when the coach finishes answering, same language as the rest
     // of the app (set-done, PRs). "Finished" = the turn is done AND the
@@ -120,17 +187,16 @@ fun CoachScreen(vm: CoachViewModel = hiltViewModel(), onOpenCalendar: () -> Unit
 
     // A failed send parks its text here — pull it back into the box (unless the
     // athlete already started typing something new) so retry is one tap.
-    val draftRestore by vm.draftRestore.collectAsStateSafe()
-    LaunchedEffect(draftRestore) {
-        draftRestore?.let {
+    LaunchedEffect(state.draftRestore) {
+        state.draftRestore?.let {
             if (input.isBlank()) input = it
-            vm.draftRestore.value = null
+            on.draftConsumed()
         }
     }
 
     if (showHistory) {
         ModalBottomSheet(
-            onDismissRequest = { vm.closeHistory() },
+            onDismissRequest = { on.closeHistory() },
             sheetState = rememberModalBottomSheetState(),
         ) {
             Text(
@@ -153,9 +219,9 @@ fun CoachScreen(vm: CoachViewModel = hiltViewModel(), onOpenCalendar: () -> Unit
                     items(conversations) { c ->
                     ConversationRow(
                         c,
-                        onClick = { vm.openConversation(c) },
-                        onPin = { vm.togglePin(c) },
-                        onDelete = { vm.deleteConversation(c) },
+                        onClick = { on.openConversation(c) },
+                        onPin = { on.togglePin(c) },
+                        onDelete = { on.deleteConversation(c) },
                     )
                 }
                 }
@@ -198,7 +264,6 @@ fun CoachScreen(vm: CoachViewModel = hiltViewModel(), onOpenCalendar: () -> Unit
     // keeps the composer visible, so there is nothing left for the system to pan:
     // header stays put, the thread shortens, the keyboard covers the tab bar.
     Column(Modifier.fillMaxSize().imePadding().padding(top = 8.dp)) {
-        val incognito by vm.incognito.collectAsStateSafe()
         Row(
             Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 14.dp),
             verticalAlignment = Alignment.CenterVertically,
@@ -215,7 +280,7 @@ fun CoachScreen(vm: CoachViewModel = hiltViewModel(), onOpenCalendar: () -> Unit
                     )
                 }
             }
-            IconButton(onClick = { vm.toggleIncognito() }) {
+            IconButton(onClick = { on.toggleIncognito() }) {
                 Icon(
                     if (incognito) Icons.Filled.VisibilityOff else Icons.Outlined.VisibilityOff,
                     contentDescription = if (incognito) "Leave incognito" else "Incognito chat",
@@ -223,10 +288,10 @@ fun CoachScreen(vm: CoachViewModel = hiltViewModel(), onOpenCalendar: () -> Unit
                     else MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }
-            IconButton(onClick = { vm.openHistory() }) {
+            IconButton(onClick = { on.openHistory() }) {
                 Icon(Icons.Filled.History, contentDescription = "Chat history")
             }
-            IconButton(onClick = { vm.newChat() }) {
+            IconButton(onClick = { on.newChat() }) {
                 Icon(Icons.Filled.Add, contentDescription = "New chat")
             }
         }
@@ -277,7 +342,7 @@ fun CoachScreen(vm: CoachViewModel = hiltViewModel(), onOpenCalendar: () -> Unit
                 val last = messages.lastOrNull()
                 if (!sending && last?.role == "assistant" && last.content.startsWith("⚠️")) {
                     item {
-                        TextButton(onClick = { vm.retryLast() }) { Text("Try again") }
+                        TextButton(onClick = { on.retryLast() }) { Text("Try again") }
                     }
                 }
                 if (!revealing) actionWeek?.let { week ->
@@ -286,10 +351,10 @@ fun CoachScreen(vm: CoachViewModel = hiltViewModel(), onOpenCalendar: () -> Unit
                             week,
                             changed = lastAction,
                             showReplan = showReplan,
-                            onOpen = onOpenCalendar,
-                            onOpenDay = { date -> vm.focusCalendar(date); onOpenCalendar() },
-                            onReplan = { vm.rePlanWeek() },
-                            onDismiss = { vm.dismissActionCard() },
+                            onOpen = on.openCalendar,
+                            onOpenDay = { date -> on.focusCalendar(date); on.openCalendar() },
+                            onReplan = { on.rePlanWeek() },
+                            onDismiss = { on.dismissActionCard() },
                         )
                     }
                 }
@@ -359,7 +424,7 @@ fun CoachScreen(vm: CoachViewModel = hiltViewModel(), onOpenCalendar: () -> Unit
             ) {
                 items(chips) { sgn ->
                     AssistChip(
-                        onClick = { vm.dismissFollowUps(); vm.send(sgn.prompt) },
+                        onClick = { on.dismissFollowUps(); on.send(sgn.prompt) },
                         label = { Text(sgn.label) },
                     )
                 }
@@ -408,7 +473,7 @@ fun CoachScreen(vm: CoachViewModel = hiltViewModel(), onOpenCalendar: () -> Unit
             ) {
                 GhostButton(
                     onClick = {
-                        vm.send("Yes, apply that to my real calendar now and push it to my watch, then confirm exactly what you scheduled.")
+                        on.send("Yes, apply that to my real calendar now and push it to my watch, then confirm exactly what you scheduled.")
                     },
                     enabled = !sending,
                     modifier = Modifier.weight(1f),
@@ -424,11 +489,11 @@ fun CoachScreen(vm: CoachViewModel = hiltViewModel(), onOpenCalendar: () -> Unit
                     ) {
                         DropdownMenuItem(
                             text = { Text("Save as workout template") },
-                            onClick = { templateMenu = false; vm.finalize("workout") },
+                            onClick = { templateMenu = false; on.finalize("workout") },
                         )
                         DropdownMenuItem(
                             text = { Text("Save as plan template") },
-                            onClick = { templateMenu = false; vm.finalize("plan") },
+                            onClick = { templateMenu = false; on.finalize("plan") },
                         )
                     }
                 }
@@ -445,7 +510,7 @@ fun CoachScreen(vm: CoachViewModel = hiltViewModel(), onOpenCalendar: () -> Unit
         ) {
             OutlinedTextField(
                 value = input,
-                onValueChange = { input = it; if (it.isNotEmpty()) vm.dismissFollowUps() },
+                onValueChange = { input = it; if (it.isNotEmpty()) on.dismissFollowUps() },
                 modifier = Modifier.weight(1f),
                 placeholder = { Text("Message your coach…") },
                 shape = RoundedCornerShape(24.dp),
@@ -466,7 +531,7 @@ fun CoachScreen(vm: CoachViewModel = hiltViewModel(), onOpenCalendar: () -> Unit
                 contentAlignment = Alignment.Center,
             ) {
                 IconButton(
-                    onClick = { if (input.isNotBlank()) { vm.send(input.trim()); input = "" } },
+                    onClick = { if (input.isNotBlank()) { on.send(input.trim()); input = "" } },
                     enabled = canSend,
                 ) {
                     Icon(

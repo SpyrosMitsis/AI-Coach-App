@@ -131,6 +131,15 @@ cmd_android_connect() {
 # flavor-specific) is invisible locally until CI catches it.
 cmd_android_test()    { say "unit tests, both flavors (JDK17)"; gradlew testPlayDebugUnitTest testFossDebugUnitTest; }
 
+# android:uitest — Compose UI tests, ON THE PHONE. Slower than android:test and
+# needs a device, so it is a separate command: these compose real screens to
+# catch what unit tests structurally cannot (layering, tap targets, gating).
+cmd_android_uitest() {
+  resolve_device
+  say "instrumented tests on $ANDROID_SERIAL (JDK17)"
+  ANDROID_SERIAL="$ANDROID_SERIAL" gradlew connectedPlayDebugAndroidTest "$@"
+}
+
 cmd_android_restart() {
   resolve_device
   say "restarting $APP_ID on $ANDROID_SERIAL"
@@ -434,6 +443,7 @@ ${c_green}Android${c_off}
   android:connect <host:port> wireless: connect, using the other port
   android:build           assemblePlayDebug only
   android:test            unit tests, BOTH flavors (what CI runs)
+  android:uitest          Compose UI tests on the phone (composes real screens)
   android:restart         force-stop + relaunch the app
   android:log [regex]     tail THIS app's logcat (by pid), optional grep filter
   android:logclear        clear the logcat buffer
@@ -481,6 +491,7 @@ main() {
     android:connect)  cmd_android_connect "$@" ;;
     android:build)    cmd_android_build "$@" ;;
     android:test)     cmd_android_test "$@" ;;
+    android:uitest)   cmd_android_uitest "$@" ;;
     android:restart)  cmd_android_restart "$@" ;;
     android:log)      cmd_android_log "$@" ;;
     android:logclear) cmd_android_logclear "$@" ;;
