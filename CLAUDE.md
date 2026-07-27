@@ -20,6 +20,8 @@ for the full list. Most-used:
 ```
 scripts/dev.sh android:install        # build + install debug APK (JDK17, device from dev.local.sh)
 scripts/dev.sh android:test           # unit tests, BOTH flavors (what CI runs)
+scripts/dev.sh android:uitest         # Compose UI tests on the phone
+scripts/dev.sh qa:device [--live]     # walk the app on the phone and assert
 scripts/dev.sh android:log [regex]     # tail THIS app's logcat by pid, optional grep
 scripts/dev.sh deno:test               # run the _shared/ test suite
 scripts/dev.sh deno:check [fn ...]     # type-check functions (default: all)
@@ -72,10 +74,31 @@ scripts/dev.sh db:push                 # run pending migrations (asks first)
   and `_shared/llm.ts` (provider/model/latency/usage/errors). Default level is `info`; set
   `WM_LOG=debug` for verbose, `WM_LOG=silent` to mute.
 
+## Device QA — `qa:device`
+
+The bugs this app ships are rendering decisions (a hero under a full-size list eating
+taps, the keyboard panning the whole window, an em dash on Home), and they used to be
+found only by driving the phone by hand. Three layers now catch them:
+
+- **`qa:device`** walks the INSTALLED app across all five tabs, resolving every tap by
+  on-screen text in a fresh `uiautomator` dump (never a coordinate) and asserting the
+  keyboard, the restored-thread banner, read-only thresholds, plus a per-screen sweep for
+  em dashes, leaked tool JSON and `null`/`undefined`, and a logcat crash sweep. Artefacts
+  (PNG + hierarchy + `report.json`) land in `qa_runs/`. `--live` adds one real coach turn.
+  `qa:test` runs the driver's own pure tests, no phone needed.
+- **`android:uitest`** composes `CoachContent` for real (`CoachUiState.kt` is the seam) and
+  pins the tap/layering/gating cases a unit test structurally cannot reach.
+- **Text hygiene is enforced at the LLM boundary**, in `llmGenerate`, not per function.
+  `LlmResult.raw` keeps the model's own words for the eval to score.
+
+Adding a check: prefer a step in `scripts/qa/scenarios.ts` for anything screen-level, and
+a `CoachContentTest` case for anything about state gating.
+
 ## Test / deploy
 
 ```
-scripts/dev.sh deno:test                       # 327+ shared tests
+scripts/dev.sh deno:test                       # 440+ shared tests
+scripts/dev.sh qa:test                          # QA driver's own tests
 scripts/dev.sh deno:check generate-workout …   # type-check before deploy
 scripts/dev.sh fn:deploy generate-workout coach-chat
 scripts/dev.sh db:push                          # migrations (confirm first)
