@@ -305,16 +305,6 @@ fun CoachContent(state: CoachState, on: CoachActions = CoachActions()) {
         }
 
         Box(Modifier.weight(1f).fillMaxWidth()) {
-            // The landing state. Fades and lifts away as the first message
-            // lands, leaving the thread as the whole screen.
-            androidx.compose.animation.AnimatedVisibility(
-                visible = messages.isEmpty(),
-                modifier = Modifier.align(Alignment.Center),
-                enter = fadeIn(),
-                exit = fadeOut() + slideOutVertically { -it / 6 },
-            ) {
-                ChatHero(name = displayName)
-            }
             LazyColumn(
                 state = listState,
                 modifier = Modifier.fillMaxSize().padding(horizontal = 12.dp),
@@ -382,6 +372,25 @@ fun CoachContent(state: CoachState, on: CoachActions = CoachActions()) {
                         }
                     }
                 }
+            }
+
+            // The landing state. Fades and lifts away as the first message
+            // lands, leaving the thread as the whole screen.
+            //
+            // AFTER the list, not before it. Underneath, the fillMaxSize
+            // LazyColumn covered it: transparent, but it takes every touch AND
+            // hides what is beneath it from the accessibility tree, so the hero
+            // was unreadable to a screen reader and invisible to qa:device even
+            // though it rendered perfectly in a screenshot. Nothing is lost by
+            // drawing it on top: it only ever shows while the thread is empty,
+            // and the first message removes it in the same frame it arrives.
+            androidx.compose.animation.AnimatedVisibility(
+                visible = messages.isEmpty(),
+                modifier = Modifier.align(Alignment.Center),
+                enter = fadeIn(),
+                exit = fadeOut() + slideOutVertically { -it / 6 },
+            ) {
+                ChatHero(name = displayName)
             }
 
             // Jump back down when the reader has scrolled up into history.

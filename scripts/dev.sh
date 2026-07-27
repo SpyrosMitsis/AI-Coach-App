@@ -134,10 +134,15 @@ cmd_android_test()    { say "unit tests, both flavors (JDK17)"; gradlew testPlay
 # android:uitest — Compose UI tests, ON THE PHONE. Slower than android:test and
 # needs a device, so it is a separate command: these compose real screens to
 # catch what unit tests structurally cannot (layering, tap targets, gating).
+#
+# leaveApksInstalledAfterRun is NOT optional. Gradle uninstalls both APKs when
+# the run ends, and an uninstall wipes app data: the first run of this command
+# signed the phone out of the account it was testing and cleared the Room cache.
 cmd_android_uitest() {
   resolve_device
   say "instrumented tests on $ANDROID_SERIAL (JDK17)"
-  ANDROID_SERIAL="$ANDROID_SERIAL" gradlew connectedPlayDebugAndroidTest "$@"
+  ANDROID_SERIAL="$ANDROID_SERIAL" gradlew connectedPlayDebugAndroidTest \
+    -Pandroid.injected.androidTest.leaveApksInstalledAfterRun=true "$@"
 }
 
 cmd_android_restart() {
@@ -170,6 +175,25 @@ cmd_android_log() {
     adb logcat -v color --pid "$pid"
   fi
 }
+
+# ============================================================================
+# Device QA
+# ============================================================================
+# qa:device [--live] [--steps a,b]
+#
+# Walks the INSTALLED app on the phone and asserts what a careful manual pass
+# would, resolving every tap by on-screen text instead of by coordinate. Writes
+# a screenshot + hierarchy per step to qa_runs/<stamp>/ so a failure arrives
+# with its evidence. Read-only unless --live, which adds one real coach turn.
+cmd_qa_device() {
+  need deno
+  resolve_device
+  say "device QA on $ANDROID_SERIAL"
+  ( cd "$ROOT" && ANDROID_SERIAL="$ANDROID_SERIAL" deno run -A scripts/qa/run.ts "$@" )
+}
+
+# qa:test — the driver's own tests (parser + sweeps), no phone needed.
+cmd_qa_test() { need deno; say "deno test scripts/qa/"; ( cd "$ROOT" && deno test -A scripts/qa/ "$@" ); }
 
 # ============================================================================
 # Deno / shared edge-function code
@@ -467,6 +491,12 @@ ${c_green}Evaluation${c_off}
                           models live in scripts/eval/models.ts; keys in dev.local.sh${c_off}
   eval:notebook           open the analysis notebook on the latest run
 
+${c_green}Device QA${c_off}
+  qa:device [--live]      walk the installed app on the phone and assert
+                          ${c_dim}taps resolve by on-screen text; artefacts in qa_runs/
+                          --live also sends one real coach turn (costs an LLM call)${c_off}
+  qa:test                 the QA driver's own tests (no phone needed)
+
 ${c_green}Cost${c_off}
   llm:cost [days]         AI spend by feature + model (default 7 days)
   llm:cost --recent [n]   the last n individual requests, with per-call cost
@@ -505,6 +535,8 @@ main() {
     eval:run)         cmd_eval_run "$@" ;;
     eval:notebook)    cmd_eval_notebook "$@" ;;
     llm:cost)         cmd_llm_cost "$@" ;;
+    qa:device)        cmd_qa_device "$@" ;;
+    qa:test)          cmd_qa_test "$@" ;;
     web:dev)          cmd_web_dev "$@" ;;
     web:build)        cmd_web_build "$@" ;;
     help|-h|--help)   cmd_help ;;

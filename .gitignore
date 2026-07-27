@@ -27,3 +27,4 @@ scripts/dev.local.sh
 # grows without bound, and the raw text is large.
 eval_runs/
 .ipynb_checkpoints/
+qa_runs/
