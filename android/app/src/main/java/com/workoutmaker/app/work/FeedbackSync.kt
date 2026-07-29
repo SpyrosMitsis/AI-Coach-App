@@ -15,6 +15,8 @@ import com.workoutmaker.app.data.WorkoutRepository
 import dagger.assisted.Assisted
 import dagger.assisted.AssistedInject
 import java.util.concurrent.TimeUnit
+import com.workoutmaker.app.data.refreshMemory
+import com.workoutmaker.app.data.submitFeedback
 
 // Durably submit a post-workout effort rating. The set data is already safe in
 // Room; this makes the session RPE/difficulty survive being offline at the gym

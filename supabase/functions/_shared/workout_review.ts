@@ -13,7 +13,7 @@
 // violations the caller can feed into the self-repair retry.
 // ============================================================================
 
-import type { Workout, WorkoutExercise } from "./types.ts";
+import type { InjuryEntry, Workout, WorkoutExercise } from "./types.ts";
 import { allowedCategories, categoryOfExercise, EXERCISE_CATALOG } from "./exercise_catalog.ts";
 import type { NextTarget } from "./progression.ts";
 
@@ -36,12 +36,17 @@ export interface ReviewContext {
   tsb: number;
   daysSinceLastHard: number;
   experience: string;
-  // Free-text injuries/constraints (onboarding.injury_history + coach_knowledge)
-  // — parsed into structured movement blocks by the safety engine below.
-  injuries?: string;
+  // Structured injuries (injuriesOf() in profile.ts — handles the legacy
+  // free-text fallback). coach_knowledge is intentionally NOT folded in here:
+  // it's unstructured prose covered by the prompt-level "avoid aggravating"
+  // instruction, not by this deterministic backstop.
+  injuries?: InjuryEntry[];
   // Today's recovery/readiness score (0-100). Low readiness + a hard session →
   // the intensity ceiling caps it deterministically (not just a flag).
   readiness?: number;
+  // What that score rests on (recovery.ts RecoveryBasis). "none" means nothing
+  // was measured and the 50 is a placeholder, so it must not cap anything.
+  readinessBasis?: "measured" | "subjective" | "none";
   // The athlete's equipment tier (onboarding.equipment) — strength lifts whose
   // catalog category isn't available get stripped.
   equipment?: string;
@@ -91,9 +96,18 @@ const SAFETY_RULES: SafetyRule[] = [
   },
 ];
 
-export function activeSafetyRules(injuries: string): SafetyRule[] {
-  if (!injuries || !injuries.trim()) return [];
-  return SAFETY_RULES.filter((r) => r.when.test(injuries));
+// A SafetyRule paired with the severity of the injury entry that triggered
+// it, so the caller can decide strip-vs-flag per match.
+export interface ActiveSafetyRule extends SafetyRule { severity: InjuryEntry["severity"] }
+
+export function activeSafetyRules(injuries: InjuryEntry[]): ActiveSafetyRule[] {
+  if (!injuries?.length) return [];
+  const out: ActiveSafetyRule[] = [];
+  for (const rule of SAFETY_RULES) {
+    const hit = injuries.find((i) => rule.when.test(i.area) || (i.note && rule.when.test(i.note)));
+    if (hit) out.push({ ...rule, severity: hit.severity });
+  }
+  return out;
 }
 
 // --- helpers (exported for the eval harness) -------------------------------
@@ -113,15 +127,42 @@ function workingSets(ex: WorkoutExercise): number {
   return Math.max(0, Math.round(ex.sets || 0));
 }
 
-// Highest weekly-volume landmark we allow before flagging junk volume.
-const MAX_WEEKLY_SETS = 22;
+// Weekly hard-set landmark per experience tier, the top of each range in
+// prompt.ts (Beginner ~8-12, Intermediate ~12-18, Advanced ~16-22+). This was a
+// flat 22 for everyone, so a Beginner prescribed 20 sets broke the prompt and
+// passed the checker (formerly KNOWN_CONTRADICTIONS "weekly-sets"). Advanced
+// keeps 22 as a junk-volume landmark even though its tier is open-ended.
+function maxWeeklySets(experience: string): number {
+  const e = (experience ?? "").toLowerCase();
+  if (e.includes("beginner")) return 12;
+  if (e.includes("advanced")) return 22;
+  return 18;
+}
 // Absolute load sanity cap (kg) when we have no 1RM to anchor to — catches
 // data-entry disasters (e.g. a "300 kg" curl) without guessing bodyweight.
 const ABSOLUTE_LOAD_CAP_KG = 400;
 
-// Zone → TSS-per-minute (TRIMP-style). Calibrated so ~60 min Z2 ≈ 50 TSS and an
-// hour at threshold ≈ ~75-100. Used only as an independent cross-check.
-const ZONE_TSS_PER_MIN: Record<string, number> = {
+// Zone → TSS-per-minute. Calibrated so ~60 min Z2 ≈ 50 TSS and an hour at
+// threshold ≈ ~75-100. Used only as an independent cross-check.
+//
+// The derivation, so it can be argued with instead of guessed at. Standard TSS
+// is `hours × IF² × 100`, i.e. TSS/min = IF²×100/60. Inverting each rate gives
+// the intensity factor it assumes, and every one lands in the UPPER part of its
+// own Coggan band:
+//
+//   zone  rate   implied IF   band (% FTP)
+//   Z1    0.5    0.55         0-55     (top)
+//   Z2    0.8    0.69         56-75    (upper)
+//   Z3    1.2    0.85         76-90    (upper)
+//   Z4    1.7    1.01         91-105   (upper)
+//   Z5    2.2    1.15         106-120  (upper)
+//
+// Upper-band is the right bias for a PRESCRIBED session: told "a Z2 run", an
+// athlete targets the top of Z2, not its floor. It is also why zoneOf() resolves
+// a range to its HIGHEST zone — "Z1-Z2" is an easy run in the Z2 part of the
+// band, so pricing it at Z1 (as it did) under-counted every long easy session.
+// zone_calibration_test.ts pins these, so a silent edit shows up as a failure.
+export const ZONE_TSS_PER_MIN: Record<string, number> = {
   Z1: 0.5,
   Z2: 0.8,
   Z3: 1.2,
@@ -129,18 +170,43 @@ const ZONE_TSS_PER_MIN: Record<string, number> = {
   Z5: 2.2,
 };
 
-function zoneOf(ex: WorkoutExercise): string | null {
+/**
+ * The Z1-Z5 zone an exercise names, from either channel. Exported so the plan
+ * checkers read zones exactly the way the review engine does.
+ *
+ * A range resolves to its HIGHEST zone. Models write ranges constantly ("Z1-Z2"
+ * for an easy run, "Z3-Z4" for a threshold block, "Z4-Z5" for strides) — 15% of
+ * every zone string in a real eval run — and this used to take the FIRST match,
+ * pricing each range at its floor:
+ *
+ *   Z1-Z2 → Z1   0.5/min instead of 0.8   (-37%)
+ *   Z3-Z4 → Z3   1.2/min instead of 1.7   (-29%)
+ *
+ * That silently under-counted every long easy session, and reviewWorkout then
+ * OVERWROTE the model's own (closer) tss_estimate with the under-count. It also
+ * read a "Z2-Z3" tempo as easy, hiding it from hard-day spacing — the unsafe
+ * direction. Taking the top matches ZONE_TSS_PER_MIN's upper-band calibration
+ * and errs toward counting load and flagging hard days, which is the side to err.
+ */
+export function zoneOf(ex: WorkoutExercise): string | null {
   const z = ex.hr_zone || ex.pace_zone;
   if (!z) return null;
-  const m = z.match(/z\s*([1-5])/i);
-  return m ? `Z${m[1]}` : null;
+  let top = 0;
+  for (const m of z.matchAll(/z\s*([1-5])/gi)) top = Math.max(top, Number(m[1]));
+  return top ? `Z${top}` : null;
 }
 
-const zoneIsHard = (z: string | null) => z === "Z3" || z === "Z4" || z === "Z5";
+export const zoneIsHard = (z: string | null) => z === "Z3" || z === "Z4" || z === "Z5";
+
+// Endurance sports share the zone × duration model. Swim was excluded from both
+// functions below (formerly KNOWN_CONTRADICTIONS "swim"): a hard Z4 CSS swim was
+// invisible to hard-day spacing and priced as strength working sets. TSS is
+// sport-agnostic (hours × IF² × 100), so CSS zones price like pace/HR zones.
+const isEndurance = (t: Workout["type"]) => t === "run" || t === "ride" || t === "swim";
 
 /** Is this endurance session a hard/quality effort (Z3+ work or RPE ≥ 7)? */
 export function isHardSession(w: Workout): boolean {
-  if (w.type !== "run" && w.type !== "ride") return false;
+  if (!isEndurance(w.type)) return false;
   if (w.rpe_target >= 7) return true;
   return w.sections.some((s) => s.exercises.some((ex) => zoneIsHard(zoneOf(ex))));
 }
@@ -149,7 +215,7 @@ export function isHardSession(w: Workout): boolean {
 export function computeTss(w: Workout): number {
   if (w.type === "rest") return 0;
 
-  if (w.type === "run" || w.type === "ride") {
+  if (isEndurance(w.type)) {
     let tss = 0;
     for (const sec of w.sections) {
       for (const ex of sec.exercises) {
@@ -189,19 +255,21 @@ export function reviewWorkout(w: Workout, ctx: ReviewContext): ReviewResult {
   };
 
   // SAFETY FIRST — strip any contraindicated movement, whatever the type. The
-  // engine must never serve a movement that loads an active injury.
-  const rules = activeSafetyRules(ctx.injuries ?? "");
+  // engine must never serve a movement that loads an active injury. Severity
+  // gates strip-vs-flag: "mild" is a caution (left in, just flagged for the
+  // repair pass to see); unset/moderate/serious all hard-forbid, since the
+  // engine is a conservative backstop and an unknown severity should err safe.
+  const rules = activeSafetyRules(ctx.injuries ?? []);
   if (rules.length) {
     for (const sec of corrected.sections) {
       sec.exercises = sec.exercises.filter((ex) => {
         const hit = rules.find((r) => r.forbid.test(ex.name));
-        if (hit) {
-          const msg = `${ex.name}: contraindicated, ${hit.reason} (injury on file)`;
-          unsafe.push(msg);
-          violations.push(msg);
-          return false; // remove it
-        }
-        return true;
+        if (!hit) return true;
+        const msg = `${ex.name}: contraindicated, ${hit.reason} (injury on file)`;
+        violations.push(msg);
+        if (hit.severity === "mild") return true; // caution only, keep it
+        unsafe.push(msg);
+        return false; // remove it
       });
     }
     // Drop sections emptied by the safety strip.
@@ -286,12 +354,48 @@ export function reviewWorkout(w: Workout, ctx: ReviewContext): ReviewResult {
       }
     }
 
-    // Weekly volume landmark: prescribed + already-done must not blow past ~22.
+    // Weekly volume landmark: prescribed + already-done must not blow past the
+    // athlete's tier ceiling (12/18/22 for Beginner/Intermediate/Advanced).
+    const setLandmark = maxWeeklySets(ctx.experience);
     for (const [muscle, prescribed] of Object.entries(prescribedSetsByMuscle)) {
       const total = (ctx.weeklySetsByMuscle[muscle] ?? 0) + prescribed;
-      if (total > MAX_WEEKLY_SETS) {
-        violations.push(`${muscle}: ${total} weekly sets exceeds the ~${MAX_WEEKLY_SETS}-set landmark (junk volume)`);
+      if (total > setLandmark) {
+        violations.push(`${muscle}: ${total} weekly sets exceeds the ~${setLandmark}-set landmark (junk volume)`);
       }
+    }
+  }
+
+  // QUALITY OVERLOAD — one session must be one quality session. The eval's
+  // judge caught what no check did: 20 min threshold + 3x4 min VO2 stacked in a
+  // single run passed everything, yet each block alone is a full session by
+  // prompt.ts:57-59 (tempo "20-40 min"; VO2 "3-5 min reps"). Two flags:
+  //   - hard minutes beyond the 40-min tempo top end (an overstuffed session);
+  //   - a full threshold block AND a full VO2 block together. Strides after a
+  //     tempo stay legal: 6-10 x ~20s is ~3 min of Z5, under the 10-min bar.
+  // RUN only: prompt.ts:57-59 is the running section, and rides legitimately
+  // hold more sub-threshold time (2x20 sweet spot is normal cycling).
+  if (corrected.type === "run") {
+    let tempoMins = 0, vo2Mins = 0;
+    for (const sec of corrected.sections) {
+      if (isWarmupSection(sec.name)) continue;
+      const per = sec.duration_minutes && sec.exercises.length
+        ? sec.duration_minutes / sec.exercises.length
+        : 0;
+      for (const ex of sec.exercises) {
+        const z = zoneOf(ex);
+        if (z === "Z3" || z === "Z4") tempoMins += per;
+        else if (z === "Z5") vo2Mins += per;
+      }
+    }
+    const hardMins = tempoMins + vo2Mins;
+    if (hardMins > 40) {
+      violations.push(
+        `${Math.round(hardMins)} min of Z3+ work in one session is over the 40-min quality ceiling (one quality block per day)`,
+      );
+    } else if (tempoMins >= 20 && vo2Mins >= 10) {
+      violations.push(
+        `a full threshold block (${Math.round(tempoMins)} min) AND a full VO2 block (${Math.round(vo2Mins)} min) in one session; pick one quality focus per day`,
+      );
     }
   }
 
@@ -305,13 +409,31 @@ export function reviewWorkout(w: Workout, ctx: ReviewContext): ReviewResult {
     }
   }
 
-  // INTENSITY CEILING — a hard endurance session on a wrecked athlete is CAPPED,
-  // not just flagged: when readiness is low or TSB deeply negative, downgrade hard
-  // zones to easy and cap effort. Final deterministic safety, even if the model
-  // (and the repair pass) ignored the readiness signal. Runs before the TSS
-  // cross-check below so the recompute reflects the downgraded zones.
-  const wrecked = (typeof ctx.readiness === "number" && ctx.readiness < 35) || ctx.tsb < -20;
-  if (wrecked && isHardSession(corrected)) {
+  // INTENSITY CEILING — a hard endurance session on a compromised athlete is
+  // CAPPED, not just flagged: downgrade hard zones to easy and clamp effort.
+  // Final deterministic safety, even if the model (and the repair pass) ignored
+  // the readiness signal. Runs before the TSS cross-check below so the recompute
+  // reflects the downgraded zones.
+  //
+  // The caps are the SAME promises recoveryBlock (context.ts) makes to the
+  // model, at the same band thresholds as recovery.ts (red <34, amber <67) —
+  // ctx.readiness IS recovery.score in production. Amber used to be entirely
+  // unchecked (formerly KNOWN_CONTRADICTIONS "recovery-cap"): the prompt
+  // promised "amber → cap RPE 6, no intervals/threshold" and no code held it.
+  // Deep TSB (≤ -20) keeps its own RPE 5 cap — that is the prompt's "recovery
+  // week" rule, driven by load, not by today's recovery score. Endurance only:
+  // strength intensity is governed by the progression snap above, and an amber
+  // cap there would fight the engine's own targets.
+  //
+  // An UNMEASURED readiness caps nothing. With no wellness rows and no synced
+  // signal the model lands on exactly 50/amber, which is the neutral midpoint,
+  // not a reading — and it was silently clamping every hard session to RPE 6
+  // for anyone without a wearable. The TSB cap below still applies: form is
+  // computed from training the athlete actually did.
+  const measured = ctx.readinessBasis !== "none";
+  const r = measured && typeof ctx.readiness === "number" ? ctx.readiness : null;
+  const rpeCap = r !== null && r < 34 ? 4 : ctx.tsb < -20 ? 5 : r !== null && r < 67 ? 6 : null;
+  if (rpeCap !== null && isHardSession(corrected)) {
     for (const sec of corrected.sections) {
       for (const ex of sec.exercises) {
         if (zoneIsHard(zoneOf(ex))) {
@@ -320,31 +442,40 @@ export function reviewWorkout(w: Workout, ctx: ReviewContext): ReviewResult {
         }
       }
     }
-    if (corrected.rpe_target > 5) corrected.rpe_target = 5;
+    if (corrected.rpe_target > rpeCap) corrected.rpe_target = rpeCap;
     violations.push(
-      `low readiness (${ctx.readiness ?? "?"}/100) / TSB ${ctx.tsb.toFixed(0)}, capped to easy aerobic (Z2, RPE ≤5)`,
+      rpeCap === 6
+        ? `moderate recovery (${r}/100, amber), quality capped to easy aerobic (Z2, RPE ≤6)`
+        : `low readiness (${r ?? "?"}/100) / TSB ${ctx.tsb.toFixed(0)}, capped to easy aerobic (Z2, RPE ≤${rpeCap})`,
     );
   }
 
-  // TSS cross-check — ENDURANCE ONLY. The zone × duration model is a defensible
-  // independent estimate for runs/rides, so a wildly wrong self-report (>25% off)
-  // gets replaced before it poisons next-day ACWR. Strength TSS is genuinely hard
-  // to estimate from sets alone, so we don't override the model there — we only
-  // sanity-bound it below.
+  // TSS is ENGINE-OWNED. The prompt no longer asks for tss_estimate: the eval
+  // proved models cannot count it (misreported >25% on 12/72 rows, and an A/B
+  // showed a model relabelling the same week 300→440 with the work unchanged),
+  // and the old "differs by >25%, replaced" violation burnt a repair call to
+  // fix a number we were about to overwrite anyway. So: endurance TSS is always
+  // the zone × duration computation; strength keeps a model-supplied value if
+  // one arrives (older prompts / BYO clients), bounded at 150, else the
+  // sets-based heuristic. tssReplaced records a meaningful disagreement with a
+  // legacy self-report for observability, never as a violation.
   let tssReplaced: { from: number; to: number } | undefined;
-  if (corrected.type === "run" || corrected.type === "ride") {
+  if (isEndurance(corrected.type)) {
     const computed = computeTss(corrected);
     const reported = corrected.tss_estimate;
-    if (computed > 0 && Math.abs(reported - computed) / Math.max(computed, 1) > 0.25) {
-      violations.push(`tss_estimate ${reported} differs from computed ${computed} by >25%, replaced`);
+    if (computed > 0) {
+      if (reported > 0 && Math.abs(reported - computed) / computed > 0.25) {
+        tssReplaced = { from: reported, to: computed };
+      }
       corrected.tss_estimate = computed;
-      tssReplaced = { from: reported, to: computed };
     }
-  } else if (corrected.type === "strength" && corrected.tss_estimate > 150) {
-    // A strength session rarely exceeds ~150 TSS; clamp obvious overestimates.
-    violations.push(`strength tss_estimate ${corrected.tss_estimate} implausibly high, clamped to 150`);
-    tssReplaced = { from: corrected.tss_estimate, to: 150 };
-    corrected.tss_estimate = 150;
+  } else if (corrected.type === "strength") {
+    if (corrected.tss_estimate > 150) {
+      tssReplaced = { from: corrected.tss_estimate, to: 150 };
+      corrected.tss_estimate = 150;
+    } else if (corrected.tss_estimate <= 0) {
+      corrected.tss_estimate = computeTss(corrected);
+    }
   }
 
   return { violations, corrected, tssReplaced, unsafe };

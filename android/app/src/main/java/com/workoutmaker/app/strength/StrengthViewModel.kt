@@ -19,116 +19,50 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
+import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
-import kotlinx.serialization.Serializable
-import kotlinx.serialization.json.Json
 import java.io.File
 import javax.inject.Inject
+import android.app.AlarmManager
+import android.app.PendingIntent
+import android.content.Intent
+import android.os.VibratorManager
+import android.util.Log
+import com.workoutmaker.app.data.PlannedWorkout
+import com.workoutmaker.app.data.RestChime
+import com.workoutmaker.app.data.Workout
+import com.workoutmaker.app.data.WorkoutRepository
+import com.workoutmaker.app.notify.RestAlarmReceiver
+import com.workoutmaker.app.notify.playCountdownTick
+import com.workoutmaker.app.notify.playRestOverSound
+import com.workoutmaker.app.notify.vibrateStrong
+import com.workoutmaker.app.work.FeedbackSyncWorker
+import com.workoutmaker.app.work.StrengthSync
+import com.workoutmaker.app.work.WorkoutForegroundService
+import java.time.Instant
+import java.time.LocalDate
+import java.time.ZoneId
+import com.workoutmaker.app.data.cachedPlannedWorkouts
+import com.workoutmaker.app.data.plannedWorkouts
 
-// --- Active-session UI state (Compose-observable holders) -------------------
-// File-scoped so it's available no matter when the VM's init runs (the restore
-// init block executes before class-level vals would be initialized).
-private val sessionJson = Json { ignoreUnknownKeys = true }
 
-class UiSet(
-    weight: String = "",
-    reps: String = "",
-    rpe: String = "",
-    done: Boolean = false,
-    warmup: Boolean = false,
-    note: String = "",
-    // AI / progression / repeat-last hints shown as greyed placeholders. They are
-    // NOT logged values until the user accepts them (types, or taps the checkmark).
-    suggestedWeight: String = "",
-    suggestedReps: String = "",
-) {
-    var weight by mutableStateOf(weight)
-    var reps by mutableStateOf(reps)
-    var rpe by mutableStateOf(rpe)
-    var done by mutableStateOf(done)
-    var warmup by mutableStateOf(warmup)
-    var note by mutableStateOf(note)
-    var suggestedWeight by mutableStateOf(suggestedWeight)
-    var suggestedReps by mutableStateOf(suggestedReps)
-}
 
-class UiExercise(val name: String) {
-    val muscle: String = ExerciseCatalog.muscleOf(name)
-    var restSec by mutableStateOf(ExerciseCatalog.restOf(name))
-    val sets = mutableStateListOf<UiSet>()
-    var previous by mutableStateOf<List<SetEntity>>(emptyList())
-    var suggestion by mutableStateOf<ProgressionSuggestion?>(null) // B1 next-session target
 
-    // Cardio entries log MINUTES (in the reps slot) and no weight.
-    val isCardio: Boolean get() = ExerciseCatalog.isCardio(name)
-}
 
-// Format a kg value tersely (no trailing ".0").
-private fun kg(v: Double): String =
-    if (kotlin.math.abs(v - v.toLong()) < 0.001) v.toLong().toString() else ((v * 100).toLong() / 100.0).toString()
 
-// Single source of truth for the ↗ target headline and the greyed input placeholders:
-// when a live progression suggestion exists it drives BOTH, so they can't
-// disagree. Only fills sets the athlete hasn't typed into yet; a history-based
-// suggestion overrides any plan-seeded placeholder.
-private fun applySuggestion(ux: UiExercise, sug: ProgressionSuggestion?) {
-    ux.suggestion = sug
-    if (sug == null) return
-    ux.sets.forEach { s ->
-        if (s.weight.isBlank()) s.suggestedWeight = kg(sug.weightKg)
-        if (s.reps.isBlank()) s.suggestedReps = sug.reps.toString()
-    }
-}
 
-// --- Crash/kill-proof snapshot of the in-progress session -------------------
-@Serializable
-private data class SavedSet(
-    val weight: String = "", val reps: String = "", val rpe: String = "",
-    val done: Boolean = false, val warmup: Boolean = false, val note: String = "",
-    val suggestedWeight: String = "", val suggestedReps: String = "",
-)
 
-@Serializable
-private data class SavedExercise(val name: String, val restSec: Int, val sets: List<SavedSet>)
 
-@Serializable
-private data class SavedSession(
-    val workoutName: String,
-    val workoutNote: String = "",
-    val startedAt: Long,
-    val linkedPlannedId: String? = null,
-    val linkedPlannedDate: String? = null,
-    val editingWorkoutId: String? = null,
-    val editingEndedAt: Long = 0L,
-    val restEndAt: Long? = null, // absolute epoch ms the current rest ends
-    val restTotal: Int = 0,
-    val exercises: List<SavedExercise> = emptyList(),
-)
 
-sealed interface StrengthNav {
-    data object Home : StrengthNav
-    data object Active : StrengthNav
-    data object Picker : StrengthNav
-    data class Stats(val exercise: String) : StrengthNav
-    data class WorkoutDetail(val workoutId: String) : StrengthNav
-    data object RateEffort : StrengthNav
-}
-
-// A logged workout opened in the detail page: header + sets grouped per exercise.
-data class WorkoutDetailUi(
-    val workout: WorkoutEntity,
-    val exercises: List<Pair<String, List<SetEntity>>>,
-    val totalSets: Int,
-)
 
 @HiltViewModel
 class StrengthViewModel @Inject constructor(
     private val repo: StrengthRepository,
-    private val workoutRepo: com.workoutmaker.app.data.WorkoutRepository,
+    private val workoutRepo: WorkoutRepository,
     private val prefs: AppPreferences,
     private val handoff: StrengthHandoff,
+    private val catalog: StrengthCatalog,
     @ApplicationContext private val context: Context,
 ) : ViewModel() {
 
@@ -165,10 +99,10 @@ class StrengthViewModel @Inject constructor(
 
     // Today's planned strength sessions from the calendar, shown on the
     // Strength home so the plan is one tap from the logger.
-    val todayPlanned = MutableStateFlow<List<com.workoutmaker.app.data.PlannedWorkout>>(emptyList())
+    val todayPlanned = MutableStateFlow<List<PlannedWorkout>>(emptyList())
 
     /** Start logging a planned calendar session from the Strength home card. */
-    fun startPlannedFromHome(w: com.workoutmaker.app.data.PlannedWorkout) {
+    fun startPlannedFromHome(w: PlannedWorkout) {
         val s = StrengthHandoff.Start(w.workout_json, w.id, w.date)
         if (exercises.isNotEmpty()) pendingPlannedStart.value = s else startPlanned(s)
     }
@@ -205,7 +139,9 @@ class StrengthViewModel @Inject constructor(
     val workoutDetail = MutableStateFlow<WorkoutDetailUi?>(null)
     val routines = MutableStateFlow<List<RoutineWithItems>>(emptyList())
     val loggedExercises = MutableStateFlow<List<String>>(emptyList())
-    val currentStats = MutableStateFlow<ExerciseStats?>(null)
+    // Per-exercise stats live in `catalog` (see StrengthCatalog.kt) — this is a
+    // read-only pass-through so no Composable call site needs to change.
+    val currentStats: StateFlow<ExerciseStats?> get() = catalog.currentStats
     val status = MutableStateFlow<String?>(null)
     val loading = MutableStateFlow(false)
 
@@ -240,13 +176,14 @@ class StrengthViewModel @Inject constructor(
         }
     }
 
-    // New surfaces: weekly volume/deload (B2/B5), PR celebration (C2),
-    // picker favorites/recents/custom (D1/D5), programs (B4).
+    // New surfaces: weekly volume/deload (B2/B5), PR celebration (C2), programs (B4).
     val weeklyReport = MutableStateFlow<WeeklyReport?>(null)
     val lastPrs = MutableStateFlow<List<PrHit>>(emptyList())
-    val favorites = MutableStateFlow<List<String>>(emptyList())
-    val recentExercises = MutableStateFlow<List<String>>(emptyList())
-    val customExercises = MutableStateFlow<List<Exercise>>(emptyList())
+    // Picker favorites/recents/custom (D1/D5) live in `catalog` — read-only
+    // pass-throughs so no Composable call site needs to change.
+    val favorites: StateFlow<List<String>> get() = catalog.favorites
+    val recentExercises: StateFlow<List<String>> get() = catalog.recentExercises
+    val customExercises: StateFlow<List<Exercise>> get() = catalog.customExercises
     val programs: List<StrengthProgram> = StrengthPrograms.all
 
     // Count of local strength changes not yet pushed to the cloud (offline queue).
@@ -255,7 +192,7 @@ class StrengthViewModel @Inject constructor(
     // Ask WorkManager to drain the offline queue (runs now if online, else when a
     // connection returns — even if the app is closed).
     private fun requestSync() {
-        com.workoutmaker.app.work.StrengthSync.request(context)
+        StrengthSync.request(context)
         viewModelScope.launch { runCatching { pendingSync.value = repo.pendingSyncCount() } }
     }
 
@@ -275,7 +212,7 @@ class StrengthViewModel @Inject constructor(
                 // an empty screen here would silently mask un-restored history.
                 // Log it: a decode failure here (not just a network blip) was
                 // invisible before and looked like a connection problem.
-                android.util.Log.w("StrengthVM", "restoreIfEmpty failed", it)
+                Log.w("StrengthVM", "restoreIfEmpty failed", it)
                 status.value = "Couldn't restore your history from the cloud, check your connection and reopen this tab"
                 0
             }
@@ -291,7 +228,7 @@ class StrengthViewModel @Inject constructor(
         }
         // Surface today's planned strength sessions (offline cache as fallback).
         runCatching {
-            val today = java.time.LocalDate.now().toString()
+            val today = LocalDate.now().toString()
             val rows = runCatching { workoutRepo.plannedWorkouts(today) }
                 .getOrElse { workoutRepo.cachedPlannedWorkouts() }
             todayPlanned.value = rows
@@ -302,34 +239,20 @@ class StrengthViewModel @Inject constructor(
         requestSync()
     }
 
-    fun loadPicker() = viewModelScope.launch {
-        runCatching {
-            repo.loadAndRegisterCustom()
-            favorites.value = repo.favorites()
-            recentExercises.value = repo.recentExercises()
-            customExercises.value = ExerciseCatalog.custom()
-        }
-    }
+    fun loadPicker() = viewModelScope.launch { catalog.loadPicker() }
 
     fun dismissPrs() { lastPrs.value = emptyList() }
 
-    fun toggleFavorite(name: String) = viewModelScope.launch {
-        val isFav = favorites.value.contains(name)
-        repo.toggleFavorite(name, !isFav)
-        favorites.value = repo.favorites()
-    }
+    fun toggleFavorite(name: String) = viewModelScope.launch { catalog.toggleFavorite(name) }
 
     fun addCustomExercise(name: String, muscle: String, category: String, compound: Boolean) = viewModelScope.launch {
-        if (name.isBlank()) return@launch
-        repo.addCustomExercise(name, muscle, category, compound)
-        customExercises.value = ExerciseCatalog.custom()
+        if (!catalog.addCustomExercise(name, muscle, category, compound)) return@launch
         status.value = "✓ Added “${name.trim()}”"
         requestSync()
     }
 
     fun deleteCustomExercise(name: String) = viewModelScope.launch {
-        repo.deleteCustomExercise(name)
-        customExercises.value = ExerciseCatalog.custom()
+        catalog.deleteCustomExercise(name)
         requestSync()
     }
 
@@ -351,16 +274,6 @@ class StrengthViewModel @Inject constructor(
             }
             .onFailure { status.value = "Import failed: ${it.message}" }
         loading.value = false
-    }
-
-    // Open a logged workout's full detail (every exercise + set).
-    fun openWorkout(id: String) = viewModelScope.launch {
-        val pair = repo.workoutWithSets(id) ?: run { status.value = "Workout not found"; return@launch }
-        val (w, sets) = pair
-        val grouped = sets.groupBy { it.exerciseName }
-            .map { (name, s) -> name to s.sortedBy { it.idx } }
-        workoutDetail.value = WorkoutDetailUi(w, grouped, sets.size)
-        nav.value = StrengthNav.WorkoutDetail(id)
     }
 
     // --- session lifecycle -------------------------------------------------
@@ -520,7 +433,7 @@ class StrengthViewModel @Inject constructor(
     }
 
     // Pre-fill the active session from a structured Workout (AI lift or a plan).
-    private fun seedFromWorkout(w: com.workoutmaker.app.data.Workout) {
+    private fun seedFromWorkout(w: Workout) {
         w.sections.forEach { sec ->
             sec.exercises.forEach { e ->
                 // An AI-introduced exercise outside the catalog: register it as a
@@ -757,7 +670,7 @@ class StrengthViewModel @Inject constructor(
         }
         // Keep the live session alive across backgrounding/swipe with a
         // foreground-service timer notification (like a watch workout).
-        com.workoutmaker.app.work.WorkoutForegroundService.start(context, workoutName, startedAt)
+        WorkoutForegroundService.start(context, workoutName, startedAt)
         tickJob = viewModelScope.launch {
             while (true) {
                 elapsedSec.value = (System.currentTimeMillis() - startedAt) / 1000
@@ -767,7 +680,7 @@ class StrengthViewModel @Inject constructor(
     }
     private fun stopTick() {
         tickJob?.cancel(); tickJob = null
-        com.workoutmaker.app.work.WorkoutForegroundService.stop(context)
+        WorkoutForegroundService.stop(context)
     }
 
     /** Manually start/restart a rest timer (the bottom "Rest" button). */
@@ -797,14 +710,23 @@ class StrengthViewModel @Inject constructor(
     private fun runRestLoop() {
         restJob?.cancel()
         restJob = viewModelScope.launch {
+            var lastTicked = -1
             while (true) {
                 val remain = Math.ceil((restEndAt - System.currentTimeMillis()) / 1000.0).toInt()
                 if (remain <= 0) {
                     restRemaining.value = null
                     cancelRestAlarm() // foreground: cue in-app instead of via the alarm
-                    if (cfg.restVibrate) com.workoutmaker.app.notify.vibrateStrong(context)
-                    if (cfg.restNotify) com.workoutmaker.app.notify.playRestOverSound(context, cfg.restChime)
+                    if (cfg.restVibrate) vibrateStrong(context)
+                    if (cfg.restNotify) playRestOverSound(context, cfg.restChime)
                     break
+                }
+                // Soft 3-2-1 ticks so the buzzer is a confirmation, not a jump
+                // scare. Same gates as the cue itself: sound on + not silent.
+                if (remain <= 3 && remain != lastTicked &&
+                    cfg.restNotify && cfg.restChime != RestChime.SILENT
+                ) {
+                    lastTicked = remain
+                    playCountdownTick(context)
                 }
                 restRemaining.value = remain
                 delay(200) // smooth updates; value comes from the clock, not a decrement
@@ -825,25 +747,25 @@ class StrengthViewModel @Inject constructor(
     private fun stopRest() { restJob?.cancel(); restRemaining.value = null; restEndAt = 0L; cancelRestAlarm() }
 
     // Backup alarm so the "rest over" alert fires even if the app is killed.
-    private fun restAlarmIntent(): android.app.PendingIntent {
-        val i = android.content.Intent(context, com.workoutmaker.app.notify.RestAlarmReceiver::class.java)
-        return android.app.PendingIntent.getBroadcast(
+    private fun restAlarmIntent(): PendingIntent {
+        val i = Intent(context, RestAlarmReceiver::class.java)
+        return PendingIntent.getBroadcast(
             context, 7001, i,
-            android.app.PendingIntent.FLAG_UPDATE_CURRENT or android.app.PendingIntent.FLAG_IMMUTABLE,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
         )
     }
     private fun scheduleRestAlarm(sec: Int) {
         if (!cfg.restNotify) return // user disabled rest-timer notifications
-        val am = context.getSystemService(Context.ALARM_SERVICE) as? android.app.AlarmManager ?: return
+        val am = context.getSystemService(Context.ALARM_SERVICE) as? AlarmManager ?: return
         val at = System.currentTimeMillis() + sec * 1000L
         try {
-            am.setExactAndAllowWhileIdle(android.app.AlarmManager.RTC_WAKEUP, at, restAlarmIntent())
+            am.setExactAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, at, restAlarmIntent())
         } catch (_: SecurityException) {
-            am.set(android.app.AlarmManager.RTC_WAKEUP, at, restAlarmIntent())
+            am.set(AlarmManager.RTC_WAKEUP, at, restAlarmIntent())
         }
     }
     private fun cancelRestAlarm() {
-        (context.getSystemService(Context.ALARM_SERVICE) as? android.app.AlarmManager)?.cancel(restAlarmIntent())
+        (context.getSystemService(Context.ALARM_SERVICE) as? AlarmManager)?.cancel(restAlarmIntent())
     }
 
     // --- finish / routines / stats ----------------------------------------
@@ -912,9 +834,9 @@ class StrengthViewModel @Inject constructor(
                     requestSync()
                     // Durably submit the session effort + refresh memory — survives
                     // being offline at the gym or an app kill (WorkManager retries).
-                    val date = java.time.Instant.ofEpochMilli(p.ended)
-                        .atZone(java.time.ZoneId.systemDefault()).toLocalDate().toString()
-                    com.workoutmaker.app.work.FeedbackSyncWorker.request(
+                    val date = Instant.ofEpochMilli(p.ended)
+                        .atZone(ZoneId.systemDefault()).toLocalDate().toString()
+                    FeedbackSyncWorker.request(
                         context, date, rpe, difficulty, p.note.ifBlank { null },
                     )
                 }
@@ -971,20 +893,15 @@ class StrengthViewModel @Inject constructor(
             .onFailure { status.value = "Couldn't delete: ${it.message}" }
     }
 
-    fun openStats(name: String) = viewModelScope.launch {
-        currentStats.value = repo.stats(name)
-        nav.value = StrengthNav.Stats(name)
-    }
-
-    // Stats for the in-session insight peek (bottom sheet) — doesn't touch nav or
-    // currentStats, so the active session stays put underneath.
-    suspend fun statsFor(name: String): ExerciseStats = repo.stats(name)
+    // Loads stats for the dedicated exercise-stats page (a real NavHost
+    // destination, not an internal `nav` state) — doesn't touch `nav`.
+    fun openStats(name: String) = viewModelScope.launch { catalog.loadStats(name) }
 
     // --- push to Intervals.icu → watch (Zepp) ------------------------------
     private fun vibrate() {
         if (!cfg.restVibrate) return // user disabled rest-over vibration
         val vib = if (Build.VERSION.SDK_INT >= 31) {
-            (context.getSystemService(Context.VIBRATOR_MANAGER_SERVICE) as? android.os.VibratorManager)?.defaultVibrator
+            (context.getSystemService(Context.VIBRATOR_MANAGER_SERVICE) as? VibratorManager)?.defaultVibrator
         } else {
             @Suppress("DEPRECATION") context.getSystemService(Context.VIBRATOR_SERVICE) as? Vibrator
         }

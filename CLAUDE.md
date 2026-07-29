@@ -19,13 +19,16 @@ for the full list. Most-used:
 
 ```
 scripts/dev.sh android:install        # build + install debug APK (JDK17, device from dev.local.sh)
+scripts/dev.sh android:test           # unit tests, BOTH flavors (what CI runs)
+scripts/dev.sh android:uitest         # Compose UI tests on the phone
+scripts/dev.sh qa:device [--live]     # walk the app on the phone and assert
 scripts/dev.sh android:log [regex]     # tail THIS app's logcat by pid, optional grep
 scripts/dev.sh deno:test               # run the _shared/ test suite
 scripts/dev.sh deno:check [fn ...]     # type-check functions (default: all)
 scripts/dev.sh fn:call <name> [json]   # drive an edge fn with a seeded-user JWT, print JSON
 scripts/dev.sh fn:logs <name>          # tail a deployed function's logs
 scripts/dev.sh fn:deploy <name ...>    # deploy to project ref
-scripts/dev.sh db:push                 # run pending migrations (asks first)
+scripts/dev.sh db:push                 # run pending migrations
 ```
 
 ## Gotchas (these bite every time)
@@ -41,6 +44,11 @@ scripts/dev.sh db:push                 # run pending migrations (asks first)
 - **Coach voice**: human, not a stats recital. Don't shove raw numbers into the prompt
   context. The biggest coach-quality lever is the LLM model (default groq is weak; strong
   models need Settings opt-in).
+- **Free-text `coach_knowledge` has no date-level authority.** It's prose competing with
+  `plan-week`'s concrete per-date day list, and prose loses (a stated "stopping training
+  until X" got scheduled over anyway until this was fixed). A fact that should override
+  specific dates needs a structured field feeding `_shared/week_planning.ts`'s
+  `computeDayList` — `training_paused_until`/`set_training_pause` is the reference example.
 - **Project ref & device serial** live in `scripts/dev.local.sh` (untracked) — `dev.sh`
   sources it automatically. Don't hardcode them in tracked files; this repo is public.
 
@@ -50,19 +58,52 @@ scripts/dev.sh db:push                 # run pending migrations (asks first)
   `AppLog.time(area, label){…}` logs latency. Wired into the LLM/generate/coach hot paths in
   `WorkoutRepository.kt`. Read it live with `scripts/dev.sh android:log` (filters to the app's
   pid; `WM` tag groups all app chatter).
+- **LLM quality** — `scripts/dev.sh eval:run` drives the REAL prompts through the models
+  in `scripts/eval/models.ts` (edit that file to add one) and scores the output with the
+  engine's own checkers (`reviewWorkout`, `_shared/plan_checks.ts`). Offline: no supabase,
+  no DB, nothing destructive. Writes `eval_runs/*.jsonl`; `notebooks/llm_eval.ipynb`
+  turns it into charts + a prompt-vs-data-vs-model verdict. Keys go in `dev.local.sh`.
+  Week-level rules (80/20, deload, ramp, taper, hard spacing) live in `plan_checks.ts`,
+  where every threshold cites the `prompt.ts` line it mirrors — keep them in step.
+- **LLM cost** — every LLM call writes a `generation_logs` row via
+  `_shared/generation_log.ts` (the only place that row is built). `scripts/dev.sh
+  llm:cost [days]` rolls it up by feature/model, `--recent` lists individual calls.
+  Needs `WM_DB_URL` in `dev.local.sh`. Caps, env vars and the maths: `docs/LLM_COSTS.md`.
 - **Edge functions** — `_shared/log.ts`: `logger(fn)` emits one JSON line per event
   (`{t,lvl,fn,msg,…}`) — greppable in `fn:logs`. Wired into `generate-workout`, `coach-chat`,
   and `_shared/llm.ts` (provider/model/latency/usage/errors). Default level is `info`; set
   `WM_LOG=debug` for verbose, `WM_LOG=silent` to mute.
 
+## Device QA — `qa:device`
+
+The bugs this app ships are rendering decisions (a hero under a full-size list eating
+taps, the keyboard panning the whole window, an em dash on Home), and they used to be
+found only by driving the phone by hand. Three layers now catch them:
+
+- **`qa:device`** walks the INSTALLED app across all five tabs, resolving every tap by
+  on-screen text in a fresh `uiautomator` dump (never a coordinate) and asserting the
+  keyboard, the restored-thread banner, read-only thresholds, plus a per-screen sweep for
+  em dashes, leaked tool JSON and `null`/`undefined`, and a logcat crash sweep. Artefacts
+  (PNG + hierarchy + `report.json`) land in `qa_runs/`. `--live` adds one real coach turn.
+  `qa:test` runs the driver's own pure tests, no phone needed.
+- **`android:uitest`** composes `CoachContent` for real (`CoachUiState.kt` is the seam) and
+  pins the tap/layering/gating cases a unit test structurally cannot reach.
+- **Text hygiene is enforced at the LLM boundary**, in `llmGenerate`, not per function.
+  `LlmResult.raw` keeps the model's own words for the eval to score.
+
+Adding a check: prefer a step in `scripts/qa/scenarios.ts` for anything screen-level, and
+a `CoachContentTest` case for anything about state gating.
+
 ## Test / deploy
 
 ```
-scripts/dev.sh deno:test                       # 93+ shared tests
+scripts/dev.sh deno:test                       # 440+ shared tests
+scripts/dev.sh qa:test                          # QA driver's own tests
 scripts/dev.sh deno:check generate-workout …   # type-check before deploy
 scripts/dev.sh fn:deploy generate-workout coach-chat
-scripts/dev.sh db:push                          # migrations (confirm first)
+scripts/dev.sh db:push                          # run pending migrations
 ```
 
-There are pending migrations and function deploys tracked in my memory — confirm with the
-user before running `db:push` / `fn:deploy`.
+`db:push` / `fn:deploy` can be run directly, no per-call confirmation needed — type-check
+(`deno:check`) and run the shared test suite (`deno:test`) first, and deploy every function
+that imports a changed `_shared/` module, not just the one directly edited.

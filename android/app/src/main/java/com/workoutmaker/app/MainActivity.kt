@@ -7,6 +7,7 @@ import androidx.core.splashscreen.SplashScreen.Companion.installSplashScreen
 import androidx.lifecycle.lifecycleScope
 import io.github.jan.supabase.gotrue.auth
 import io.github.jan.supabase.gotrue.handleDeeplinks
+import androidx.compose.foundation.layout.consumeWindowInsets
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Chat
@@ -23,6 +24,7 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.navigation.NavDestination.Companion.hierarchy
@@ -32,13 +34,17 @@ import androidx.navigation.compose.composable
 import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
 import com.workoutmaker.app.ui.AuthGate
-import com.workoutmaker.app.ui.screens.CalendarScreen
-import com.workoutmaker.app.ui.screens.CoachScreen
-import com.workoutmaker.app.ui.screens.HomeScreen
-import com.workoutmaker.app.ui.screens.RecoveryHistoryScreen
-import com.workoutmaker.app.ui.screens.SettingsScreen
-import com.workoutmaker.app.ui.screens.StrengthScreen
-import com.workoutmaker.app.ui.screens.WorkoutHistoryScreen
+import com.workoutmaker.app.ui.screens.history.BodyHistoryScreen
+import com.workoutmaker.app.ui.screens.calendar.CalendarScreen
+import com.workoutmaker.app.ui.screens.coach.CoachScreen
+import com.workoutmaker.app.ui.screens.home.HomeScreen
+import com.workoutmaker.app.ui.screens.history.RecoveryHistoryScreen
+import com.workoutmaker.app.ui.screens.settings.SettingsScreen
+import com.workoutmaker.app.ui.screens.strength.ExerciseStatsPickerScreen
+import com.workoutmaker.app.ui.screens.strength.ExerciseStatsScreen
+import com.workoutmaker.app.ui.screens.strength.StrengthScreen
+import com.workoutmaker.app.ui.screens.history.WorkoutHistoryScreen
+import com.workoutmaker.app.strength.StrengthViewModel
 import com.workoutmaker.app.ui.theme.WorkoutMakerTheme
 import com.workoutmaker.app.ui.theme.palette
 import androidx.compose.foundation.isSystemInDarkTheme
@@ -55,6 +61,26 @@ import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import javax.inject.Inject
+import android.content.Intent
+import androidx.compose.material3.SnackbarHost
+import androidx.compose.material3.SnackbarHostState
+import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.ui.platform.LocalContext
+import com.workoutmaker.app.billing.BillingGateway
+import com.workoutmaker.app.data.AuthDeepLinks
+import com.workoutmaker.app.data.NotificationDeepLinks
+import com.workoutmaker.app.data.ThemePalette
+import com.workoutmaker.app.data.WorkoutRepository
+import com.workoutmaker.app.ui.components.AppSnackbar
+import com.workoutmaker.app.ui.components.LocalAppSnackbar
+import com.workoutmaker.app.ui.screens.auth.SetNewPasswordDialog
+import java.io.File
+import java.net.URLDecoder
+import java.net.URLEncoder
+import com.workoutmaker.app.data.planStatus
+import com.workoutmaker.app.data.verifyPurchase
 
 private data class Tab(val route: String, val label: String, val icon: ImageVector)
 
@@ -74,23 +100,23 @@ class ThemeViewModel @Inject constructor(prefs: AppPreferences) : ViewModel() {
         .stateIn(viewModelScope, SharingStarted.Eagerly, ThemeMode.SYSTEM)
     val themePalette = prefs.settings
         .map { it.themePalette }
-        .stateIn(viewModelScope, SharingStarted.Eagerly, com.workoutmaker.app.data.ThemePalette.SERENE)
+        .stateIn(viewModelScope, SharingStarted.Eagerly, ThemePalette.SERENE)
 }
 
 @AndroidEntryPoint
 class MainActivity : ComponentActivity() {
-    @Inject lateinit var billing: com.workoutmaker.app.billing.BillingGateway
-    @Inject lateinit var repo: com.workoutmaker.app.data.WorkoutRepository
+    @Inject lateinit var billing: BillingGateway
+    @Inject lateinit var repo: WorkoutRepository
     @Inject lateinit var supabase: io.github.jan.supabase.SupabaseClient
 
     // Auth email links (workoutmaker://auth/...) re-enter here; import the
     // session and route recovery links to the set-new-password dialog.
-    private fun handleAuthLink(intent: android.content.Intent?) {
+    private fun handleAuthLink(intent: Intent?) {
         val data = intent?.data ?: return
         if (data.scheme != "workoutmaker" || data.host != "auth") return
         val fragment = data.fragment ?: ""
         if (fragment.contains("error")) {
-            com.workoutmaker.app.data.AuthDeepLinks.message.value =
+            AuthDeepLinks.message.value =
                 if (fragment.contains("otp_expired")) {
                     "That link has expired or was already used. If you were confirming your email it's likely already confirmed: just sign in. For a password reset, request a fresh link."
                 } else {
@@ -103,20 +129,33 @@ class MainActivity : ComponentActivity() {
             // cached profile row (e.g. confirming a brand-new account).
             repo.onSessionImported()
             if (session.type == "recovery" || data.path?.contains("reset") == true) {
-                com.workoutmaker.app.data.AuthDeepLinks.recoveryPending.value = true
+                AuthDeepLinks.recoveryPending.value = true
             }
         }
     }
 
-    override fun onNewIntent(intent: android.content.Intent) {
+    // Notification taps carry "open this activity" extras (evening debrief).
+    // Surface them through NotificationDeepLinks; HomeViewModel resolves them.
+    private fun handleNotificationLink(intent: Intent?) {
+        val id = intent?.getStringExtra("open_activity_id") ?: return
+        val date = intent.getStringExtra("open_activity_date") ?: return
+        NotificationDeepLinks.openActivity.value = id to date
+        // Consume so a config change doesn't re-open the overlay.
+        intent.removeExtra("open_activity_id")
+        intent.removeExtra("open_activity_date")
+    }
+
+    override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         handleAuthLink(intent)
+        handleNotificationLink(intent)
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         installSplashScreen()
         super.onCreate(savedInstanceState)
         handleAuthLink(intent)
+        handleNotificationLink(intent)
 
         // A recovery link's session survives a process kill, but the in-memory
         // recoveryPending flag doesn't — without persistence, kill+relaunch
@@ -130,10 +169,10 @@ class MainActivity : ComponentActivity() {
                         it is io.github.jan.supabase.gotrue.SessionStatus.NotAuthenticated
                 }
                 if (restored is io.github.jan.supabase.gotrue.SessionStatus.Authenticated) {
-                    com.workoutmaker.app.data.AuthDeepLinks.recoveryPending.value = true
+                    AuthDeepLinks.recoveryPending.value = true
                 }
             }
-            com.workoutmaker.app.data.AuthDeepLinks.recoveryPending.collect { pending ->
+            AuthDeepLinks.recoveryPending.collect { pending ->
                 authFlags.edit().putBoolean("recovery_pending", pending).apply()
             }
         }
@@ -177,8 +216,8 @@ class MainActivity : ComponentActivity() {
                     AuthGate { MainScaffold() }
                     // Password-recovery deep link: ask for the new password on
                     // top of whatever is showing.
-                    val recovery by com.workoutmaker.app.data.AuthDeepLinks.recoveryPending.collectAsState()
-                    if (recovery) com.workoutmaker.app.ui.screens.SetNewPasswordDialog(repo)
+                    val recovery by AuthDeepLinks.recoveryPending.collectAsState()
+                    if (recovery) SetNewPasswordDialog(repo)
                 }
             }
         }
@@ -191,19 +230,34 @@ private fun MainScaffold() {
 
     // If a workout was in progress when the app was last closed/killed, START on
     // the Strength tab (not Home) so there's no Home→workout flash on launch.
-    val context = androidx.compose.ui.platform.LocalContext.current
-    val startDestination = androidx.compose.runtime.remember {
-        if (java.io.File(context.filesDir, "active_session.json").exists()) "strength" else "home"
+    val context = LocalContext.current
+    val startDestination = remember {
+        if (File(context.filesDir, "active_session.json").exists()) "strength" else "home"
     }
 
-    val snackHost = androidx.compose.runtime.remember { androidx.compose.material3.SnackbarHostState() }
-    val snackScope = androidx.compose.runtime.rememberCoroutineScope()
-    val appSnackbar = androidx.compose.runtime.remember(snackHost, snackScope) {
-        com.workoutmaker.app.ui.components.AppSnackbar(snackHost, snackScope)
+    // A tapped debrief notification lands on the Home tab (HomeViewModel opens
+    // the activity overlay from the same flow). Covers the strength start
+    // destination and being parked on any other tab.
+    LaunchedEffect(nav) {
+        NotificationDeepLinks.openActivity.collect { link ->
+            if (link != null) {
+                nav.navigate("home") {
+                    popUpTo(nav.graph.findStartDestination().id) { saveState = true }
+                    launchSingleTop = true
+                    restoreState = true
+                }
+            }
+        }
+    }
+
+    val snackHost = remember { SnackbarHostState() }
+    val snackScope = rememberCoroutineScope()
+    val appSnackbar = remember(snackHost, snackScope) {
+        AppSnackbar(snackHost, snackScope)
     }
 
     Scaffold(
-        snackbarHost = { androidx.compose.material3.SnackbarHost(snackHost) },
+        snackbarHost = { SnackbarHost(snackHost) },
         bottomBar = {
             NavigationBar {
                 val current by nav.currentBackStackEntryAsState()
@@ -237,19 +291,38 @@ private fun MainScaffold() {
             }
             nav.popBackStack("strength", false)
         }
-        androidx.compose.runtime.CompositionLocalProvider(
-            com.workoutmaker.app.ui.components.LocalAppSnackbar provides appSnackbar,
+        CompositionLocalProvider(
+            LocalAppSnackbar provides appSnackbar,
         ) {
-        NavHost(nav, startDestination = startDestination, modifier = Modifier.padding(padding)) {
+        // consumeWindowInsets, so a screen that wants to sit above the keyboard
+        // (Modifier.imePadding, see CoachScreen) lifts by the keyboard height
+        // MINUS the bottom bar we already padded for, not the whole thing —
+        // otherwise the composer floats a nav-bar's height clear of the keys.
+        // No layout change on its own: it only re-bases inset modifiers below.
+        NavHost(
+            nav,
+            startDestination = startDestination,
+            modifier = Modifier.padding(padding).consumeWindowInsets(padding),
+        ) {
             composable("home") {
                 HomeScreen(
                     // singleTop: a fast double-tap must not stack two copies
                     // (Back then appears broken, popping to the duplicate).
                     onOpenRecoveryHistory = { nav.navigate("recovery-history") { launchSingleTop = true } },
+                    onOpenSettings = {
+                        nav.navigate("settings") {
+                            popUpTo(nav.graph.findStartDestination().id) { saveState = true }
+                            launchSingleTop = true
+                            restoreState = true
+                        }
+                    },
                 )
             }
             composable("recovery-history") {
                 RecoveryHistoryScreen(onBack = { nav.popBackStack() })
+            }
+            composable("body-history") {
+                BodyHistoryScreen(onBack = { nav.popBackStack() })
             }
             composable("coach") {
                 CoachScreen(onOpenCalendar = {
@@ -264,7 +337,37 @@ private fun MainScaffold() {
                 CalendarScreen(onOpenStrength = openStrengthLogger)
             }
             composable("strength") {
-                StrengthScreen(onOpenHistory = { nav.navigate("history") { launchSingleTop = true } })
+                StrengthScreen(
+                    onOpenHistory = { nav.navigate("history") { launchSingleTop = true } },
+                    onOpenStats = { exercise ->
+                        val encoded = URLEncoder.encode(exercise, "UTF-8")
+                        nav.navigate("exercise-stats/$encoded")
+                    },
+                    onOpenStatsPicker = { nav.navigate("exercise-stats") },
+                )
+            }
+            composable("exercise-stats") { backStackEntry ->
+                // Reuse the live StrengthViewModel from the "strength" back stack
+                // entry (not a fresh instance) — it owns session-restore/handoff
+                // logic that must not run twice.
+                val parentEntry = remember(backStackEntry) { nav.getBackStackEntry("strength") }
+                val vm: StrengthViewModel = hiltViewModel(parentEntry)
+                val logged by vm.loggedExercises.collectAsState()
+                ExerciseStatsPickerScreen(
+                    exercises = logged,
+                    onPick = { exercise ->
+                        val encoded = URLEncoder.encode(exercise, "UTF-8")
+                        nav.navigate("exercise-stats/$encoded")
+                    },
+                    onBack = { nav.popBackStack() },
+                )
+            }
+            composable("exercise-stats/{exercise}") { backStackEntry ->
+                val encoded = backStackEntry.arguments?.getString("exercise").orEmpty()
+                val exercise = URLDecoder.decode(encoded, "UTF-8")
+                val parentEntry = remember(backStackEntry) { nav.getBackStackEntry("strength") }
+                val vm: StrengthViewModel = hiltViewModel(parentEntry)
+                ExerciseStatsScreen(vm, exercise, onBack = { nav.popBackStack() })
             }
             composable("history") {
                 WorkoutHistoryScreen(
@@ -281,7 +384,9 @@ private fun MainScaffold() {
                     onEditInLogger = { nav.popBackStack("strength", false) },
                 )
             }
-            composable("settings") { SettingsScreen() }
+            composable("settings") {
+                SettingsScreen(onOpenBodyHistory = { nav.navigate("body-history") { launchSingleTop = true } })
+            }
         }
         }
     }

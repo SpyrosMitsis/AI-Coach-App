@@ -15,6 +15,15 @@ export type LlmProvider =
   // URL lives on the llm_api_keys row, not in the hardcoded provider registry.
   | "custom";
 
+// Mirrors shared/types.ts's InjuryEntry. Legacy profiles only have the
+// free-text injury_history string; injuriesOf() (profile.ts) is the single
+// place that reconciles the two shapes for every server-side reader.
+export interface InjuryEntry {
+  area: string;
+  severity: "mild" | "moderate" | "serious" | "";
+  note?: string;
+}
+
 export interface WorkoutExercise {
   name: string;
   sets: number;
@@ -48,7 +57,12 @@ export interface Workout {
 }
 
 export interface LlmResult {
+  // Ready to show: llmGenerate has already enforced the no-dash house rule.
   text: string;
+  // What the model actually wrote, before that scrub. Only the offline eval
+  // wants this: scoring `text` would mark the dash checker green by
+  // construction and hide a model that ignores the rule.
+  raw?: string;
   promptTokens: number;
   completionTokens: number;
   provider: LlmProvider;

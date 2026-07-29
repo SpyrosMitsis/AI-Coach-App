@@ -23,8 +23,9 @@ import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.workoutmaker.app.data.BackendConfig
+import com.workoutmaker.app.util.friendlyAuthError
 import com.workoutmaker.app.data.WorkoutRepository
-import com.workoutmaker.app.ui.screens.LoginScreen
+import com.workoutmaker.app.ui.screens.auth.LoginScreen
 import dagger.hilt.android.lifecycle.HiltViewModel
 import io.github.jan.supabase.gotrue.SessionStatus
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -32,27 +33,9 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.launch
 import javax.inject.Inject
-
-// Supabase auth errors are terse and technical. Translate the common ones.
-internal fun friendlyAuthError(t: Throwable): String {
-    val m = t.message ?: return "Something went wrong. Please try again."
-    return when {
-        m.contains("Invalid login credentials", true) -> "Wrong email or password."
-        m.contains("Email not confirmed", true) ->
-            "Your email isn't confirmed yet. Check your inbox for the confirmation link."
-        m.contains("already registered", true) ->
-            "An account with this email already exists. Sign in instead."
-        m.contains("Password should be", true) -> "Password is too short. Use at least 6 characters."
-        m.contains("rate limit", true) || m.contains("too many", true) ->
-            "Too many attempts. Wait a minute and try again."
-        m.contains("is invalid", true) || m.contains("validate email", true) ->
-            "That doesn't look like a valid email address."
-        m.contains("Unable to resolve host", true) || m.contains("Failed to connect", true) ||
-            m.contains("timeout", true) || m.contains("No address associated", true) ->
-            "Can't reach the server. Check your internet connection."
-        else -> m
-    }
-}
+import com.workoutmaker.app.ui.screens.onboarding.OnboardingScreen
+import com.workoutmaker.app.ui.screens.onboarding.OnboardingViewModel
+import com.workoutmaker.app.data.accountExists
 
 @HiltViewModel
 class AuthViewModel @Inject constructor(
@@ -64,6 +47,8 @@ class AuthViewModel @Inject constructor(
     // Non-error guidance (confirmation mail sent, reset mail sent…).
     val info = MutableStateFlow<String?>(null)
     val busy = MutableStateFlow(false)
+    // Set when a sign-in failed because no account exists: the form flips to Create.
+    val promptCreate = MutableStateFlow(false)
 
     // Offline cold start: the SDK reports NetworkError when it can't refresh the
     // stored session. If one IS stored locally, let the user into the app (the
@@ -86,8 +71,22 @@ class AuthViewModel @Inject constructor(
         busy.value = true
         error.value = null
         info.value = null
+        promptCreate.value = false
         runCatching { repo.signIn(email.trim(), pw) }
-            .onFailure { error.value = friendlyAuthError(it) }
+            .onFailure { t ->
+                // Supabase returns the same "invalid credentials" for a wrong
+                // password AND a missing account. Ask the server which it is so we
+                // can point a new user at Create instead of a dead end.
+                if ((t.message ?: "").contains("Invalid login credentials", true)) {
+                    when (repo.accountExists(email.trim())) {
+                        false -> { error.value = "No account yet. Create one below."; promptCreate.value = true }
+                        true -> error.value = "Wrong password. Try again or reset it."
+                        null -> error.value = friendlyAuthError(t)
+                    }
+                } else {
+                    error.value = friendlyAuthError(t)
+                }
+            }
         busy.value = false
     }
 
@@ -182,16 +181,16 @@ private fun CenteredSpinner() {
 @Composable
 private fun OnboardingGate(
     content: @Composable () -> Unit,
-    vm: com.workoutmaker.app.ui.screens.OnboardingViewModel = hiltViewModel(),
+    vm: OnboardingViewModel = hiltViewModel(),
 ) {
     // Keyed on the signed-in user: an account switch in the same process (e.g.
     // sign out then sign up) must re-run the scope guard + onboarding check
     // instead of serving the previous user's cached answer.
-    androidx.compose.runtime.LaunchedEffect(vm.currentUserId()) { vm.recheck() }
+    LaunchedEffect(vm.currentUserId()) { vm.recheck() }
     val complete by vm.complete.collectAsStateSafe()
     when (complete) {
         true -> content()
-        false -> com.workoutmaker.app.ui.screens.OnboardingScreen(vm)
+        false -> OnboardingScreen(vm)
         null -> CenteredSpinner()
     }
 }

@@ -1,6 +1,5 @@
 package com.workoutmaker.app.ui.components
 
-import android.provider.Settings
 import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.animateFloat
@@ -10,15 +9,14 @@ import androidx.compose.animation.core.tween
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.luminance
-import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.draw.drawBehind
+import androidx.compose.foundation.layout.Box
 
 // The login/onboarding signature: three enormous soft color washes that
 // inhale and exhale on mismatched slow periods, like breath. Radial-gradient
@@ -33,10 +31,7 @@ fun BreathingBackdrop(modifier: Modifier = Modifier, intensity: Float = 1f) {
     val dark = scheme.background.luminance() < 0.5f
     val base = (if (dark) 0.30f else 0.45f) * intensity
 
-    val context = LocalContext.current
-    val animationsOn = remember {
-        Settings.Global.getFloat(context.contentResolver, Settings.Global.ANIMATOR_DURATION_SCALE, 1f) > 0f
-    }
+    val animationsOn = rememberAnimationsEnabled()
 
     // Co-prime periods so the composition never visibly repeats.
     val transition = rememberInfiniteTransition(label = "breath")
@@ -74,7 +69,7 @@ fun BreathingBackdrop(modifier: Modifier = Modifier, intensity: Float = 1f) {
         )
     }
 
-    androidx.compose.foundation.layout.Box(
+    Box(
         modifier.drawBehind {
             val w = size.width
             val h = size.height

@@ -16,9 +16,35 @@
 import type { SupabaseClient } from "jsr:@supabase/supabase-js@2";
 import type { LlmProvider } from "./types.ts";
 import { type ChatMessage, llmGenerateWithFallback } from "./llm.ts";
+import { logGeneration, type PricingProfile } from "./generation_log.ts";
 import { logger } from "./log.ts";
 
 const log = logger("agent_memory");
+
+// Every LLM call in this module goes through here. These run in the background
+// off a coach turn, on the same key the turn used, so leaving them unlogged made
+// them both invisible in the cost report and uncounted by the hosted quota.
+function logMemoryCall(
+  admin: SupabaseClient,
+  userId: string,
+  bundle: LlmBundle,
+  out: { provider: string; model: string; promptTokens: number; completionTokens: number },
+): void {
+  logGeneration(admin, userId, {
+    feature: "memory",
+    hosted: bundle.hosted,
+    provider: out.provider,
+    model: out.model,
+    promptTokens: out.promptTokens,
+    completionTokens: out.completionTokens,
+    profile: bundle.pricing,
+  });
+}
+
+// The args every call here shares: free-form prose, on the caller's access.
+function memoryArgs(bundle: LlmBundle, prompt: string, systemPrompt: string) {
+  return { prompt, systemPrompt, jsonMode: false, hosted: bundle.hosted, feature: "memory" };
+}
 
 // Provider access bundle — exactly the shape llmAccess() returns, so callers
 // can pass it straight through.
@@ -27,6 +53,14 @@ export interface LlmBundle {
   resolveKey: (p: LlmProvider) => Promise<string | null>;
   resolveModel?: (p: LlmProvider) => string | undefined;
   resolveBaseUrl?: (p: LlmProvider) => Promise<string | null>;
+  // True when these calls run on the operator's key. Every function in this
+  // module fires an LLM call on the SAME access the coach turn used, so it must
+  // be carried: it picks the hosted output-token ceiling and marks the row that
+  // hosted_spend() meters. This field is why the memory calls used to be free
+  // and invisible — the bundle simply didn't have it.
+  hosted: boolean;
+  // user_profiles pricing columns, so a BYO/OpenRouter call isn't logged at $0.
+  pricing?: PricingProfile | null;
 }
 
 export interface AgentMemory {
@@ -97,6 +131,16 @@ export async function loadAgentMemory(
 // who the coach is), then the hard rules (user), then the rolling memory. Empty
 // docs are omitted. Preserves the wording of the old knowledge/memory blocks so
 // generation behavior stays consistent, and adds the soul layer.
+//
+// IMPORTANT — free text here has NO date-level authority over the day-by-day
+// schedule. This block is prose, competing with (and losing to) plan-week's
+// concrete, JSON-schema-anchored per-date day list — that's exactly the bug a
+// stated "stopping training until X" hit (see training_paused_until). If a new
+// fact needs to override specific dates, it needs a structured field feeding
+// week_planning.ts's computeDayList (or the equivalent in generate-workout),
+// not just a line in coach_knowledge. Use set_training_pause/
+// training_paused_until in coach_tools.ts + plan-week/index.ts as the
+// reference example to copy.
 export function memoryDocsBlock(mem: AgentMemory): string {
   const parts: string[] = [];
   if (mem.soul.trim()) {
@@ -126,30 +170,35 @@ export function memoryDocsBlock(mem: AgentMemory): string {
 // ---------------------------------------------------------------------------
 
 // user.md — durable constraints/preferences distilled from the coaching chat.
+// Reads coach_knowledge fresh (not a caller-supplied snapshot) so this always
+// consolidates on top of whatever the `remember` tool most recently wrote
+// during the SAME turn, instead of racing it with a stale request-start read.
 export async function updateUserDoc(
   admin: SupabaseClient,
   userId: string,
-  existing: string,
   recent: ChatMessage[],
   bundle: LlmBundle,
 ): Promise<void> {
+  const { data: p } = await admin.from("user_profiles").select("coach_knowledge").eq("id", userId).single();
+  const existing = ((p?.coach_knowledge ?? "") as string).trim();
   const transcript = recent
     .slice(-6)
     .map((m) => `${m.role === "user" ? "Athlete" : "Coach"}: ${m.content}`)
     .join("\n");
   const prompt =
     `You maintain an athlete's durable COACHING KNOWLEDGE, a short bullet list of facts a coach must always honor: injuries/limitations, equipment they have or lack, scheduling constraints, exercise preferences and dislikes, dietary/other constraints.\n\n` +
-    `EXISTING KNOWLEDGE:\n${existing.trim() || "(empty)"}\n\n` +
+    `EXISTING KNOWLEDGE:\n${existing || "(empty)"}\n\n` +
     `RECENT CONVERSATION:\n${transcript}\n\n` +
     `Return the UPDATED knowledge as a concise markdown bullet list (max ~12 bullets). Merge new durable facts, drop anything the athlete has retracted, keep it terse. If nothing durable changed, return the existing list unchanged. Output ONLY the bullet list, no preamble.`;
   try {
     const out = await llmGenerateWithFallback(
       bundle.chain,
-      { prompt, systemPrompt: "You extract and maintain durable athlete facts. Output only a bullet list.", jsonMode: false },
+      memoryArgs(bundle, prompt, "You extract and maintain durable athlete facts. Output only a bullet list."),
       bundle.resolveKey,
       bundle.resolveModel,
       bundle.resolveBaseUrl,
     );
+    logMemoryCall(admin, userId, bundle, out);
     const next = out.text.trim();
     // Relaxed gate: previously required a bullet char, which silently dropped a
     // valid single fact stated without a dash ("Only trains twice a week"). Now
@@ -160,7 +209,7 @@ export async function updateUserDoc(
       log.debug("user_doc_skip", { reason: "no-content" });
     } else if (next.length > 2000) {
       log.warn("user_doc_skip", { reason: "too-long", len: next.length });
-    } else if (next === existing.trim()) {
+    } else if (next === existing) {
       log.debug("user_doc_skip", { reason: "unchanged" });
     } else {
       await admin.from("user_profiles").update({ coach_knowledge: next }).eq("id", userId);
@@ -190,11 +239,12 @@ export async function updateMemoryDoc(
   const prompt = `EXISTING NOTES:\n${existing || "(none yet)"}\n\n${evidence}\n\nReturn the updated notes only.`;
   const out = await llmGenerateWithFallback(
     bundle.chain,
-    { prompt, systemPrompt: MEMORY_SYSTEM, jsonMode: false },
+    memoryArgs(bundle, prompt, MEMORY_SYSTEM),
     bundle.resolveKey,
     bundle.resolveModel,
     bundle.resolveBaseUrl,
   );
+  logMemoryCall(admin, userId, bundle, out);
   const memory = out.text.trim().slice(0, 1200);
   await admin.from("user_profiles").update({ training_memory: memory }).eq("id", userId);
   return memory;
@@ -234,11 +284,12 @@ export async function updateSoulDoc(
   try {
     const out = await llmGenerateWithFallback(
       bundle.chain,
-      { prompt, systemPrompt: SOUL_SYSTEM, jsonMode: false },
+      memoryArgs(bundle, prompt, SOUL_SYSTEM),
       bundle.resolveKey,
       bundle.resolveModel,
       bundle.resolveBaseUrl,
     );
+    logMemoryCall(admin, userId, bundle, out);
     const next = out.text.trim().slice(0, 2000);
     if (next.length > 40) {
       await admin
@@ -290,6 +341,8 @@ export function compressThread(
 // `dropped` set each time (no double-counting), capped to the most recent turns
 // within a char budget. Returns null when there's too little to summarize.
 export async function summarizeDropped(
+  admin: SupabaseClient,
+  userId: string,
   dropped: ChatMessage[],
   bundle: LlmBundle,
   maxChars = 12_000,
@@ -311,11 +364,12 @@ export async function summarizeDropped(
   try {
     const out = await llmGenerateWithFallback(
       bundle.chain,
-      { prompt, systemPrompt: "You compress a coaching conversation into a durable running summary.", jsonMode: false },
+      memoryArgs(bundle, prompt, "You compress a coaching conversation into a durable running summary."),
       bundle.resolveKey,
       bundle.resolveModel,
       bundle.resolveBaseUrl,
     );
+    logMemoryCall(admin, userId, bundle, out);
     const t = out.text.trim();
     return t ? t.slice(0, 1500) : null;
   } catch (_e) {

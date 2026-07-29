@@ -38,6 +38,9 @@ android {
         // properties (see local.properties / CI secrets). These are public
         // anon-safe values, mirroring the web app's NEXT_PUBLIC_* vars.
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+        // Where Room writes the exported schema (see AppDatabase.exportSchema).
+        // The generated app/schemas/*.json is committed as the baseline.
+        ksp { arg("room.schemaLocation", "$projectDir/schemas") }
         buildConfigField("String", "SUPABASE_URL", "\"${secret("SUPABASE_URL")}\"")
         buildConfigField("String", "SUPABASE_ANON_KEY", "\"${secret("SUPABASE_ANON_KEY")}\"")
     }
@@ -150,4 +153,10 @@ dependencies {
     androidTestImplementation("androidx.test.ext:junit:1.1.5")
     androidTestImplementation("androidx.test:runner:1.5.2")
     androidTestImplementation("androidx.test:core-ktx:1.5.0")
+    // Compose UI tests. The recent coach regressions were LAYOUT decisions
+    // (chips under a full-size list took no taps; a banner fired on prose that
+    // only described the week), which only a composed screen can catch.
+    androidTestImplementation(composeBom)
+    androidTestImplementation("androidx.compose.ui:ui-test-junit4")
+    debugImplementation("androidx.compose.ui:ui-test-manifest")
 }

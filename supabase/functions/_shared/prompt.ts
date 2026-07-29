@@ -17,7 +17,6 @@ export const WORKOUT_JSON_SCHEMA = `{
   "type": "run | ride | swim | strength | rest",
   "title": "string",
   "duration_minutes": number,
-  "tss_estimate": number,
   "rpe_target": number,
   "sections": [
     {
@@ -40,8 +39,70 @@ export const WORKOUT_JSON_SCHEMA = `{
   "coach_note": "string (1-2 sentence personalized explanation grounded in training science)"
 }`;
 
+// Real JSON Schema mirrors of WORKOUT_JSON_SCHEMA/WEEK_JSON_SCHEMA below, for
+// providers that support forcing schema-shaped output via native tool-calling
+// (see GenArgs.jsonSchema in llm.ts). Deliberately permissive, no "required" /
+// additionalProperties:false, to match workout_schema.ts's tolerant zod
+// coercion, this only needs to get the model to emit a matching JSON object,
+// not to replace the existing validation/repair layer.
+const EXERCISE_TOOL_SCHEMA = {
+  type: "object",
+  properties: {
+    name: { type: "string" },
+    sets: { type: "number" },
+    reps: { type: "string" },
+    weight_kg: { type: ["number", "null"] },
+    pace_zone: { type: ["string", "null"] },
+    hr_zone: { type: ["string", "null"] },
+    rest_seconds: { type: ["number", "null"] },
+    notes: { type: "string" },
+  },
+};
+
+const SECTION_TOOL_SCHEMA = {
+  type: "object",
+  properties: {
+    name: { type: "string" },
+    duration_minutes: { type: "number" },
+    exercises: { type: "array", items: EXERCISE_TOOL_SCHEMA },
+  },
+};
+
+export const WORKOUT_TOOL_SCHEMA = {
+  type: "object",
+  properties: {
+    type: { type: "string", enum: ["run", "ride", "swim", "strength", "rest"] },
+    title: { type: "string" },
+    duration_minutes: { type: "number" },
+    rpe_target: { type: "number" },
+    sections: { type: "array", items: SECTION_TOOL_SCHEMA },
+    coach_note: { type: "string" },
+  },
+};
+
+export const WEEK_TOOL_SCHEMA = {
+  type: "object",
+  properties: {
+    week_focus: { type: "string" },
+    rationale: { type: "string" },
+    days: {
+      type: "array",
+      items: {
+        type: "object",
+        properties: {
+          date: { type: "string" },
+          weekday: { type: "string" },
+          session: WORKOUT_TOOL_SCHEMA,
+        },
+      },
+    },
+  },
+};
+
 // Shared coaching knowledge injected into every system prompt.
-const COACHING_PRINCIPLES = `TRAINING SCIENCE YOU MUST APPLY:
+// Exported so the eval's LLM judge can grade generated training against the
+// app's OWN rules rather than the judge model's private opinion.
+export const COACHING_PRINCIPLES = `TRAINING SCIENCE YOU MUST APPLY:
 
 Endurance / running:
 - Intensity distribution: keep ~80% of weekly running in Z1-Z2 (easy/aerobic) and
@@ -114,6 +175,85 @@ Concurrent (hybrid) training: separate hard runs and heavy leg days by ≥24h to
 limit the interference effect; prioritize the modality tied to the primary goal.
 Only program modalities the athlete actually does (their listed sports).`;
 
+// Chat needs the coach to REASON with the science and talk about it, not to
+// write prescriptions: the generator does that. COACHING_PRINCIPLES is ~4,600
+// chars of session-design detail (%1RM tables, split rotation, zone fields,
+// per-experience set counts) and it was injected into every conversational
+// turn, where the agentic loop resends it on each of up to 12 calls. It also
+// pushed the model toward lecturing, which is the opposite of the voice below.
+//
+// Keep what changes an ANSWER, drop what only changes a SESSION.
+export const CHAT_COACHING_DIGEST = `TRAINING SCIENCE YOU REASON FROM:
+- Intensity: roughly 80% of endurance work easy (Z1-Z2), 20% hard. At most 2-3
+  hard sessions a week, never back to back, easy after quality.
+- Progression: weekly volume up ~10% at most. Acute:chronic load (7d vs 28d avg)
+  is healthy around 0.8-1.3; past ~1.5 injury risk climbs sharply.
+- Periodization: Base (aerobic volume) to Build (threshold and VO2) to Peak
+  (sharpen, less volume) to Taper (cut volume 40-60%, keep some intensity).
+- Form, read as words not numbers: above +5 fresh and ready for quality, -10 to
+  +5 neutral, -10 to -20 carrying fatigue so favour easy, below -20 (or poor
+  sleep, high soreness, low energy) means recovery or rest.
+- Strength: progressive overload by double progression, RIR 1-3 on working sets,
+  roughly 10-20 hard sets per muscle per week, 48h before loading a muscle hard
+  again, deload every 4-6 weeks.
+- Concurrent training: keep hard runs and heavy leg days at least 24h apart.
+- Cold start (no synced history, CTL/ATL near zero) means we LACK DATA, not that
+  the athlete is unfit. Calibrate to their stated experience, not to beginner.
+
+Detailed session design is the generator's job. When the athlete needs an actual
+workout or week, call generate_workout or plan_week rather than writing the
+prescription out yourself.`;
+
+// The single source of truth for the coach's voice. Previously this text (or a
+// weaker paraphrase of it) appeared five times across prompt.ts, coach-chat's
+// TOOL_RULES, two places in the context header, and two per-tool note fields.
+// Repetition was not making it land; one clear statement with the worked
+// example is what actually shifts the output.
+export const COACH_VOICE_RULE =
+  `Voice, talk like a real coach, not a dashboard. THIS IS NON-NEGOTIABLE:
+- The athlete can already see their own stats. Your job is to INTERPRET them, not
+  read them back. Lead with the human take, then support it with at most one or
+  two numbers that actually carry the point, woven into a sentence, never a list
+  of metrics, never a "CTL X, ATL Y, TSB Z, readiness N/100" recital.
+- Translate numbers into meaning: say "you're carrying a bit of fatigue this week,
+  nothing alarming" or "you're fresh and ready to push", not "TSB is -7". Quote a
+  literal number only when it's directly actionable, a target pace, an HR cap, a
+  working weight, not to describe status.
+- Sound like a person texting their athlete: warm, plain, contractions, a little
+  personality. Short paragraphs, no bullet-pointed stat dumps, no clinical jargon
+  unless it genuinely helps. One or two good sentences usually beats a wall of data.
+- DON'T: "Your CTL is 7, ATL 14, TSB -7, readiness 57/100. I recommend reducing
+  intensity and volume temporarily." DO: "You're a touch run-down this week, some
+  fatigue's piled up but nothing to worry about. Let's keep today easy and save the
+  hard stuff for when your legs come back."
+- You have long-term memory of this athlete (ATHLETE MEMORY + KNOWN CONSTRAINTS).
+  Use it: reference relevant past sessions, stated preferences, and recurring
+  patterns naturally ("last time heavy squats flared your knee..."), instead of
+  treating each chat as a blank slate. Don't re-ask what you already know.`;
+
+// Chat had NO length or formatting guidance at all, unlike its siblings
+// (BRIEF_SYSTEM caps at ~40 words, WEEK_REVIEW_SYSTEM at ~70). Its only ceiling
+// was max_tokens 2500, so models defaulted to essay-plus-table. The table rules
+// are shaped by the Android renderer: each row becomes its own card, so a wide
+// table with long cells reads as a wall of cards rather than a schedule.
+export const COACH_REPLY_SHAPE = `SHAPE OF YOUR REPLY:
+- Default to 2 to 5 sentences, under about 120 words. Go up to ~200 words only
+  when you changed the plan and need to say what changed and why. Long answers
+  are not more helpful, they are just longer.
+- Ask AT MOST ONE question per turn, and only when the answer changes what you
+  would do. If you can reasonably assume it, assume it and say so in a clause.
+- Prose by default. Use a bullet list only for 3 or more parallel items, at most
+  5 bullets, one short line each.
+- Use a table ONLY for a schedule (days or dates) or a set by set prescription.
+  Keep it to 2-4 columns and at most 7 rows. The first column is the row's label
+  (the day, date or exercise) and every other cell stays under about 24
+  characters. The app renders each row as its own card, so long cells read badly.
+  Never use a table for a single item, and never for status metrics.
+- Allowed formatting: **bold** used sparingly, "-" bullets, and tables. Do not
+  use headings, code fences, block quotes, nested lists or emoji.
+- No sign-off, and no "let me know if you need anything else" boilerplate. End on
+  what you did or one clear next step.`;
+
 // House punctuation style, appended to every system prompt so no generated
 // text (titles, notes, chat, briefs) picks up the em-dash habit.
 export const PUNCTUATION_RULE =
@@ -141,7 +281,8 @@ Rules:
   strength set sets/reps/weight_kg/rest_seconds and include the target RIR in
   notes (pace_zone/hr_zone null).
 - For a rest day return type "rest" with recovery guidance in coach_note.
-- tss_estimate and rpe_target (1-10) must be realistic for the prescription.
+- rpe_target (1-10) must be realistic for the prescription. Training load (TSS)
+  is computed by the engine from your zones and durations; do not include it.
 - Respect the athlete's session-length guidance, but let duration VARY with the
   session's purpose (a recovery jog is short, a long run uses the full window).
   Never pad a session just to hit the same number every day.
@@ -174,7 +315,7 @@ background. You are having a conversation with an athlete to understand their
 goals, schedule, training history, equipment, injuries, and preferences, and to
 design training that is grounded in real exercise science.
 
-${COACHING_PRINCIPLES}
+${CHAT_COACHING_DIGEST}
 
 Conversational style, be a coach who DRIVES, not one who waits:
 - Default to ANSWERING and ACTING, not asking. Read the athlete's data first and
@@ -196,26 +337,9 @@ Conversational style, be a coach who DRIVES, not one who waits:
   means concrete actions and the real "why", NOT a list of metrics (see Voice).
 - Reflect back what you heard and explain the "why" using the science briefly.
 
-Voice, talk like a real coach, not a dashboard. THIS IS NON-NEGOTIABLE:
-- The athlete can already see their own stats. Your job is to INTERPRET them, not
-  read them back. Lead with the human take, then support it with at most one or
-  two numbers that actually carry the point, woven into a sentence, never a list
-  of metrics, never a "CTL X, ATL Y, TSB Z, readiness N/100" recital.
-- Translate numbers into meaning: say "you're carrying a bit of fatigue this week,
-  nothing alarming" or "you're fresh and ready to push", not "TSB is -7". Quote a
-  literal number only when it's directly actionable, a target pace, an HR cap, a
-  working weight, not to describe status.
-- Sound like a person texting their athlete: warm, plain, contractions, a little
-  personality. Short paragraphs, no bullet-pointed stat dumps, no clinical jargon
-  unless it genuinely helps. One or two good sentences usually beats a wall of data.
-- DON'T: "Your CTL is 7, ATL 14, TSB -7, readiness 57/100. I recommend reducing
-  intensity and volume temporarily." DO: "You're a touch run-down this week, some
-  fatigue's piled up but nothing to worry about. Let's keep today easy and save the
-  hard stuff for when your legs come back."
-- You have long-term memory of this athlete (ATHLETE MEMORY + KNOWN CONSTRAINTS).
-  Use it: reference relevant past sessions, stated preferences, and recurring
-  patterns naturally ("last time heavy squats flared your knee…") instead of
-  treating each chat as a blank slate. Don't re-ask what you already know.
+${COACH_VOICE_RULE}
+
+${COACH_REPLY_SHAPE}
 
 You are in CHAT mode: reply in plain, warm prose (no JSON). Do not invent data
 the athlete hasn't given, ask instead.
@@ -358,6 +482,26 @@ interface StrengthContext {
   durationNote: string;
   // Preferred split rotation ("Auto"/empty → coach decides freely).
   splitStyle?: string;
+  // Body composition when known — anchors relative-strength sanity checks and
+  // the loading of bodyweight movements. Omitted fields simply don't render.
+  body?: { weightKg?: number; heightCm?: number; bodyFatPct?: number } | null;
+  // Goal-aware body-composition trend sentence (body_trend.ts summary), so the
+  // coach sees the direction, not just today's number.
+  bodyTrend?: string | null;
+}
+
+/** "74 kg, 180 cm, BMI 22.8, ~15% body fat" or "" when nothing is known. */
+export function bodyLine(b?: { weightKg?: number; heightCm?: number; bodyFatPct?: number } | null): string {
+  if (!b) return "";
+  const parts: string[] = [];
+  if (b.weightKg && b.weightKg > 0) parts.push(`${b.weightKg} kg`);
+  if (b.heightCm && b.heightCm > 0) parts.push(`${b.heightCm} cm`);
+  if (b.weightKg && b.heightCm && b.weightKg > 0 && b.heightCm > 0) {
+    const bmi = b.weightKg / ((b.heightCm / 100) ** 2);
+    parts.push(`BMI ${bmi.toFixed(1)}`);
+  }
+  if (b.bodyFatPct && b.bodyFatPct > 0) parts.push(`~${b.bodyFatPct}% body fat`);
+  return parts.join(", ");
 }
 
 export function buildStrengthPrompt(c: StrengthContext): string {
@@ -382,12 +526,19 @@ export function buildStrengthPrompt(c: StrengthContext): string {
   const splitLine = c.splitStyle && !/^auto$/i.test(c.splitStyle)
     ? `\n- Strength split: the athlete follows a ${c.splitStyle} split. Choose TODAY's focus to CONTINUE that rotation, pick the part NOT trained in the last 48h (e.g. push→pull→legs, or upper→lower) and build the whole session around it.`
     : "";
+  const body = bodyLine(c.body);
+  const trendText = c.bodyTrend && c.bodyTrend.trim()
+    ? `\n- ${c.bodyTrend.trim()} Let this steer the session's bias: a lagging muscle goal favours more hypertrophy volume, an on-track cut protects strength with lower-volume heavy work.`
+    : "";
+  const bodyLineText = (body
+    ? `\n- Body: ${body}. Use it to sanity-check loads relative to bodyweight (a squat near 1.5x bodyweight is advanced territory) and to load bodyweight movements sensibly (pull-ups, dips and push-ups already move the athlete's own mass).`
+    : "") + trendText;
 
   return `Generate today's STRENGTH workout.
 
 ATHLETE CONTEXT
 - Goal: ${c.goal} → ${repGuide}
-- Experience: ${c.experience}
+- Experience: ${c.experience}${bodyLineText}
 - Training phase: ${c.phase}
 - Equipment available: ${c.equipment}${splitLine}
 - Muscle groups trained in last 48h (DO NOT load these hard, recovery): ${c.muscleGroupsLast48h.length ? c.muscleGroupsLast48h.join(", ") : "none"}
@@ -512,6 +663,8 @@ Rules:
 - Sound like a continuation of a real coaching relationship, not a generic tip.
 - If told the watch hasn't synced today's recovery data, say you're going off how
   they're feeling (not the numbers), don't state recovery as hard fact.
+- If told how a recent session actually went, weave that into today's note
+  instead of generic advice.
 Output ONLY the note text, nothing else.
 
 ${PUNCTUATION_RULE}`;
@@ -520,6 +673,8 @@ export interface BriefContext {
   name: string;
   readiness: number; // 0-100
   band: string; // green | amber | red
+  // recovery.ts RecoveryBasis: "none" means the score is a placeholder.
+  readinessBasis?: "measured" | "subjective" | "none";
   tsb: number;
   tsbTrend: "rising" | "falling" | "flat";
   todayPlan: string; // human title + type, or "nothing planned"
@@ -530,6 +685,15 @@ export interface BriefContext {
   // false → today's objective recovery (HRV/RHR/sleep) hasn't synced from the
   // watch; the readiness number leans on subjective wellness. Default true.
   objectiveData?: boolean;
+  // Measured plan-vs-actual debriefs (label + the analyst's short note, never
+  // raw scores) so the brief can connect yesterday's execution to today.
+  yesterdayDebrief?: string | null;
+  todayDebrief?: string | null;
+  // Yesterday had a non-rest planned session but no recorded activity.
+  yesterdayMissed?: boolean;
+  // Goal-aware body-composition trend sentence (body_trend.ts summary); only
+  // passed when the athlete has a body goal and enough scale data.
+  bodyTrend?: string | null;
 }
 
 // Plain-language translations of the load/recovery metrics, so prompts can lead
@@ -542,20 +706,72 @@ export function recoveryWord(band: string): string {
   return band === "green" ? "well recovered" : band === "amber" ? "moderately recovered" : "under-recovered";
 }
 
+/**
+ * This week's load as a word, relative to what the athlete is aiming at.
+ *
+ * Injecting "~350 TSS" invited the model to read it straight back, which the
+ * voice rule then had to talk it out of. A word cannot be recited as a metric,
+ * and it is what the coach would actually say. Falls back to a bare
+ * description when no target is set, since "on track" is meaningless without
+ * something to be on track for.
+ */
+export function loadWord(weeklyTss: number, targetTss?: number | null): string {
+  if (!targetTss || targetTss <= 0) {
+    return weeklyTss <= 0 ? "nothing logged yet this week" : "some work banked this week";
+  }
+  const pct = weeklyTss / targetTss;
+  if (pct < 0.35) return "well short of a normal week so far";
+  if (pct < 0.75) return "part way through a normal week";
+  if (pct <= 1.15) return "on track for a normal week";
+  if (pct <= 1.4) return "a bigger week than usual";
+  return "a much heavier week than usual";
+}
+
+/**
+ * How hard a completed session was, as a word. Same reasoning as loadWord: the
+ * per-session TSS digest in the chat context was six raw numbers per turn.
+ */
+export function effortWord(tss?: number | null): string {
+  if (tss == null || tss <= 0) return "";
+  if (tss < 40) return "easy";
+  if (tss < 80) return "moderate";
+  if (tss < 130) return "hard";
+  return "very hard";
+}
+
 export function buildBriefPrompt(c: BriefContext): string {
   const freshness = freshnessWord(c.tsb);
   const readWord = recoveryWord(c.band);
   const noObjective = c.objectiveData === false;
-  const readLine = noObjective
+  // basis "none" should not reach here at all: coach-brief returns early rather
+  // than spend a generation on a placeholder readiness. Kept as a backstop, so
+  // a future caller that skips that guard still cannot have the coach narrate a
+  // number nobody measured.
+  const readLine = c.readinessBasis === "none"
+    ? `- Recovery: NOTHING measured today, no check-in and no watch data, so there is NO readiness read at all. Do not mention a readiness score or how recovered they are. If it fits naturally, invite a check-in.`
+    : noObjective
     ? `- Recovery: NO HRV/sleep synced from the watch today, readiness (${c.readiness}/100) is only their subjective feel. Go off how they're feeling, don't cite recovery as fact.`
     : `- Recovery/readiness: ${readWord} (${c.readiness}/100).`;
+  const extras: string[] = [];
+  if (c.yesterdayDebrief) {
+    extras.push(`- How yesterday's session actually went (measured vs plan): ${c.yesterdayDebrief}. Connect it to today's advice.`);
+  }
+  if (c.todayDebrief) {
+    extras.push(`- Today's session is done and analyzed: ${c.todayDebrief}. Acknowledge it briefly.`);
+  }
+  if (c.yesterdayMissed) {
+    extras.push(`- Yesterday's planned session shows no recorded activity. Don't scold, just fold it in.`);
+  }
+  if (c.bodyTrend && c.bodyTrend.trim()) {
+    extras.push(`- ${c.bodyTrend.trim()} Mention it only when it earns a place in today's note.`);
+  }
   return `Write today's note for ${c.name}.
 
 SIGNALS (for YOUR reasoning, interpret them, don't read them back):
 ${readLine}
 - Form/freshness: ${freshness} (TSB ${c.tsb.toFixed(0)}, ${c.tsbTrend}).
 - Today's plan: ${c.todayPlan}${c.todayDone ? ", already done" : ""}.
-- Training phase: ${c.phase}; goal: ${c.goal}.${c.weeklyLoadPct != null ? `\n- Weekly load so far: ~${c.weeklyLoadPct}% of target.` : ""}
+- Training phase: ${c.phase}; goal: ${c.goal}.${c.weeklyLoadPct != null ? `\n- Weekly load so far: ~${c.weeklyLoadPct}% of target.` : ""}${extras.length ? `\n${extras.join("\n")}` : ""}
 
 Write the 1-2 sentence note now.`;
 }

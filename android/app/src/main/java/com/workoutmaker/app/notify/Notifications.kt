@@ -17,6 +17,7 @@ import android.os.Vibrator
 import android.os.VibratorManager
 import androidx.core.app.NotificationCompat
 import com.workoutmaker.app.data.RestChime
+import java.time.LocalDateTime
 
 object Notifications {
     const val CH_TIMER = "rest_timer"
@@ -27,7 +28,7 @@ object Notifications {
     // Time-aware greeting so a reminder that fires late never says "Good
     // morning" at 3pm. A few variants per slot, rotated by day of year, keep
     // the daily notification from reading word-for-word identical.
-    fun greeting(now: java.time.LocalDateTime = java.time.LocalDateTime.now()): String {
+    fun greeting(now: LocalDateTime = LocalDateTime.now()): String {
         val pool = when (now.hour) {
             in 0..11 -> listOf("Good morning", "Morning", "New day")
             in 12..16 -> listOf("Good afternoon", "Afternoon", "Midday check")
@@ -91,8 +92,11 @@ private fun vibrator(ctx: Context): Vibrator? =
         @Suppress("DEPRECATION") ctx.getSystemService(Context.VIBRATOR_SERVICE) as? Vibrator
     }
 
-fun vibrateOnce(ctx: Context, ms: Long = 450) {
-    runCatching { vibrator(ctx)?.vibrate(VibrationEffect.createOneShot(ms, VibrationEffect.DEFAULT_AMPLITUDE)) }
+/** A light celebratory triple-tap, softer and quicker than [vibrateStrong]. */
+fun vibrateCelebrate(ctx: Context) {
+    runCatching {
+        vibrator(ctx)?.vibrate(VibrationEffect.createWaveform(longArrayOf(0, 30, 60, 30, 60, 55), -1))
+    }
 }
 
 /** A stronger double-buzz used when a rest timer ends. */
@@ -124,6 +128,20 @@ fun playRestOverSound(ctx: Context, chime: RestChime = RestChime.SYSTEM) {
             RestChime.BEEP -> playTone(ToneGenerator.TONE_PROP_BEEP, 250)
             RestChime.DOUBLE_BEEP -> playTone(ToneGenerator.TONE_PROP_BEEP2, 750)
         }
+    }
+}
+
+/**
+ * A soft, quiet tick for the last seconds of a rest countdown, so the athlete
+ * gets ready for the set instead of being startled by the buzzer. Deliberately
+ * quieter (vol 45 vs the cue's 85) and short; routes through MEDIA like the
+ * rest-over cue so it mixes over music with the phone on silent.
+ */
+fun playCountdownTick(ctx: Context) {
+    runCatching {
+        val gen = ToneGenerator(AudioManager.STREAM_MUSIC, 45)
+        gen.startTone(ToneGenerator.TONE_PROP_ACK, 60)
+        Handler(ctx.mainLooper).postDelayed({ runCatching { gen.release() } }, 200)
     }
 }
 

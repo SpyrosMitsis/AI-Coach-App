@@ -116,7 +116,11 @@ interface CacheDao {
         CustomExerciseEntity::class, FavoriteEntity::class, TombstoneEntity::class,
     ],
     version = 8,
-    exportSchema = false,
+    // Export the schema so app/schemas/*.json is a committed baseline. Without
+    // it Room cannot see an accidental entity change at build time, and the
+    // first symptom is an IllegalStateException on a user's phone at open.
+    // With it, any such change shows up as a diff in review.
+    exportSchema = true,
 )
 abstract class AppDatabase : RoomDatabase() {
     abstract fun cacheDao(): CacheDao

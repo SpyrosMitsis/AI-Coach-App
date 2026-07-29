@@ -23,49 +23,32 @@ import {
   combineScore,
   fmtPace,
   hrBandForZones,
+  isSwimType,
   markSplitsInBand,
   paceBandForZones,
   paceInBandScore,
+  pacingInsights,
+  type PaceUnit,
   parsePaceToSec,
   plannedZones,
   RawStreams,
   scoreLabel,
 } from "./analysis.ts";
-import { customPriceFromProfile, estimateCostUsd, llmGenerateWithFallback } from "./llm.ts";
+import { llmGenerateWithFallback } from "./llm.ts";
+import { logLlmResult } from "./generation_log.ts";
 import { llmAccess } from "./llm_keys.ts";
 import type { LlmResult } from "./types.ts";
 
-// Best-effort cost row so analysis feedback shows up in spend diagnostics —
-// and, for Pro users on the hosted key, gets metered by the quota RPC.
-async function logFeedbackCost(
+// Cost row so analysis feedback shows up in spend diagnostics — and, for Pro
+// users on the hosted key, gets metered by the quota RPC.
+function logFeedbackCost(
   admin: SupabaseClient,
   userId: string,
   profile: Record<string, unknown> | null | undefined,
   out: LlmResult,
   hosted: boolean,
 ): Promise<void> {
-  try {
-    const cost = estimateCostUsd(
-      out.provider,
-      out.promptTokens,
-      out.completionTokens,
-      customPriceFromProfile(out.provider, profile),
-      out.model,
-    );
-    await admin.from("generation_logs").insert({
-      user_id: userId,
-      feature: "analyze",
-      hosted,
-      provider: out.provider,
-      model: out.model,
-      prompt_tokens: out.promptTokens,
-      completion_tokens: out.completionTokens,
-      estimated_cost_usd: cost,
-      parsed_ok: true,
-    });
-  } catch {
-    // best effort
-  }
+  return logLlmResult(admin, userId, "analyze", hosted, out, profile);
 }
 import { customExercises, muscleForName } from "./exercise_catalog.ts";
 import type { Workout } from "./types.ts";
@@ -75,6 +58,7 @@ export function activityMatchesPlanned(plannedType: string, actualType: string |
   switch (plannedType) {
     case "run": return a.includes("run") || a.includes("walk");
     case "ride": return a.includes("ride") || a.includes("bike") || a.includes("cycl");
+    case "swim": return a.includes("swim");
     case "strength": return a.includes("weight") || a.includes("strength") || a.includes("gym") || a === "workout";
     default: return false;
   }
@@ -100,15 +84,24 @@ export async function runActivityAnalysis(
     .eq("user_id", userId)
     .eq("date", act.date)
     .neq("type", "rest");
-  const plannedRow = (plans ?? []).find((p) => activityMatchesPlanned(p.type, act.type)) ??
-    (plans ?? [])[0] ?? null;
+  // ONLY a same-sport plan counts. The old any-plan fallback graded a swim
+  // against the day's run (wrong targets, unwanted "vs plan" framing); with no
+  // matching plan the session is now analyzed on its own merits instead.
+  const plannedRow = (plans ?? []).find((p) => activityMatchesPlanned(p.type, act.type)) ?? null;
   const planned = (plannedRow?.workout_json ?? null) as Workout | null;
 
   // --- streams + athlete zone settings ------------------------------------
   const isManual = String(act.intervals_id ?? "").startsWith("manual:");
+  // Swim sessions are a different unit system end to end: pace anchors to the
+  // athlete's CSS in sec/100m, splits come every 100 m, and every formatted
+  // pace reads /100m. Land sports keep threshold-anchored sec/km.
+  const swim = isSwimType(act.type);
+  const paceUnit: PaceUnit = swim ? "/100m" : "/km";
   let raw: RawStreams | null = null;
   let streamsError: string | null = null;
-  let thresholdSecPerKm = parsePaceToSec(onboarding.threshold_pace_per_km);
+  let thresholdSec = swim
+    ? parsePaceToSec(onboarding.css_per_100m)
+    : parsePaceToSec(onboarding.threshold_pace_per_km);
   let hrZones: { zone: string; min: number; max: number }[] =
     (onboarding.hr_zones as { zone: string; min: number; max: number }[] | undefined) ?? [];
 
@@ -135,9 +128,9 @@ export async function runActivityAnalysis(
           };
         }
         if (athlete) {
-          if (!thresholdSecPerKm) {
+          if (!thresholdSec && !swim) {
             const tp = runSportSettings(athlete)?.threshold_pace; // m/s
-            if (tp && tp > 0) thresholdSecPerKm = Math.round(1000 / tp);
+            if (tp && tp > 0) thresholdSec = Math.round(1000 / tp);
           }
           if (!hrZones.length) {
             hrZones = runHrZones(athlete).map((z) => ({ zone: z.name, min: z.min, max: z.max }));
@@ -149,18 +142,19 @@ export async function runActivityAnalysis(
     }
   }
 
-  const series = raw ? buildSeries(raw) : null;
-  const splits = raw ? buildSplits(raw) : [];
+  const series = raw ? buildSeries(raw, 120, swim) : null;
+  const splits = raw ? buildSplits(raw, swim ? 100 : 1000) : [];
 
   // --- target bands from the plan ------------------------------------------
   const pZones = planned ? plannedZones(planned, "pace_zone") : [];
   const hZones = planned ? plannedZones(planned, "hr_zone") : [];
-  const paceBand = paceBandForZones(pZones, thresholdSecPerKm);
+  const paceBand = paceBandForZones(pZones, thresholdSec, swim);
   const hrBand = hrBandForZones(hZones, hrZones);
-  // Per-split target adherence — which kilometres landed in the planned band.
+  // Per-split target adherence — which splits landed in the planned band.
   const onTargetSplits = markSplitsInBand(splits, paceBand, hrBand);
   const bandedSplits = splits.filter((s) => s.in_band != null).length;
-  const adherenceText = bandedSplits ? ` · ${onTargetSplits}/${bandedSplits} km on target` : "";
+  const splitWord = swim ? "splits" : "km";
+  const adherenceText = bandedSplits ? ` · ${onTargetSplits}/${bandedSplits} ${splitWord} on target` : "";
   const zoneText = pZones.length
     ? (Math.min(...pZones) === Math.max(...pZones)
       ? `Z${pZones[0]}`
@@ -191,7 +185,7 @@ export async function runActivityAnalysis(
     components.push({
       name: "Intensity",
       score,
-      detail: `${Math.round(frac * 100)}% of moving time in the target ${zoneText} pace band (${fmtPace(paceBand.lo)}-${fmtPace(paceBand.hi)})${adherenceText}`,
+      detail: `${Math.round(frac * 100)}% of moving time in the target ${zoneText} pace band (${fmtPace(paceBand.lo, paceUnit)}-${fmtPace(paceBand.hi, paceUnit)})${adherenceText}`,
     });
   } else if (hrBand && act.avg_hr) {
     const inBand = act.avg_hr >= hrBand.lo && act.avg_hr <= hrBand.hi;
@@ -212,38 +206,74 @@ export async function runActivityAnalysis(
   try {
     const { chain, resolveKey, resolveModel, resolveBaseUrl, hosted } = await llmAccess(admin, userId, profile ?? {});
     if (chain.length) {
+      const avgPace = (durSec: number, distM: number) =>
+        fmtPace(durSec / (distM / (swim ? 100 : 1000)), paceUnit);
       const actualBits = [
         act.type && `type ${act.type}`,
         actualMin > 0 && `${Math.round(actualMin)} min`,
         act.distance_m > 0 && `${(act.distance_m / 1000).toFixed(2)} km`,
         act.distance_m > 0 && act.duration_seconds > 0 &&
-          `avg pace ${fmtPace(act.duration_seconds / (act.distance_m / 1000))}`,
+          `avg pace ${avgPace(act.duration_seconds, act.distance_m)}`,
         act.avg_hr && `avg HR ${act.avg_hr}`,
         act.tss && `TSS ${Math.round(act.tss)}`,
       ].filter(Boolean).join(", ");
+      const splitLabel = (km: number) => swim ? `${Math.round(km * 1000)}m` : `km${km}`;
       const splitText = splits.slice(0, 20)
         .map((s) =>
-          `km${s.km} ${fmtPace(s.sec)}${s.avg_hr ? ` @${s.avg_hr}bpm` : ""}` +
+          `${splitLabel(s.km)} ${fmtPace(s.sec, paceUnit)}${s.avg_hr ? ` @${s.avg_hr}bpm` : ""}` +
           (s.in_band == null ? "" : s.in_band ? " ✓" : " ✗")
         )
         .join("; ");
       const targetText = paceBand
-        ? ` Target ${zoneText} pace ${fmtPace(paceBand.lo)}-${fmtPace(paceBand.hi)} /km (${onTargetSplits}/${bandedSplits} km on target).`
+        ? ` Target ${zoneText} pace ${fmtPace(paceBand.lo, paceUnit)}-${fmtPace(paceBand.hi, paceUnit)} (${onTargetSplits}/${bandedSplits} ${splitWord} on target).`
         : hrBand
-        ? ` Target ${zoneText} HR ${hrBand.lo}-${hrBand.hi} bpm (${onTargetSplits}/${bandedSplits} km on target).`
+        ? ` Target ${zoneText} HR ${hrBand.lo}-${hrBand.hi} bpm (${onTargetSplits}/${bandedSplits} ${splitWord} on target).`
         : "";
-      const prompt = `Review this completed session against its plan.
 
-PLANNED: ${planned ? `${planned.title}, ${planned.type}, ~${planned.duration_minutes} min, ~${planned.tss_estimate} TSS.${zoneText ? ` Target intensity ${zoneText}.` : ""} Structure: ${(planned.sections ?? []).map((s) => s.name).join(" → ")}` : "nothing was planned this day."}
+      // Deterministic session-shape facts (negative split, drift, evenness) so
+      // the model comments on what actually happened instead of generalities.
+      const insights = pacingInsights(splits, series);
+
+      // The athlete's own recent same-sport sessions: the baseline that turns
+      // "solid session" into "your fastest swim pace this month".
+      let recentText = "";
+      try {
+        const { data: recent } = await admin.from("completed_activities")
+          .select("date, distance_m, duration_seconds, avg_hr")
+          .eq("user_id", userId)
+          .neq("id", act.id)
+          .ilike("type", swim ? "%swim%" : `%${String(act.type ?? "").slice(0, 3)}%`)
+          .lt("date", act.date)
+          .order("date", { ascending: false })
+          .limit(4);
+        recentText = (recent ?? [])
+          .filter((r) => (r.distance_m ?? 0) > 0 && (r.duration_seconds ?? 0) > 0)
+          .map((r) =>
+            `${r.date}: ${(r.distance_m / 1000).toFixed(1)}km at ${avgPace(r.duration_seconds, r.distance_m)}` +
+            (r.avg_hr ? ` @${r.avg_hr}bpm` : "")
+          )
+          .join("; ");
+      } catch { /* context only — feedback still works without it */ }
+
+      const ask = planned
+        ? `Cover: the standout of the session (good or bad), pacing/effort control using the split and drift numbers, how the work matched the plan's intent (use the ✓/✗ splits), and ONE concrete cue for next time.`
+        : `There was NO plan for this day, so do NOT grade it against one or speculate about what "should" have been planned. Assess the session on its own merits: what it trained physiologically, how well it was paced (use the split and drift numbers), and ONE concrete cue for next time.`;
+      const prompt = `Review this completed ${swim ? "swim" : act.type ?? ""} session.
+
+${planned ? `PLANNED: ${planned.title}, ${planned.type}, ~${planned.duration_minutes} min, ~${planned.tss_estimate} TSS.${zoneText ? ` Target intensity ${zoneText}.` : ""} Structure: ${(planned.sections ?? []).map((s) => s.name).join(" → ")}` : "PLANNED: nothing, this was an unplanned session."}
 ACTUAL: ${actualBits || "no summary data"}.${targetText}
 ${splitText ? `SPLITS (✓ = in the target band, ✗ = out): ${splitText}.` : ""}
+${insights.length ? `SESSION SHAPE: ${insights.join("; ")}.` : ""}
+${recentText ? `THIS ATHLETE'S RECENT ${swim ? "SWIMS" : "SESSIONS"} (for what is normal for them): ${recentText}.` : ""}
 ${components.length ? `EXECUTION: ${components.map((c) => `${c.name} ${c.score}/100 (${c.detail})`).join("; ")}. Overall ${score}/100.` : ""}
 
-Write 3-5 sentences of specific coach feedback: what was executed well, where pacing/effort drifted and the physiological consequence, how well the work intervals held the target band (use the ✓/✗ splits), and ONE concrete cue for next time. Plain prose, no headings, no bullet points.`;
+Write 3-5 sentences of coach feedback. Every sentence must reference a concrete number or specific moment from THIS session; no filler like "great job", "keep it up" or restating the sport. ${swim ? "Express every swim pace as time per 100m (like 1:55/100m), never per km. " : ""}${ask} Plain prose, no headings, no bullet points.`;
       const out = await llmGenerateWithFallback(
         chain,
         {
           prompt,
+          hosted,
+          feature: "analyze",
           systemPrompt:
             "You are an expert endurance coach reviewing a completed workout. Be specific, concise, encouraging but honest.",
           jsonMode: false,
@@ -279,6 +309,9 @@ Write 3-5 sentences of specific coach feedback: what was executed well, where pa
       : null,
     splits,
     planned_title: planned?.title ?? null,
+    // Unit metadata so the client renders swim paces /100m and 100 m splits.
+    pace_unit: paceUnit,
+    split_m: swim ? 100 : 1000,
     streams_error: streamsError,
     generated_at: new Date().toISOString(),
   };
@@ -560,6 +593,8 @@ Write 3-5 sentences of specific coach feedback: completion vs the plan, load sel
         chain,
         {
           prompt,
+          hosted,
+          feature: "analyze",
           systemPrompt:
             "You are an expert strength coach reviewing a completed lifting session. Be specific, concise, encouraging but honest.",
           jsonMode: false,

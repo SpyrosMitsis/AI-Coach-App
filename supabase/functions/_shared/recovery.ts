@@ -32,9 +32,28 @@ export interface Driver {
   tone: "good" | "bad" | "neutral";
 }
 
+/**
+ * What the score is actually standing on.
+ *
+ * "none" is the one that matters. With no wellness rows and no synced signal
+ * the maths still runs on its neutral defaults and lands on exactly 50/amber,
+ * which looked like a measurement and was treated as one: amber caps every hard
+ * endurance session at RPE 6 and rewrites its zones to Z2
+ * (workout_review.ts), so an athlete with no wearable and no check-in could
+ * never be prescribed an interval. No data is not evidence of fatigue.
+ */
+export type RecoveryBasis =
+  /** At least one objective signal synced for the anchored day. */
+  | "measured"
+  /** The athlete checked in, but nothing objective synced. */
+  | "subjective"
+  /** Nothing at all. The score is a placeholder, not a reading. */
+  | "none";
+
 export interface Recovery {
   score: number; // 0..100
   band: "green" | "amber" | "red";
+  basis: RecoveryBasis;
   wellness: number; // 1..5 composite (energy, inverted soreness, sleep quality)
   hrv: Trend | null;
   rhr: Trend | null;
@@ -93,7 +112,12 @@ export function computeRecovery(
   rhrSeries: SeriesPoint[],
   today?: string,
 ): Recovery {
-  const recent3 = wells.slice(0, 3);
+  // Anchored on `today`: wells is queried newest-first, so a check-in that
+  // happened today is already at the head and this is unchanged from before.
+  // No check-in today means no subjective reading today — recent3 stays empty
+  // rather than quietly averaging in yesterday's, mirroring how hrv/rhr/sleep
+  // already treat a missing today as missing, not as "reuse the last one".
+  const recent3 = today && !wells.some((w) => w.date === today) ? [] : wells.slice(0, 3);
   // Sleep on the 1..5 scale comes straight from the device sleep score
   // (0..100 → /20, continuous, e.g. 75 → 3.75); neutral 3 when no data.
   const sleepFive = (w: WellnessRow) =>
@@ -158,19 +182,41 @@ export function computeRecovery(
     const dir = d > 0.5 ? "up" : d < -0.5 ? "down" : "flat";
     drivers.push({ label: "Sleep", dir, tone: d < -0.75 ? "bad" : d >= -0.25 ? "good" : "neutral" });
   }
-  const soreAvg = avg(recent3.map((w) => w.soreness ?? 3));
-  if (soreAvg >= 3.5) drivers.push({ label: "Soreness", dir: "up", tone: "bad" });
-  const energyAvg = avg(recent3.map((w) => w.energy ?? 3));
-  if (energyAvg <= 2.5) drivers.push({ label: "Energy", dir: "down", tone: "bad" });
-  else if (energyAvg >= 4) drivers.push({ label: "Energy", dir: "up", tone: "good" });
+  // Subjective drivers need a subjective reading. avg([]) is 0, which sailed
+  // under the "energy <= 2.5" test and put an "Energy down" chip on the
+  // dashboard of an athlete who had never checked in: the app asserting low
+  // energy it was never told about.
+  if (recent3.length > 0) {
+    const soreAvg = avg(recent3.map((w) => w.soreness ?? 3));
+    if (soreAvg >= 3.5) drivers.push({ label: "Soreness", dir: "up", tone: "bad" });
+    const energyAvg = avg(recent3.map((w) => w.energy ?? 3));
+    if (energyAvg <= 2.5) drivers.push({ label: "Energy", dir: "down", tone: "bad" });
+    else if (energyAvg >= 4) drivers.push({ label: "Energy", dir: "up", tone: "good" });
+  }
+
+  // What the number rests on. Objective beats subjective; nothing means nothing.
+  //
+  // "Objective" is anchored on TODAY: yesterday's HRV is history, not a reading
+  // of this morning. "Subjective" is exactly the three fields that feed
+  // wellnessScore above — energy, soreness, sleep_score. zepp_sleep_minutes is
+  // deliberately NOT one of them: it feeds sleepAdj for the anchored day only,
+  // so counting it marked a live account "subjective" while its wellness sat at
+  // the untouched default of 3 and the score was still the unfounded 50.
+  const hasObjective = (hrv?.latest != null) || (rhr?.latest != null) || (sleep?.hours != null);
+  const hasSubjective = recent3.some((w) => isNum(w.energy) || isNum(w.soreness) || isNum(w.sleep_score));
+  const basis: RecoveryBasis = hasObjective ? "measured" : hasSubjective ? "subjective" : "none";
 
   // Human one-liner: lead with the strongest signal.
   const parts: string[] = [];
   if (hrv && hrv.latest != null) parts.push(`HRV ${hrv.deltaPct >= 0 ? "+" : ""}${Math.round(hrv.deltaPct * 100)}% vs baseline`);
   if (rhr && rhr.latest != null) parts.push(`resting HR ${rhr.deltaPct > 0 ? "+" : ""}${Math.round(rhr.deltaPct * 100)}%`);
   if (sleep && sleep.hours != null) parts.push(`slept ${sleep.hours}h`);
-  const summary = (band === "green" ? "Recovered" : band === "amber" ? "Moderately recovered" : "Under-recovered") +
-    (parts.length ? `, ${parts.join(", ")}.` : ".");
+  // With nothing to go on, say so. "Moderately recovered." was a claim about an
+  // athlete the app had never measured.
+  const summary = basis === "none"
+    ? "No readiness data yet. Check in or sync your watch."
+    : (band === "green" ? "Recovered" : band === "amber" ? "Moderately recovered" : "Under-recovered") +
+      (parts.length ? `, ${parts.join(", ")}.` : ".");
 
-  return { score, band, wellness: +wellnessScore.toFixed(2), hrv, rhr, sleep, drivers, summary };
+  return { score, band, basis, wellness: +wellnessScore.toFixed(2), hrv, rhr, sleep, drivers, summary };
 }

@@ -20,7 +20,7 @@ export const PROVIDER_LABELS: Record<LlmProvider, string> = {
 
 export const PROVIDER_MODELS: Record<LlmProvider, string> = {
   anthropic: "claude-opus-4-8",
-  deepseek: "deepseek-chat",
+  deepseek: "deepseek-v4-flash",
   openai: "gpt-5-mini",
   gemini: "gemini-2.5-flash",
   groq: "llama-3.3-70b-versatile",
@@ -93,6 +93,12 @@ export interface UserProfile {
   llm_fallback_chain: LlmProvider[];
 }
 
+export interface InjuryEntry {
+  area: string;
+  severity: "mild" | "moderate" | "serious" | "";
+  note?: string;
+}
+
 export interface OnboardingData {
   goal?: string;
   experience?: "Beginner" | "Intermediate" | "Advanced";
@@ -104,7 +110,12 @@ export interface OnboardingData {
   equipment?: string;
   target_pace?: string;
   weekly_tss_target?: number;
+  // Legacy free-text field, kept for backward compat with existing profiles.
+  // New writes should use `injuries` instead; readers should go through
+  // `injuriesOf()` (_shared/profile.ts) rather than reading either field
+  // directly, since it falls back to parsing this string when `injuries` is unset.
   injury_history?: string;
+  injuries?: InjuryEntry[];
   hr_zones?: { zone: string; min: number; max: number }[];
   // E1/E4 thresholds — feed zone derivation; shared with Android (Zones.kt).
   lthr?: number;                    // bpm

@@ -48,10 +48,17 @@ export function parsePaceToSec(p: string | null | undefined): number | null {
   return Number(m[1]) * 60 + Number(m[2]);
 }
 
-export function fmtPace(sec: number): string {
+// Swims are paced per 100 m (CSS-anchored), everything else per km.
+export type PaceUnit = "/km" | "/100m";
+
+export function fmtPace(sec: number, unit: PaceUnit = "/km"): string {
   const m = Math.floor(sec / 60);
   const s = Math.round(sec % 60);
-  return `${m}:${s.toString().padStart(2, "0")}/km`;
+  return `${m}:${s.toString().padStart(2, "0")}${unit}`;
+}
+
+export function isSwimType(type: string | null | undefined): boolean {
+  return /swim/i.test(type ?? "");
 }
 
 const clamp = (v: number, lo: number, hi: number) => Math.max(lo, Math.min(hi, v));
@@ -88,20 +95,33 @@ const ZONE_SPEED_PCT: Record<number, { lo: number; hi: number }> = {
   5: { lo: 102, hi: 115 },
 };
 
-// thresholdSecPerKm: athlete's ~1h race pace. Returns [fasterBound, slowerBound]
-// in sec/km for the zone span, or null without a threshold.
+// %CSS speed per swim zone. Swimming compresses the speed range (drag grows
+// with the square of speed), so zones sit much closer to CSS than run zones.
+const SWIM_ZONE_SPEED_PCT: Record<number, { lo: number; hi: number }> = {
+  1: { lo: 65, hi: 80 },
+  2: { lo: 80, hi: 88 },
+  3: { lo: 88, hi: 96 },
+  4: { lo: 96, hi: 103 },
+  5: { lo: 103, hi: 112 },
+};
+
+// thresholdSec: the athlete's ~1h race pace in sec per unit distance (per km
+// for run/ride, per 100 m for swim, matching `swim`). Returns [fasterBound,
+// slowerBound] in the same unit for the zone span, or null without a threshold.
 export function paceBandForZones(
   zones: number[],
-  thresholdSecPerKm: number | null,
+  thresholdSec: number | null,
+  swim = false,
 ): { lo: number; hi: number } | null {
-  if (!zones.length || !thresholdSecPerKm) return null;
+  if (!zones.length || !thresholdSec) return null;
+  const table = swim ? SWIM_ZONE_SPEED_PCT : ZONE_SPEED_PCT;
   const minZ = Math.min(...zones);
   const maxZ = Math.max(...zones);
-  const fastPct = ZONE_SPEED_PCT[maxZ].hi; // fastest speed → lowest sec/km
-  const slowPct = ZONE_SPEED_PCT[minZ].lo;
+  const fastPct = table[maxZ].hi; // fastest speed → lowest sec
+  const slowPct = table[minZ].lo;
   return {
-    lo: Math.round(thresholdSecPerKm / (fastPct / 100)),
-    hi: Math.round(thresholdSecPerKm / (slowPct / 100)),
+    lo: Math.round(thresholdSec / (fastPct / 100)),
+    hi: Math.round(thresholdSec / (slowPct / 100)),
   };
 }
 
@@ -129,11 +149,14 @@ export interface RawStreams {
   power?: (number | null)[];
 }
 
-// Downsample to ≤ maxPoints, converting velocity (m/s) to pace (sec/km).
-// Velocities under ~0.5 m/s (standing) become null gaps instead of absurd paces.
-export function buildSeries(s: RawStreams, maxPoints = 120): AnalysisSeries {
+// Downsample to ≤ maxPoints, converting velocity (m/s) to pace: sec/km for
+// land sports, sec/100m for swims (which also lowers the "not moving" cutoff,
+// since a comfortable swim pace can sit below a walking cutoff in m/s).
+export function buildSeries(s: RawStreams, maxPoints = 120, swim = false): AnalysisSeries {
   const n = s.time.length;
   if (!n) return { t: [], pace: [], hr: [], cadence: [], power: [] };
+  const minV = swim ? 0.25 : 0.5;
+  const paceMeters = swim ? 100 : 1000;
   const stride = Math.max(1, Math.ceil(n / maxPoints));
   const t: number[] = [];
   const pace: (number | null)[] = [];
@@ -145,7 +168,7 @@ export function buildSeries(s: RawStreams, maxPoints = 120): AnalysisSeries {
     let vSum = 0, vN = 0, hSum = 0, hN = 0, cSum = 0, cN = 0, pSum = 0, pN = 0;
     for (let j = i; j < Math.min(i + stride, n); j++) {
       const v = s.velocity[j];
-      if (typeof v === "number" && v > 0.5) { vSum += v; vN++; }
+      if (typeof v === "number" && v > minV) { vSum += v; vN++; }
       const h = s.hr[j];
       if (typeof h === "number" && h > 0) { hSum += h; hN++; }
       const c = s.cadence?.[j];
@@ -154,7 +177,7 @@ export function buildSeries(s: RawStreams, maxPoints = 120): AnalysisSeries {
       if (typeof p === "number" && p > 0) { pSum += p; pN++; }
     }
     t.push(s.time[i]);
-    pace.push(vN ? Math.round(1000 / (vSum / vN)) : null);
+    pace.push(vN ? Math.round(paceMeters / (vSum / vN)) : null);
     hr.push(hN ? Math.round(hSum / hN) : null);
     cadence.push(cN ? Math.round(cSum / cN) : null);
     power.push(pN ? Math.round(pSum / pN) : null);
@@ -162,25 +185,80 @@ export function buildSeries(s: RawStreams, maxPoints = 120): AnalysisSeries {
   return { t, pace, hr, cadence, power };
 }
 
-export function buildSplits(s: RawStreams): AnalysisSplit[] {
+// Splits every [splitMeters] (1 km for land sports, 100 m for swims). `km` is
+// the cumulative distance in km at the end of the split, so 100 m swim splits
+// read 0.1, 0.2, ... and the client renders "100 m", "200 m".
+export function buildSplits(s: RawStreams, splitMeters = 1000): AnalysisSplit[] {
   const out: AnalysisSplit[] = [];
-  let nextKm = 1000;
+  let next = splitMeters;
   let lastT = 0;
   let hrSum = 0, hrN = 0;
   for (let i = 0; i < s.time.length; i++) {
     const d = s.distance[i];
     const h = s.hr[i];
     if (typeof h === "number" && h > 0) { hrSum += h; hrN++; }
-    if (typeof d !== "number" || d < nextKm) continue;
+    if (typeof d !== "number" || d < next) continue;
     out.push({
-      km: nextKm / 1000,
+      km: next / 1000,
       sec: Math.round(s.time[i] - lastT),
       avg_hr: hrN ? Math.round(hrSum / hrN) : null,
     });
     lastT = s.time[i];
-    nextKm += 1000;
+    next += splitMeters;
     hrSum = 0;
     hrN = 0;
+  }
+  return out;
+}
+
+// --- session-shape insights -----------------------------------------------------
+//
+// Deterministic observations about HOW the session unfolded, computed from the
+// splits/series and handed to the feedback LLM as facts. This is what keeps the
+// feedback specific: the model gets "second half 3.2% slower, HR drifted +7"
+// instead of having to eyeball a splits list.
+export function pacingInsights(splits: AnalysisSplit[], series: AnalysisSeries | null): string[] {
+  const out: string[] = [];
+
+  if (splits.length >= 4) {
+    const half = Math.floor(splits.length / 2);
+    const avg = (xs: AnalysisSplit[]) => xs.reduce((s, x) => s + x.sec, 0) / xs.length;
+    const first = avg(splits.slice(0, half));
+    const second = avg(splits.slice(splits.length - half));
+    const pct = ((second - first) / first) * 100;
+    if (Math.abs(pct) >= 1) {
+      out.push(
+        pct < 0
+          ? `negative split, second half ${Math.abs(pct).toFixed(1)}% faster than the first`
+          : `positive split, second half ${pct.toFixed(1)}% slower than the first`,
+      );
+    } else {
+      out.push("even split, halves within 1% of each other");
+    }
+
+    // Pacing evenness: spread of split times around their mean.
+    const secs = splits.map((s) => s.sec);
+    const mean = secs.reduce((a, b) => a + b, 0) / secs.length;
+    const sd = Math.sqrt(secs.reduce((a, b) => a + (b - mean) ** 2, 0) / secs.length);
+    const cv = (sd / mean) * 100;
+    out.push(
+      cv <= 3
+        ? `very even pacing (splits vary ${cv.toFixed(1)}%)`
+        : cv <= 6
+        ? `moderately even pacing (splits vary ${cv.toFixed(1)}%)`
+        : `ragged pacing (splits vary ${cv.toFixed(1)}%)`,
+    );
+  }
+
+  // Cardiac drift: HR in the second half vs the first, moving samples only.
+  const hrs = (series?.hr ?? []).filter((h): h is number => typeof h === "number");
+  if (hrs.length >= 20) {
+    const half = Math.floor(hrs.length / 2);
+    const avg = (xs: number[]) => xs.reduce((a, b) => a + b, 0) / xs.length;
+    const drift = avg(hrs.slice(half)) - avg(hrs.slice(0, half));
+    if (Math.abs(drift) >= 2) {
+      out.push(`heart rate ${drift > 0 ? "drifted up" : "came down"} ${Math.abs(Math.round(drift))} bpm from first half to second`);
+    }
   }
   return out;
 }

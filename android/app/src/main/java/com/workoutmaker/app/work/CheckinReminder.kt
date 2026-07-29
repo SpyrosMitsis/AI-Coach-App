@@ -25,6 +25,13 @@ import java.time.ZoneId
 import java.util.Calendar
 import java.util.concurrent.TimeUnit
 import kotlinx.coroutines.flow.first
+import android.app.PendingIntent
+import com.workoutmaker.app.data.AppPreferences
+import com.workoutmaker.app.data.DailySummary
+import com.workoutmaker.app.data.cachedDailySummary
+import com.workoutmaker.app.data.dailySummary
+import com.workoutmaker.app.data.syncHealth
+import com.workoutmaker.app.data.wellnessCheckin
 
 // Daily morning readiness notification, timed to the athlete's actual WAKE-UP:
 // the worker starts at 06:00 and keeps retrying (30-min backoff) until last
@@ -40,7 +47,7 @@ class CheckinReminderWorker @AssistedInject constructor(
     @Assisted params: WorkerParameters,
     private val repo: WorkoutRepository,
     private val health: HealthConnectManager,
-    private val prefs: com.workoutmaker.app.data.AppPreferences,
+    private val prefs: AppPreferences,
 ) : CoroutineWorker(appContext, params) {
 
     override suspend fun doWork(): Result {
@@ -69,6 +76,11 @@ class CheckinReminderWorker @AssistedInject constructor(
         }
         if (!fireNow) return Result.retry()
 
+        // Push last night's Health Connect data (HRV/RHR/sleep) BEFORE fetching
+        // the summary, so readiness reflects this morning even if the app hasn't
+        // been opened. After the fireNow gate so the 30-min retries don't re-sync.
+        runCatching { repo.syncHealth() }
+
         // Check-in still pending? Then the notification also asks for it.
         val answered = runCatching {
             repo.wellnessCheckin(today.toString())?.energy != null
@@ -84,7 +96,7 @@ class CheckinReminderWorker @AssistedInject constructor(
     }
 
     private fun showReminder(
-        summary: com.workoutmaker.app.data.DailySummary?,
+        summary: DailySummary?,
         checkinPending: Boolean,
     ) {
         if (ActivityCompat.checkSelfPermission(applicationContext, Manifest.permission.POST_NOTIFICATIONS)
@@ -94,9 +106,9 @@ class CheckinReminderWorker @AssistedInject constructor(
             .getLaunchIntentForPackage(applicationContext.packageName)
             ?.apply { addFlags(Intent.FLAG_ACTIVITY_NEW_TASK) }
         val pi = launch?.let {
-            android.app.PendingIntent.getActivity(
+            PendingIntent.getActivity(
                 applicationContext, 1, it,
-                android.app.PendingIntent.FLAG_IMMUTABLE or android.app.PendingIntent.FLAG_UPDATE_CURRENT,
+                PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
             )
         }
 

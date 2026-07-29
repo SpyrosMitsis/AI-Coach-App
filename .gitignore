@@ -22,3 +22,9 @@ local.properties
 # personal machine defaults for scripts/dev.sh (project ref, device serial, …)
 scripts/dev.local.sh
 .vercel
+
+# Eval runs: JSONL + raw model output. Regenerable via scripts/dev.sh eval:run,
+# grows without bound, and the raw text is large.
+eval_runs/
+.ipynb_checkpoints/
+qa_runs/

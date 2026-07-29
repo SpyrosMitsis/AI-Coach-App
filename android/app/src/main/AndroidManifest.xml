@@ -4,6 +4,10 @@
 
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <!-- Device-calendar integration (opt-in in Settings): read busy times so
+         the planner schedules around life; write workouts as all-day events. -->
+    <uses-permission android:name="android.permission.READ_CALENDAR" />
+    <uses-permission android:name="android.permission.WRITE_CALENDAR" />
     <!-- Coarse location for weather-aware outdoor sessions (optional). -->
     <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
     <!-- Rest-timer haptics + reliable alerts even when backgrounded. Only the
@@ -13,9 +17,14 @@
          SecurityException). -->
     <uses-permission android:name="android.permission.VIBRATE" />
     <uses-permission android:name="android.permission.SCHEDULE_EXACT_ALARM" />
-    <!-- Keep the workout session alive (live timer) while the app is backgrounded. -->
+    <!-- Keep the workout session alive (live timer) while the app is backgrounded.
+         specialUse, not health: this service only shows a chronometer notification,
+         it never reads a health sensor — "health" type wrongly required a Health
+         Connect/activity-recognition runtime permission to already be granted just
+         to START the timer, which crashed the app on first launch (fresh installs
+         have none of those granted yet). -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
-    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_HEALTH" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
 
     <!-- Health Connect read permissions -->
     <uses-permission android:name="android.permission.health.READ_HEART_RATE" />
@@ -26,6 +35,16 @@
     <!-- Requested by HealthConnectManager — undeclared permissions are
          auto-denied by Health Connect, which made every manual sync fail. -->
     <uses-permission android:name="android.permission.health.READ_VO2_MAX" />
+    <uses-permission android:name="android.permission.health.READ_EXERCISE" />
+    <uses-permission android:name="android.permission.health.READ_DISTANCE" />
+    <!-- Body composition (smart scale): profile weight/body fat + the Body
+         trends history. -->
+    <uses-permission android:name="android.permission.health.READ_WEIGHT" />
+    <uses-permission android:name="android.permission.health.READ_BODY_FAT" />
+    <uses-permission android:name="android.permission.health.READ_LEAN_BODY_MASS" />
+    <!-- Morning readiness worker reads last night's sleep/HRV without the app
+         in the foreground. -->
+    <uses-permission android:name="android.permission.health.READ_HEALTH_DATA_IN_BACKGROUND" />
 
     <!-- Lets the app open the Health Connect app to manage permissions (Android 13-). -->
     <queries>
@@ -85,7 +104,11 @@
         <service
             android:name=".work.WorkoutForegroundService"
             android:exported="false"
-            android:foregroundServiceType="health" />
+            android:foregroundServiceType="specialUse">
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="workout-session-timer" />
+        </service>
 
         <!-- Hilt provides the WorkManager factory; disable default initializer. -->
         <provider

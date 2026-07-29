@@ -89,31 +89,46 @@ export async function intervalsPhysiology(
 
 
 
-// Measured execution of recent sessions (from analyze-activity and
-// analyze-strength): how well the athlete actually hit planned
-// duration/load/intensity, plus the analyzer's written coach notes. Closes the
-// autoregulation loop with objective data, not just subjective ratings.
-export async function executionBlock(
+// One analyzed session (from analyze-activity / analyze-strength), stripped to
+// the fields the different consumers care about. `components` is only used by
+// the generator's verbose block; coach-facing surfaces stick to label+feedback.
+export interface DebriefEntry {
+  date: string;
+  kind: string;
+  score: number | null;
+  label: string | null;
+  feedback: string | null;
+  components: { name: string; score: number; detail: string }[];
+}
+
+export function clipText(s: string, n = 320): string {
+  const t = s.replace(/\s+/g, " ").trim();
+  return t.length > n ? t.slice(0, n - 1) + "…" : t;
+}
+
+// Fetch recent execution analyses (endurance + strength), newest first.
+// Best-effort: query failures yield fewer entries, never a throw.
+export async function fetchRecentDebriefs(
   admin: SupabaseClient,
   userId: string,
   sinceDate: string,
-): Promise<string> {
+  limit = 6,
+): Promise<DebriefEntry[]> {
   interface Comp { name: string; score: number; detail: string }
   interface Analysis { score?: number; label?: string; components?: Comp[]; feedback?: string }
-  const clip = (s: string, n = 320) => {
-    const t = s.replace(/\s+/g, " ").trim();
-    return t.length > n ? t.slice(0, n - 1) + "…" : t;
-  };
-  const line = (date: string, kind: string, a: Analysis): string => {
-    const comps = (a.components ?? [])
-      .map((c) => `${c.name} ${c.score}/100 (${c.detail})`)
-      .join("; ");
-    const notes = a.feedback ? ` Analyst notes: "${clip(a.feedback)}"` : "";
-    const score = typeof a.score === "number" ? `execution ${a.score}/100 "${a.label ?? ""}"` : `"${a.label ?? "analyzed"}"`;
-    return `- ${date} ${kind}: ${score}${comps ? `, ${comps}` : ""}.${notes}`;
+  const toEntry = (date: string, kind: string, a: Analysis): DebriefEntry | null => {
+    if (typeof a?.score !== "number" && !a?.feedback) return null;
+    return {
+      date,
+      kind,
+      score: typeof a.score === "number" ? a.score : null,
+      label: a.label ?? null,
+      feedback: a.feedback ?? null,
+      components: a.components ?? [],
+    };
   };
 
-  const entries: { date: string; text: string }[] = [];
+  const entries: DebriefEntry[] = [];
   try {
     const { data } = await admin
       .from("completed_activities")
@@ -124,9 +139,8 @@ export async function executionBlock(
       .order("date", { ascending: false })
       .limit(5);
     for (const r of data ?? []) {
-      const a = r.analysis_json as Analysis;
-      if (typeof a?.score !== "number" && !a?.feedback) continue;
-      entries.push({ date: r.date, text: line(r.date, r.type ?? "session", a) });
+      const e = toEntry(r.date, r.type ?? "session", r.analysis_json as Analysis);
+      if (e) entries.push(e);
     }
   } catch (_e) { /* best-effort */ }
 
@@ -141,18 +155,37 @@ export async function executionBlock(
       .order("date", { ascending: false })
       .limit(3);
     for (const r of data ?? []) {
-      const a = r.analysis_json as Analysis;
-      if (typeof a?.score !== "number" && !a?.feedback) continue;
-      entries.push({ date: r.date, text: line(r.date, "strength", a) });
+      const e = toEntry(r.date, "strength", r.analysis_json as Analysis);
+      if (e) entries.push(e);
     }
   } catch (_e) { /* table may not exist yet */ }
 
+  return entries.sort((a, b) => b.date.localeCompare(a.date)).slice(0, limit);
+}
+
+// Renders one DebriefEntry as the generator's verbose execution line
+// (numbers included — this text feeds the workout generator, not the coach).
+export function executionLine(e: DebriefEntry): string {
+  const comps = e.components
+    .map((c) => `${c.name} ${c.score}/100 (${c.detail})`)
+    .join("; ");
+  const notes = e.feedback ? ` Analyst notes: "${clipText(e.feedback)}"` : "";
+  const score = e.score != null ? `execution ${e.score}/100 "${e.label ?? ""}"` : `"${e.label ?? "analyzed"}"`;
+  return `- ${e.date} ${e.kind}: ${score}${comps ? `, ${comps}` : ""}.${notes}`;
+}
+
+// Measured execution of recent sessions (from analyze-activity and
+// analyze-strength): how well the athlete actually hit planned
+// duration/load/intensity, plus the analyzer's written coach notes. Closes the
+// autoregulation loop with objective data, not just subjective ratings.
+export async function executionBlock(
+  admin: SupabaseClient,
+  userId: string,
+  sinceDate: string,
+): Promise<string> {
+  const entries = await fetchRecentDebriefs(admin, userId, sinceDate);
   if (!entries.length) return "";
-  const lines = entries
-    .sort((a, b) => b.date.localeCompare(a.date))
-    .slice(0, 6)
-    .map((e) => e.text)
-    .join("\n");
+  const lines = entries.map(executionLine).join("\n");
   return `\n\nMEASURED EXECUTION OF RECENT SESSIONS (objective plan-vs-actual analysis with the reviewing coach's notes, autoregulate from this: honor the analyst's cues, repeated intensity overshoot means prescribe easier targets and stress discipline in coach_note; chronic under-duration means shorter or simpler sessions; consistently high scores mean progress as planned):\n${lines}`;
 }
 
@@ -165,9 +198,16 @@ export function memoryBlock(profile: { training_memory?: string | null }): strin
 // Recovery signal (HRV/RHR/sleep trends → 0-100) so generation actually
 // down-regulates intensity after a poor night, not just on subjective wellness.
 export function recoveryBlock(
-  recovery: { score: number; band: string; summary: string } | null,
+  recovery: { score: number; band: string; summary: string; basis?: string } | null,
 ): string {
   if (!recovery) return "";
+  // Nothing measured: say that, and give no number. Quoting "50/100 (amber)"
+  // told the model to cap at RPE 6 on the strength of a placeholder.
+  if (recovery.basis === "none") {
+    return "\n\nRECOVERY TODAY: not measured (no check-in, no synced watch data). " +
+      "Plan from the training plan and recent load alone. Do not claim to know how " +
+      "recovered the athlete is, and do not hold intensity back on that basis.";
+  }
   const guide = recovery.band === "red"
     ? `RED (${recovery.score}/100): the athlete is under-recovered, cap at RPE 4, easy aerobic/technique or active-recovery only, and trim volume.`
     : recovery.band === "amber"
@@ -240,6 +280,39 @@ export function goalBlock(
     (weeksToGoal != null ? `- ${weeksToGoal} weeks to goal (${onboarding.goal_date}); phase: ${phase}.\n` : "") +
     `- Fitness (CTL) is ${trendWord} (${ctlTrend >= 0 ? "+" : ""}${ctlTrend.toFixed(1)} over 28d).\n` +
     `- Prioritise the work that moves the goal; ${weeksToGoal != null && weeksToGoal <= 2 ? "this is taper, sharpen, don't build." : "progress the limiter without spiking load."}`;
+}
+
+// Client-supplied life schedule: per-day busy windows derived ON-DEVICE from
+// the athlete's calendar (titles never leave the phone). Untrusted input —
+// sanitize hard: ISO dates, HH:MM-HH:MM windows, capped counts. Returns "" when
+// nothing valid, so absent/garbage input costs nothing.
+const BUSY_DATE = /^\d{4}-\d{2}-\d{2}$/;
+const BUSY_WINDOW = /^([01]\d|2[0-3]):[0-5]\d-([01]\d|2[0-3]):[0-5]\d$/;
+const WEEKDAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+
+export function calendarBlock(raw: unknown): string {
+  if (!Array.isArray(raw)) return "";
+  const days: string[] = [];
+  for (const d of raw.slice(0, 21)) {
+    const date = (d as { date?: unknown })?.date;
+    if (typeof date !== "string" || !BUSY_DATE.test(date)) continue;
+    const allDay = (d as { all_day?: unknown }).all_day === true;
+    const windows = Array.isArray((d as { windows?: unknown }).windows)
+      ? ((d as { windows: unknown[] }).windows)
+        .filter((w): w is string => typeof w === "string" && BUSY_WINDOW.test(w))
+        .slice(0, 8)
+      : [];
+    if (!allDay && windows.length === 0) continue;
+    const wd = WEEKDAYS[new Date(date + "T12:00:00Z").getUTCDay()];
+    const what = allDay
+      ? `busy all day${windows.length ? `, plus ${windows.join(", ")}` : ""}`
+      : `busy ${windows.join(", ")}`;
+    days.push(`- ${date} (${wd}): ${what}`);
+  }
+  if (!days.length) return "";
+  return `\n\nLIFE SCHEDULE (from the athlete's calendar; these times are UNAVAILABLE for training):\n` +
+    days.join("\n") +
+    `\nPut the long/hard sessions on days with the most free time; on tight days keep the session short, and treat an all-day commitment as little-to-no training time (rest or a very short easy session). Never prescribe a specific clock time.`;
 }
 
 export async function weatherBlock(lat: number, lon: number): Promise<string> {

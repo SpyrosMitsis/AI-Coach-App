@@ -60,3 +60,22 @@ jobs:
         # the play/foss flavors were introduced. Running both also compiles
         # both flavors' sources in CI.
         run: ./gradlew testPlayDebugUnitTest testFossDebugUnitTest --no-daemon
+
+      - name: Lint
+        # Android Lint ships with AGP but was never actually invoked, so its
+        # findings had no way to reach anyone.
+        run: ./gradlew lintPlayDebug --no-daemon
+
+      - name: Release build (R8)
+        # Debug builds never exercise minification. isMinifyEnabled is on for
+        # release, so a -keep rule that stops matching after code moves would
+        # otherwise only surface in a Play upload. Signing falls back to the
+        # debug key when RELEASE_STORE_FILE is unset, so this needs no secrets.
+        run: ./gradlew assemblePlayRelease --no-daemon
+
+      - name: Room schema is committed
+        # exportSchema=true writes app/schemas/*.json. If an entity changed
+        # without the baseline being regenerated and committed, that is a
+        # migration crash waiting to happen on a user's device — fail here
+        # instead.
+        run: git diff --exit-code -- app/schemas

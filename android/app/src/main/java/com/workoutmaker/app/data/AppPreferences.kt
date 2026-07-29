@@ -5,6 +5,7 @@ import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.doublePreferencesKey
 import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.intPreferencesKey
+import androidx.datastore.preferences.core.longPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
 import dagger.hilt.android.qualifiers.ApplicationContext
@@ -14,6 +15,7 @@ import kotlinx.coroutines.flow.map
 import javax.inject.Inject
 import javax.inject.Singleton
 import kotlin.math.roundToInt
+import androidx.datastore.preferences.core.MutablePreferences
 
 // Device-local app preferences (not tied to the cloud profile). These are the
 // "how the app behaves on this phone" knobs that used to be hardcoded or live
@@ -75,6 +77,10 @@ data class AppSettings(
     val spendCapUsd: Double = 0.0,
     // Morning readiness notification (score + day summary at wake-up).
     val morningNotify: Boolean = true,
+    // Device-calendar integration (both opt-in, both also need the runtime
+    // permission): read busy times into planning / write workouts as all-day events.
+    val calendarRead: Boolean = false,
+    val calendarWrite: Boolean = false,
 )
 
 private val Context.dataStore by preferencesDataStore(name = "app_prefs")
@@ -98,7 +104,18 @@ class AppPreferences @Inject constructor(
         val spendCap = doublePreferencesKey("spend_cap_usd")
         val lastAccountUid = stringPreferencesKey("last_account_uid")
         val morningNotify = booleanPreferencesKey("morning_notify")
+        val setupNudgeDismissedAt = longPreferencesKey("setup_nudge_dismissed_at")
+        val calendarRead = booleanPreferencesKey("calendar_read")
+        val calendarWrite = booleanPreferencesKey("calendar_write")
     }
+
+    // The Home "finish setting up your coach" card for onboarding skippers.
+    // Dismissal snoozes it 14 days (it re-appears only while the profile is
+    // still empty), so it nudges without nagging.
+    suspend fun setupNudgeDismissedAt(): Long? =
+        context.dataStore.data.firstOrNull()?.get(Keys.setupNudgeDismissedAt)
+
+    suspend fun dismissSetupNudge() = edit { it[Keys.setupNudgeDismissedAt] = System.currentTimeMillis() }
 
     // The user id that this device's local data (Room strength tables, caches,
     // onboarding flag) belongs to. Compared on every sign-in so a different
@@ -135,6 +152,8 @@ class AppPreferences @Inject constructor(
             themePalette = ThemePalette.fromName(p[Keys.themePalette]),
             spendCapUsd = p[Keys.spendCap] ?: 0.0,
             morningNotify = p[Keys.morningNotify] ?: true,
+            calendarRead = p[Keys.calendarRead] ?: false,
+            calendarWrite = p[Keys.calendarWrite] ?: false,
         )
     }
 
@@ -149,8 +168,10 @@ class AppPreferences @Inject constructor(
     suspend fun setThemePalette(p: ThemePalette) = edit { it[Keys.themePalette] = p.name }
     suspend fun setSpendCap(usd: Double) = edit { it[Keys.spendCap] = usd.coerceIn(0.0, 1000.0) }
     suspend fun setMorningNotify(on: Boolean) = edit { it[Keys.morningNotify] = on }
+    suspend fun setCalendarRead(on: Boolean) = edit { it[Keys.calendarRead] = on }
+    suspend fun setCalendarWrite(on: Boolean) = edit { it[Keys.calendarWrite] = on }
 
-    private suspend fun edit(block: (androidx.datastore.preferences.core.MutablePreferences) -> Unit) {
+    private suspend fun edit(block: (MutablePreferences) -> Unit) {
         context.dataStore.edit(block)
     }
 }

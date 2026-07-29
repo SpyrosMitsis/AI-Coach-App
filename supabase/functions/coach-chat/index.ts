@@ -23,6 +23,7 @@ import {
   extractJson,
   llmGenerateWithFallback,
 } from "../_shared/llm.ts";
+import { logGeneration, logLlmResult } from "../_shared/generation_log.ts";
 import { computeRecovery } from "../_shared/recovery.ts";
 import { applyFallbackFitness } from "../_shared/load.ts";
 import {
@@ -33,10 +34,32 @@ import {
   updateUserDoc,
 } from "../_shared/agent_memory.ts";
 import { corsHeaders } from "../_shared/cors.ts";
-import { COACH_SYSTEM_PROMPT, finalizeInstruction, freshnessWord, recoveryWord, trainingPhase } from "../_shared/prompt.ts";
+import { injuriesText, profileFactsBlock } from "../_shared/profile.ts";
+import {
+  COACH_SYSTEM_PROMPT,
+  effortWord,
+  finalizeInstruction,
+  freshnessWord,
+  loadWord,
+  recoveryWord,
+  trainingPhase,
+} from "../_shared/prompt.ts";
 import type { LlmProvider } from "../_shared/types.ts";
-import { executeTool, nativeToolDefs, toolCatalogPrompt } from "../_shared/coach_tools.ts";
-import { looksLikeStall } from "../_shared/coach_eval.ts";
+import {
+  type AppSettingChange,
+  executeTool,
+  nativeToolDefs,
+  toolCatalogPrompt,
+  validateAppSettings,
+} from "../_shared/coach_tools.ts";
+import {
+  callBudget,
+  cleanReply,
+  talksWithoutActing,
+  shouldUpdateKnowledge,
+  stripDashes,
+} from "../_shared/coach_eval.ts";
+import { dashScrubber, finalLegStream } from "../_shared/coach_stream.ts";
 import { runNativeToolLoop, supportsNativeTools } from "../_shared/llm_native_tools.ts";
 
 // Tool-use protocol appended to the coach system prompt for chat mode. The
@@ -49,12 +72,19 @@ RULES:
 - NEVER ask the athlete to describe past workouts, sessions, or numbers you can look up yourself. Questions like "how did my last workouts go?" mean: call get_recent_activities and get_execution_analysis (plus get_strength_summary for lifting), then answer from the data.
 - DRIVE the task to completion in this turn. When the athlete's message already asks for or agrees to an action (e.g. "plan my week and put it on my calendar", "make me today's workout", "apply that"), TAKE the action (plan_week, generate_workout, move_workout, set_goal_race) now, don't stop to ask "shall I?" again. Then confirm what you did and why.
 - NEVER promise an action instead of performing it. There is only THIS turn, the athlete cannot grant you a "next turn", so phrases like "I'll adjust your plan", "let me review your week", "I will proceed with these adjustments", "I'm going to update…", or "give me a moment" are FORBIDDEN unless you call the matching tool in this same turn. If you intend to change the plan, call plan_week / generate_workout / move_workout / set_goal_race NOW, read back the result, and report what you DID in the past tense, never what you will do.
+- REPORT WHAT THE TOOL RETURNED, NOT WHAT YOU ASKED FOR. Every write tool returns week_now: the athlete's calendar AS IT STANDS AFTER that write. Describe the LAST week_now you were given, never an earlier one and never what you intended. If you scheduled sessions and then cleared days, week_now shows what actually survived. set_rest_day also returns cleared, naming the sessions it deleted: if it names something you just created, say so instead of describing the plan you meant to leave behind. If the result differs from what you intended, say what really happened, do not describe your intention as though it came true. The athlete is looking at the same calendar you just wrote.
 - A request that signals intent IS consent to act. "I have an exam until June 30, adjust my plan", "lighten this week", "move my long run" all mean: do it now. Don't re-ask. For a destructive overwrite (regenerating an existing/partly-locked week, changing a goal-race date) just give a one-line heads-up of what you replaced as part of the report, don't stop to ask first.
 - Only pause to ask first when the action is genuinely ambiguous AND unsignalled. When you do ask, ask once and propose a specific default.
 - Don't end a turn by handing trivial work back ("want me to schedule it?") when the request already implied yes, just do it and report.
+- GOALS AND RACES. When the athlete names an event and a date, call set_goal_race with everything they gave you: name, date, sport, distance, priority and any target. ALWAYS send distance as a plain event distance ("Marathon", "Half marathon", "10K", "70.3", "Ironman"), never a target time: it is what the feasibility check reads, and "sub 4 hours" tells it nothing. Use priority A for the goal they are actually training for, B or C for tune-up events. Saving a goal is one call, not a conversation about which field goes where.
+- A goal with NO firm date ("a marathon next spring", "sometime in the autumn") cannot be saved, because the date drives phase, taper and every week you plan. Ask them for the date in one short question and stop there. Do not narrate that you are about to go and look something up, and never invent a plausible date.
+- HONESTY ABOUT WHAT IS ACHIEVABLE. set_goal_race returns a feasibility verdict computed from their real volume, longest recent session and chronic load; assess_goal gives the same verdict without saving anything. If push_back is true, DO NOT plan a training block, do not call plan_week, and do not congratulate them on the goal. Tell them plainly that the timeline does not work, quote the specific evidence (their weekly volume against what the event needs, their longest run against its long day, the weeks available against the weeks required), and offer the suggested alternative. Be warm and direct, never preachy: you are the coach who tells them the truth, not the one who lets them get hurt. If they hear you out and still want it, respect that, say once that you think it is a bad idea, then help them do it as safely as possible.
+- A "stretch" verdict is not a veto. Mention the risk in one clause and carry on.
+- DROPPING A GOAL. When the athlete says they are not doing an event any more, call remove_goal_race. Never say a goal is gone without having called it: there is no other way to remove one, and a goal you only said you deleted stays on their Home screen and comes back. Read what it returns. If removed_count is 0, tell them nothing matched instead of confirming, and check the name with get_profile.
 - Call remember when the athlete shares a durable preference, constraint, or injury.
+- Call set_training_pause when the athlete says they're stopping/pausing training for a stretch WITH a return date (travel, illness, work crunch, "I'm going to X until Y"). This is what actually stops plan_week from scheduling sessions in that window, do not rely on remember alone for this. Call resume_training if they say they're back early.
 - Be efficient: a few targeted reads, then act/answer. You have at most 6 tool calls per turn.
-- Final messages are warm but concise, and sound like a human coach. NOT a stats readout. Translate the data into plain language ("you're a bit run-down", "you're fresh"); don't recite raw metrics like "CTL 7, ATL 14, TSB -7, readiness 57/100". Quote a number only when it's directly actionable (a target pace, a working weight). End with what you did or one clear next step.`;
+- Your final message follows the Voice and Shape rules already given in the system prompt.`;
 
 // System prompt suffix when the provider has native tool calling.
 const NATIVE_TOOL_PREAMBLE = `
@@ -76,22 +106,22 @@ ${TOOL_RULES}`;
 
 const DAY = 86_400_000;
 
-// The JSON tool protocol occasionally leaks its envelope into the final reply
-// (fenced JSON, or {"action":"final","message":...} as raw text). Scrub it
-// server-side so leaked protocol never reaches the client or the saved thread.
-function cleanReply(text: string): string {
-  let t = text.trim();
-  const fence = t.match(/^```(?:json)?\s*([\s\S]*?)```$/i);
-  if (fence) t = fence[1].trim();
-  if (t.startsWith("{")) {
-    try {
-      const o = JSON.parse(t) as Record<string, unknown>;
-      const m = o.message ?? o.reply ?? o.final;
-      if (typeof m === "string" && m.trim()) return m.trim();
-    } catch { /* not JSON, keep as-is */ }
-  }
-  return t;
-}
+// How often the SSE stream emits a keepalive comment while the agentic loop is
+// still thinking. Well under any client read timeout or proxy idle timeout.
+const HEARTBEAT_MS = 10_000;
+
+// One coach turn can fan out across three legs: the native tool loop, the
+// JSON-protocol fallback when that yields no text, and one anti-stall retry that
+// replays BOTH. Left to themselves those stack to ~24 sequential provider calls,
+// double the ~12 that docs/LLM_COSTS.md prices the hosted caps against. The
+// budget below is per TURN and shared by every leg, so the documented worst case
+// is the real one.
+const NATIVE_MAX_STEPS = 6;
+const PROTOCOL_MAX_STEPS = 6;
+const MAX_LLM_CALLS_PER_TURN = 12;
+
+// callBudget/cleanReply live in _shared/coach_eval.ts (tested there) alongside
+// the other pure coach-quality helpers, instead of trapped here untested.
 
 // Tools that mutate the athlete's plan/calendar. The anti-stall guard uses this
 // to tell "the coach actually acted" from "the coach only talked about acting".
@@ -100,8 +130,18 @@ const WRITE_TOOLS = new Set([
   "generate_workout",
   "move_workout",
   "set_goal_race",
+  "remove_goal_race",
   "set_rest_day",
   "make_easier",
+  "log_stretch_session",
+  "set_training_pause",
+  "resume_training",
+  // Mutates the profile, not the calendar: counts as "acted" for the
+  // anti-stall guard and write-dedup, but the CLIENT's write set deliberately
+  // excludes it (no calendar result card for saving an FTP).
+  "update_profile",
+  // Applied on the device, not the DB, but it's still "the coach acted".
+  "update_app_settings",
 ]);
 
 // The stall heuristic ("promised a plan change instead of calling the tool")
@@ -110,8 +150,9 @@ const WRITE_TOOLS = new Set([
 
 const STALL_NUDGE =
   "You described an action but did not perform it, no tool was called this turn. " +
-  "If you intend to change the plan, call the tool NOW (plan_week / generate_workout / move_workout / set_rest_day / make_easier / set_goal_race), read the result, and report what you DID in the past tense. " +
-  "If no change is actually needed, answer plainly without promising any future work.";
+  "Saying you already did it is worse than promising to: the athlete's plan is unchanged and they now believe otherwise. " +
+  "If the change should happen, call the tool NOW (plan_week / generate_workout / move_workout / set_rest_day / make_easier / set_goal_race / remove_goal_race), read the result, and report what you DID. " +
+  "If no change is actually needed, answer plainly, and do not claim or promise one.";
 
 // Supabase Edge runtime keeps the worker alive for promises passed to
 // EdgeRuntime.waitUntil even if the client disconnects mid-stream — without it
@@ -129,23 +170,9 @@ function waitUntil(p: Promise<unknown>) {
 // summary (see persistThread), so old context is COMPRESSED, not lost.
 const trimThread = (msgs: ChatMessage[]): ChatMessage[] => compressThread(msgs).kept;
 
-// Durable facts worth remembering tend to mention these. We only spend a token
-// budget on knowledge-extraction when the latest user turn plausibly carries one.
-const KNOWLEDGE_HINTS =
-  /\b(injur|hurt|pain|sore|tendin|strain|sprain|knee|shoulder|back|hip|ankle|wrist|elbow|equipment|dumbbell|barbell|kettlebell|machine|rack|gym|home|treadmill|don'?t have|no access|only have|prefer|hate|dislike|avoid|can'?t|cannot|unable|allerg|vegan|schedule|mornings?|evenings?|nights?|work|travel|busy|recover)/i;
-
-// First-person declaratives often carry durable preferences/constraints without
-// a hint keyword ("I only train twice a week", "my coach said no deadlifts").
-const SELF_STATEMENT =
-  /\b(i|my)\b.{0,40}\b(only|usually|always|never|tend to|can'?t|cannot|won'?t|prefer|like|love|hate|need|have to|train|do|avoid|stick to|coach|physio|doctor)\b/i;
-
-// Decide whether to run the (background, LLM-backed) knowledge maintainer: on a
-// keyword hint, on a first-person declarative, or periodically as a safety net
-// so an oddly-phrased durable fact still lands within a few turns.
-function shouldUpdateKnowledge(lastUser: string, userTurns: number): boolean {
-  return KNOWLEDGE_HINTS.test(lastUser) || SELF_STATEMENT.test(lastUser) ||
-    (userTurns > 0 && userTurns % 4 === 0);
-}
+// shouldUpdateKnowledge (+ its KNOWLEDGE_HINTS/SELF_STATEMENT regexes) lives in
+// _shared/coach_eval.ts (tested there) — decides whether to run the
+// background, LLM-backed knowledge maintainer this turn.
 
 const log = logger("coach-chat");
 
@@ -176,7 +203,6 @@ Deno.serve(async (req) => {
       .eq("id", userId)
       .single();
     const onboarding = (profile?.onboarding ?? {}) as Record<string, unknown>;
-    const existingKnowledge = (profile?.coach_knowledge ?? "") as string;
     const agentMemory = memoryFromProfile(profile);
 
     // Running summary of earlier turns archived out of the active window — lets
@@ -197,7 +223,14 @@ Deno.serve(async (req) => {
 
     const since28 = new Date(Date.now() - 28 * DAY).toISOString().slice(0, 10);
     const since7 = new Date(Date.now() - 7 * DAY).toISOString().slice(0, 10);
-    const today = new Date().toISOString().slice(0, 10);
+    // CLAUDE.md: "today" is the CLIENT's local date, never UTC. This function
+    // runs in UTC and the athlete does not, so a server-computed today is the
+    // wrong day for part of every 24 hours. Clients send theirs; fall back to
+    // UTC only for older ones that do not.
+    const clientToday = typeof body.today === "string" && /^\d{4}-\d{2}-\d{2}$/.test(body.today)
+      ? body.today
+      : null;
+    const today = clientToday ?? new Date().toISOString().slice(0, 10);
     // Monday of the current week, for the inline adherence line.
     const weekStart = (() => {
       const d = new Date(today);
@@ -271,24 +304,29 @@ Deno.serve(async (req) => {
 
     // Digest of the most recent sessions so "how did my workouts go?" never
     // gets "I can't see your workouts" — deeper detail still comes from tools.
+    // Distance stays a number (athletes ask about it directly and it is
+    // actionable); per-session TSS becomes a word, because six raw load figures
+    // per turn is exactly the metric dump the voice rule then has to argue the
+    // model out of reciting.
     const recentLines = a.slice(0, 6).map((r) => {
       const km = r.distance_m ? ` ${(r.distance_m / 1000).toFixed(1)} km` : "";
-      const tss = r.tss != null ? ` · ${Math.round(r.tss)} TSS` : "";
-      return `${r.date} ${r.type ?? "session"}${km}${tss}`;
+      const effort = effortWord(r.tss);
+      return `${r.date} ${r.type ?? "session"}${km}${effort ? `, ${effort}` : ""}`;
     });
 
     const context =
-      `ATHLETE CONTEXT (background for YOUR reasoning, interpret it in plain language; never read these numbers back to the athlete as a list):
+      `ATHLETE CONTEXT (background for your reasoning only):
 - Name: ${profile?.display_name ?? "athlete"}; today is ${today}
 - Goal: ${onboarding.goal ?? "not set"}; experience: ${onboarding.experience ?? "unknown"}
 - Available days: ${(onboarding.days as string[] | undefined)?.join(", ") ?? "unknown"}; session length: ${onboarding.session_duration ?? "?"} min
-- Equipment: ${onboarding.equipment ?? "unknown"}; injuries: ${onboarding.injury_history ?? "none noted"}
-- Form/freshness: ${freshnessWord(ctl - atl)} (TSB ${(ctl - atl).toFixed(0)})
-- Recovery today: ${recoveryWord(recovery.band)} (${recovery.score}/100), trend ${recoveryTrendWord}; weekly load so far ~${weeklyTss} TSS, background only, don't quote it unless they ask
+- Equipment: ${onboarding.equipment ?? "unknown"}; injuries: ${injuriesText(onboarding) || "none noted"}
+- Form/freshness: ${freshnessWord(ctl - atl)}
+- Recovery today: ${recoveryWord(recovery.band)}, trend ${recoveryTrendWord}; load so far ${loadWord(weeklyTss, onboarding.weekly_tss_target as number | undefined)}
 - This week: ${adherenceLine}
 - Today's plan: ${todayLine}
 - Last completed sessions (newest first): ${recentLines.join(" | ") || "none recorded in the last 28 days"}
 - ~${weeklyKm.toFixed(0)} km/week recently; training phase: ${trainingPhase(weeksToGoal)}` +
+      profileFactsBlock(onboarding, profile?.display_name as string | undefined) +
       memoryDocsBlock(agentMemory) +
       summaryBlock;
 
@@ -311,30 +349,87 @@ Deno.serve(async (req) => {
     if (mode === "chat") {
       const auth = req.headers.get("Authorization") ?? "";
 
-      const runAgentic = async (onTool?: (name: string) => void) => {
+      const runAgentic = async (
+        onTool?: (name: string) => void,
+        // Present only on the streaming transport with a client new enough to
+        // understand resets (streamProtocol >= 2). Absent means today's
+        // behaviour: buffer the whole turn, emit one token event at the end.
+        stream?: { onDelta: (t: string) => void; onToolStart: () => void },
+      ) => {
         const toolsUsed: string[] = [];
+        // A remember call is a stronger signal a durable fact just changed than
+        // any regex on the user's message text — see rememberCalled below.
+        let rememberCalledThisTurn = false;
+        // update_app_settings changes ride back to the device with the reply
+        // (they live in the phone's DataStore, so only the app can apply them).
+        const settingsChanges: AppSettingChange[] = [];
         let provider: LlmProvider | string = chain[0] ?? "";
         // Token usage summed across every LLM call this turn made (native loop +
         // JSON-protocol steps + the anti-stall retry) → logged for cost tracking.
         let promptTokens = 0;
         let completionTokens = 0;
         let model = "";
+        // Shared by every leg of this turn, including the anti-stall replay.
+        const spendGuard = callBudget(MAX_LLM_CALLS_PER_TURN);
         // State-changing tools are made idempotent within a turn: the native
         // loop can fire a write tool and then exhaust maxSteps (returning empty
         // text), which makes generateOnce replay the JSON protocol from the
         // original thread and call the same tool again. Returning the first
         // observation instead of re-executing prevents the double-write.
         const writeCache = new Map<string, Promise<string>>();
+        // Reads are memoized for the turn too. Measured across 69 real turns,
+        // 28 of 181 read calls were EXACT duplicates within a single turn (the
+        // same get_profile or get_fitness twice), and each one costs a provider
+        // round trip plus roughly 6k prompt tokens, because every later leg
+        // re-sends the whole observation list.
+        //
+        // Cleared by any write: a cached get_planned_week served after plan_week
+        // ran would hand the model a week that no longer exists, which is the
+        // exact class of bug this session has been chasing. Correctness first,
+        // saving second.
+        const readCache = new Map<string, Promise<string>>();
         const exec = (name: string, targs: Record<string, unknown>) => {
-          const writeKey = WRITE_TOOLS.has(name) ? `${name}:${JSON.stringify(targs)}` : null;
+          const isWrite = WRITE_TOOLS.has(name);
+          const writeKey = isWrite ? `${name}:${JSON.stringify(targs)}` : null;
           if (writeKey) {
             const prior = writeCache.get(writeKey);
             if (prior) { log.warn("dedup_write", { tool: name }); return prior; }
           }
+          const readKey = name.startsWith("get_") ? `${name}:${JSON.stringify(targs)}` : null;
+          if (readKey) {
+            const prior = readCache.get(readKey);
+            if (prior) {
+              log.info("dedup_read", { tool: name });
+              // Still counted as used: it is what the coach consulted, and the
+              // progress row and follow-up chips both read this list.
+              toolsUsed.push(name);
+              try { onTool?.(name); } catch { /* never block on UI events */ }
+              return prior;
+            }
+          }
+          // A write invalidates everything read before it.
+          if (isWrite) readCache.clear();
           toolsUsed.push(name);
+          if (name === "remember") rememberCalledThisTurn = true;
           try { onTool?.(name); } catch { /* never block on UI events */ }
-          const obs = executeTool(admin, userId, auth, name, targs);
+          // Device-applied settings: validate here, queue for the reply, and
+          // hand the model an observation it can report as done.
+          const obs = name === "update_app_settings"
+            ? (() => {
+              const { changes, rejected } = validateAppSettings(targs);
+              settingsChanges.push(...changes);
+              return Promise.resolve(JSON.stringify({
+                ok: changes.length > 0,
+                applied_on_device: changes,
+                ...(rejected.length ? { rejected } : {}),
+              }));
+            })()
+            // clientToday, not today: a write must only be refused for being in
+            // the past when we KNOW the athlete's date. With the UTC fallback,
+            // executeTool applies a day of slack instead.
+            : executeTool(admin, userId, auth, name, targs, clientToday ?? undefined);
           if (writeKey) writeCache.set(writeKey, obs);
+          if (readKey) readCache.set(readKey, obs);
           return obs;
         };
 
@@ -353,7 +448,7 @@ Deno.serve(async (req) => {
         // to the JSON protocol. Tool side effects accumulate into toolsUsed.
         const generateOnce = async (thread: ChatMessage[]): Promise<string> => {
           let replyText = "";
-          if (keyedProvider && keyedKey && supportsNativeTools(keyedProvider)) {
+          if (keyedProvider && keyedKey && supportsNativeTools(keyedProvider) && !spendGuard.exhausted()) {
             try {
               const out = await runNativeToolLoop({
                 provider: keyedProvider,
@@ -363,8 +458,15 @@ Deno.serve(async (req) => {
                 messages: trimThread(thread),
                 tools: nativeToolDefs(),
                 exec,
-                maxSteps: 6,
+                // Never let this leg alone outspend what's left of the turn.
+                maxSteps: Math.min(NATIVE_MAX_STEPS, spendGuard.remaining()),
+                hosted,
+                feature: "chat",
+                stream: !!stream,
+                onDelta: stream?.onDelta,
+                onToolStart: stream?.onToolStart,
               });
+              spendGuard.spend(out.steps);
               provider = keyedProvider;
               replyText = out.text;
               promptTokens += out.promptTokens;
@@ -382,10 +484,12 @@ Deno.serve(async (req) => {
 
           const chatSystem = `${COACH_SYSTEM_PROMPT}\n\n${context}${TOOL_PROTOCOL}`;
           const work: ChatMessage[] = trimThread(thread);
-          for (let step = 0; !replyText.trim() && step < 6; step++) {
+          for (let step = 0; !replyText.trim() && step < PROTOCOL_MAX_STEPS; step++) {
+            if (spendGuard.exhausted()) break;
             const step_out = await llmGenerateWithFallback(
-              chain, { messages: work, systemPrompt: chatSystem, jsonMode: true }, resolveKey, resolveModel, resolveBaseUrl,
+              chain, { messages: work, systemPrompt: chatSystem, jsonMode: true, hosted, feature: "chat" }, resolveKey, resolveModel, resolveBaseUrl,
             );
+            spendGuard.spend();
             provider = step_out.provider;
             promptTokens += step_out.promptTokens;
             completionTokens += step_out.completionTokens;
@@ -415,12 +519,17 @@ Deno.serve(async (req) => {
         let replyText = await generateOnce(messages);
 
         // Anti-stall guard: the model sometimes PROMISES a change ("I'll adjust
-        // your plan", "let me review…") and ends the turn without calling any
-        // write tool — exactly the "it talks but never does it" failure. Give it
-        // ONE corrective turn to act now or finalize cleanly. Capped at a single
-        // retry and gated on no write-tool having run, so it can't loop or pile
-        // onto rate limits.
-        if (!toolsUsed.some((t) => WRITE_TOOLS.has(t)) && looksLikeStall(replyText)) {
+        // your plan") or, worse, REPORTS one it never made ("I moved tomorrow's
+        // run to Saturday"), and ends the turn without calling any write tool.
+        // Both are the "it talks but never does it" failure; the past-tense one
+        // is the more damaging, since the athlete believes their plan changed.
+        // Give it ONE corrective turn to act now or finalize cleanly. Capped at
+        // a single retry and gated on no write-tool having run, so it can't loop
+        // or pile onto rate limits.
+        if (
+          !toolsUsed.some((t) => WRITE_TOOLS.has(t)) && talksWithoutActing(replyText) &&
+          !spendGuard.exhausted()
+        ) {
           const corrected: ChatMessage[] = [
             ...messages,
             { role: "assistant", content: replyText },
@@ -435,32 +544,34 @@ Deno.serve(async (req) => {
 
         // Log this turn's LLM spend (feature=chat) — the agentic loop's calls were
         // previously invisible in the diagnostics. Background; never blocks the reply.
+        log.info("turn_done", {
+          llmCalls: spendGuard.used(),
+          budget: MAX_LLM_CALLS_PER_TURN,
+          tools: toolsUsed.length,
+          promptTokens,
+          completionTokens,
+        });
         if (promptTokens + completionTokens > 0) {
-          const cost = estimateCostUsd(
-            provider as LlmProvider, promptTokens, completionTokens,
-            customPriceFromProfile(provider, profile), model,
-          );
-          waitUntil((async () => {
-            try {
-              await admin.from("generation_logs").insert({
-                user_id: userId,
-                feature: "chat",
-                hosted,
-                provider,
-                model,
-                prompt_tokens: promptTokens,
-                completion_tokens: completionTokens,
-                estimated_cost_usd: cost,
-                tools_used: toolsUsed.length ? toolsUsed : null,
-                parsed_ok: true,
-              });
-            } catch { /* best effort */ }
-          })());
+          waitUntil(logGeneration(admin, userId, {
+            feature: "chat",
+            hosted,
+            provider,
+            model,
+            promptTokens,
+            completionTokens,
+            profile,
+            toolsUsed,
+          }));
         }
-        return { replyText, toolsUsed, provider };
+        return { replyText, toolsUsed, provider, settingsChanges, rememberCalledThisTurn };
       };
 
-      const persistThread = async (replyText: string): Promise<string | null> => {
+      // Incognito turns leave no trace: no conversation row, no knowledge
+      // update, no summary. The reply itself still uses the full profile.
+      const incognito = body.incognito === true;
+
+      const persistThread = async (replyText: string, rememberCalled: boolean): Promise<string | null> => {
+        if (incognito) return null;
         const fullThread = [...messages, { role: "assistant", content: replyText }];
         let convId: string | null = body.conversationId ?? null;
         try {
@@ -474,19 +585,26 @@ Deno.serve(async (req) => {
             convId = conv?.id ?? null;
           }
         } catch { /* best effort */ }
-        const bundle = { chain, resolveKey, resolveModel, resolveBaseUrl };
+        // hosted + pricing must ride along: these fire real LLM calls on the
+        // same key this turn used, and hosted_spend() meters what they cost.
+        const bundle = { chain, resolveKey, resolveModel, resolveBaseUrl, hosted, pricing: profile };
         const lastUser = [...messages].reverse().find((m) => m.role === "user")?.content ?? "";
         const userTurns = (fullThread as ChatMessage[]).filter((m) => m.role === "user").length;
-        if (shouldUpdateKnowledge(lastUser, userTurns)) {
+        // A remember call this turn forces reconciliation too, regardless of
+        // whether the user's message text happens to match a hint/self-
+        // statement regex — otherwise a contradicting fact saved via `remember`
+        // can sit unreconciled in coach_knowledge (injected as "HARD RULES" into
+        // every future prompt) until an unrelated trigger next fires.
+        if (shouldUpdateKnowledge(lastUser, userTurns) || rememberCalled) {
           // Slow secondary LLM call — never block the response on it.
-          waitUntil(updateUserDoc(admin, userId, existingKnowledge, fullThread as ChatMessage[], bundle));
+          waitUntil(updateUserDoc(admin, userId, fullThread as ChatMessage[], bundle));
         }
         // Fold any turns now archived out of the active window into the running
         // summary — background, so the next turn stays coherent for free.
         const { dropped } = compressThread(fullThread as ChatMessage[]);
         if (dropped.length && convId) {
           waitUntil((async () => {
-            const s = await summarizeDropped(dropped, bundle);
+            const s = await summarizeDropped(admin, userId, dropped, bundle);
             if (s) await admin.from("coach_conversations").update({ summary: s }).eq("id", convId).eq("user_id", userId);
           })());
         }
@@ -500,12 +618,66 @@ Deno.serve(async (req) => {
             const send = (obj: unknown) => {
               try { controller.enqueue(encoder.encode(`data: ${JSON.stringify(obj)}\n\n`)); } catch { /* disconnected */ }
             };
+            // The agentic loop can think for a long time before it has anything
+            // to say, and to a socket "quiet" is indistinguishable from "dead" —
+            // that silence is what tripped the client's read timeout. An SSE
+            // comment keeps the connection warm and costs nothing: clients skip
+            // every line that isn't "data:", so old builds ignore it too.
+            const ping = setInterval(() => {
+              try { controller.enqueue(encoder.encode(": ping\n\n")); } catch { /* disconnected */ }
+            }, HEARTBEAT_MS);
             try {
-              const { replyText, toolsUsed, provider } = await runAgentic((name) => send({ tool: name }));
-              send({ token: replyText });
+              // Protocol 1 clients concatenate {token} events but silently
+              // ignore {reset}, which the invariant below can still emit. So
+              // this stays opt-in by version: an old APK keeps exactly the
+              // buffer-then-one-token behaviour, and this function can deploy
+              // before the app ships.
+              const proto = Number(body.streamProtocol) || 1;
+              const spec = proto >= 2
+                ? finalLegStream((e) => send(e.reset ? { reset: true } : { token: e.text }))
+                : null;
+              // Deltas go through the same dash rule cleanReply applies to the
+              // finished reply. Without this the two disagree on almost every
+              // reply and the invariant below resets each one, which would make
+              // streaming visibly worse than not streaming.
+              const scrub = dashScrubber(stripDashes);
+
+              const { replyText, toolsUsed, provider, settingsChanges, rememberCalledThisTurn } =
+                await runAgentic(
+                  (name) => send({ tool: name }),
+                  spec
+                    ? {
+                      onDelta: (t) => spec.onDelta(scrub.push(t)),
+                      onToolStart: () => spec.onToolStart(),
+                    }
+                    : undefined,
+                );
+
+              if (spec) {
+                spec.onDelta(scrub.flush());
+                spec.endMessage();
+                // INVARIANT: what the client displays must equal what gets
+                // persisted. replyText has been through cleanReply (fence
+                // stripping, JSON unwrapping, dash removal) and the empty-reply
+                // fallback, none of which the raw deltas went through, so the
+                // two can legitimately differ. Reconcile rather than hope.
+                if (spec.committed() !== replyText) {
+                  send({ reset: true });
+                  send({ token: replyText });
+                }
+                if (spec.discarded() > 0) log.info("stream_discarded", { chars: spec.discarded() });
+              } else {
+                send({ token: replyText });
+              }
               const saveAndFinish = (async () => {
-                const convId = await persistThread(replyText);
-                send({ done: true, conversation_id: convId, provider, tools_used: toolsUsed });
+                const convId = await persistThread(replyText, rememberCalledThisTurn);
+                send({
+                  done: true,
+                  conversation_id: convId,
+                  provider,
+                  tools_used: toolsUsed,
+                  ...(settingsChanges.length ? { settings_changes: settingsChanges } : {}),
+                });
                 try { controller.close(); } catch { /* already closed */ }
               })();
               waitUntil(saveAndFinish);
@@ -513,6 +685,8 @@ Deno.serve(async (req) => {
             } catch (e) {
               send({ error: String(e instanceof Error ? e.message : e) });
               try { controller.close(); } catch { /* already closed */ }
+            } finally {
+              clearInterval(ping);
             }
           },
         });
@@ -521,34 +695,30 @@ Deno.serve(async (req) => {
         });
       }
 
-      const { replyText, toolsUsed, provider } = await runAgentic();
-      const convId = await persistThread(replyText);
-      return json({ reply: replyText, conversation_id: convId, provider, tools_used: toolsUsed });
+      const { replyText, toolsUsed, provider, settingsChanges, rememberCalledThisTurn } = await runAgentic();
+      const convId = await persistThread(replyText, rememberCalledThisTurn);
+      return json({
+        reply: replyText,
+        conversation_id: convId,
+        provider,
+        tools_used: toolsUsed,
+        ...(settingsChanges.length ? { settings_changes: settingsChanges } : {}),
+      });
     }
 
     const outcome = await llmGenerateWithFallback(
       chain,
-      { messages: turns, systemPrompt, jsonMode: mode === "finalize" },
+      { messages: turns, systemPrompt, jsonMode: mode === "finalize", hosted, feature: mode === "finalize" ? "finalize" : "chat" },
       resolveKey,
       resolveModel,
       resolveBaseUrl,
     );
-    const cost = estimateCostUsd(outcome.provider, outcome.promptTokens, outcome.completionTokens, customPriceFromProfile(outcome.provider, profile), outcome.model);
-    waitUntil((async () => {
-      try {
-        await admin.from("generation_logs").insert({
-          user_id: userId,
-          feature: mode === "finalize" ? "finalize" : "chat",
-          hosted,
-          provider: outcome.provider,
-          model: outcome.model,
-          prompt_tokens: outcome.promptTokens,
-          completion_tokens: outcome.completionTokens,
-          estimated_cost_usd: cost,
-          parsed_ok: true,
-        });
-      } catch { /* best effort */ }
-    })());
+    // Logged by the helper; also recomputed here because the response reports it.
+    const cost = estimateCostUsd(
+      outcome.provider, outcome.promptTokens, outcome.completionTokens,
+      customPriceFromProfile(outcome.provider, profile), outcome.model,
+    );
+    waitUntil(logLlmResult(admin, userId, mode === "finalize" ? "finalize" : "chat", hosted, outcome, profile));
 
     // --- persist the conversation thread -----------------------------------
     const fullThread = [...messages, { role: "assistant", content: outcome.text }];
@@ -575,7 +745,7 @@ Deno.serve(async (req) => {
       const userTurns = (fullThread as ChatMessage[]).filter((m) => m.role === "user").length;
       if (shouldUpdateKnowledge(lastUser, userTurns)) {
         // Slow secondary LLM call — don't block the reply on it.
-        waitUntil(updateUserDoc(admin, userId, existingKnowledge, fullThread as ChatMessage[], { chain, resolveKey, resolveModel, resolveBaseUrl }));
+        waitUntil(updateUserDoc(admin, userId, fullThread as ChatMessage[], { chain, resolveKey, resolveModel, resolveBaseUrl, hosted, pricing: profile }));
       }
       return json({ reply: outcome.text, conversation_id: conversationId, provider: outcome.provider, estimated_cost_usd: cost });
     }

@@ -118,18 +118,22 @@ Code side is in the repo (`verify-purchase` / `play-rtdn` edge fns, migration 35
 
 ### Cost safety (the "can't go in the red" rails)
 
-The quota gate lives in `_shared/quota.ts` and fails closed. Layers, inner to
-outer:
+Full detail, including how cost is calculated and how to read the spend report:
+**`docs/LLM_COSTS.md`**. Summary: the quota gate lives in `_shared/quota.ts` and
+fails closed. Layers, inner to outer:
 
-- **Per-call ceiling**: every adapter caps output at 2,500 tokens (invariant
-  documented in `_shared/llm.ts`). One hosted call on a flash/mini-class model
-  costs ~$0.01; a worst-case agentic chat turn (~12 calls) ~$0.12.
+- **Per-call ceiling**: output is capped per FEATURE by `OUTPUT_BUDGETS` in
+  `_shared/llm.ts` (chat 2,500 … plan 6,000), resolved through `maxTokensOf()` and
+  tunable via `WM_HOSTED_MAX_OUTPUT_TOKENS`. One hosted chat call on a
+  flash/mini-class model costs ~$0.01; a worst-case agentic chat turn is bounded
+  at `MAX_LLM_CALLS_PER_TURN` (12) calls, ~$0.09. See `docs/LLM_COSTS.md` for why
+  a single flat cap truncated week plans mid-JSON.
 - **Model class**: `HOSTED_LLM_MODEL` must stay flash/mini-class, e.g.
   `gemini-2.5-flash` or `gpt-5-mini`. Never an opus-class model: one agentic
   turn would cost ~$2 and the caps assume cents. (`entitlement.ts` warn-logs
   if the model id looks expensive.)
 - **Quota env** (suggested for ~€5/mo Pro, ~$4.60 net after Play's 15%):
-  `HOSTED_USER_HOURLY_CALLS=30`, `HOSTED_USER_DAILY_USD=0.20`,
+  `HOSTED_USER_HOURLY_CALLS=30`, `HOSTED_USER_DAILY_USD=0.25` (the code default),
   `HOSTED_USER_MONTHLY_USD=2` (the hard per-user loss bound),
   `HOSTED_GLOBAL_MONTHLY_USD` ≈ `10 + 2.5 × paying subscribers` (start 25,
   revisit at each ~10-subscriber milestone). Note: caps are checked before a
