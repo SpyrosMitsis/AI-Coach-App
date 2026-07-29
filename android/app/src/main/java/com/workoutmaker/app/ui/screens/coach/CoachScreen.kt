@@ -86,6 +86,7 @@ fun CoachScreen(vm: CoachViewModel = hiltViewModel(), onOpenCalendar: () -> Unit
     val banner by vm.banner.collectAsStateSafe()
     val liveStatus by vm.liveStatus.collectAsStateSafe()
     val actionWeek by vm.actionWeek.collectAsStateSafe()
+    val actionWeekAnchor by vm.actionWeekAnchor.collectAsStateSafe()
     val lastAction by vm.lastAction.collectAsStateSafe()
     val showReplan by vm.showReplan.collectAsStateSafe()
     val turnTools by vm.turnTools.collectAsStateSafe()
@@ -115,6 +116,7 @@ fun CoachScreen(vm: CoachViewModel = hiltViewModel(), onOpenCalendar: () -> Unit
             liveStatus = liveStatus,
             currentStep = currentStep,
             actionWeek = actionWeek,
+            actionWeekAnchor = actionWeekAnchor,
             lastAction = lastAction,
             showReplan = showReplan,
             turnTools = turnTools,
@@ -157,6 +159,7 @@ fun CoachContent(state: CoachState, on: CoachActions = CoachActions()) {
     val banner = state.banner
     val liveStatus = state.liveStatus
     val actionWeek = state.actionWeek
+    val actionWeekAnchor = state.actionWeekAnchor
     val lastAction = state.lastAction
     val showReplan = state.showReplan
     val turnTools = state.turnTools
@@ -327,16 +330,10 @@ fun CoachContent(state: CoachState, on: CoachActions = CoachActions()) {
                     Box(itemModifier) {
                         Bubble(msg, showAvatar = msg.role != prevRole, streaming = isStreamingTail)
                     }
-                }
-                // A failed turn gets a one-tap retry directly under it.
-                val last = messages.lastOrNull()
-                if (!sending && last?.role == "assistant" && last.content.startsWith("⚠️")) {
-                    item {
-                        TextButton(onClick = { on.retryLast() }) { Text("Try again") }
-                    }
-                }
-                if (!revealing) actionWeek?.let { week ->
-                    item {
+                    // Anchored to the specific turn that produced it, so it stays put
+                    // in the transcript as later turns are added, instead of always
+                    // trailing the newest message.
+                    if (!revealing && actionWeekAnchor == i) actionWeek?.let { week ->
                         CalendarResultCard(
                             week,
                             changed = lastAction,
@@ -346,6 +343,13 @@ fun CoachContent(state: CoachState, on: CoachActions = CoachActions()) {
                             onReplan = { on.rePlanWeek() },
                             onDismiss = { on.dismissActionCard() },
                         )
+                    }
+                }
+                // A failed turn gets a one-tap retry directly under it.
+                val last = messages.lastOrNull()
+                if (!sending && last?.role == "assistant" && last.content.startsWith("⚠️")) {
+                    item {
+                        TextButton(onClick = { on.retryLast() }) { Text("Try again") }
                     }
                 }
                 if (sending) {

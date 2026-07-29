@@ -27,6 +27,8 @@ data class CoachState(
     /** The single tool line shown while the coach works, or null for the dots. */
     val currentStep: CoachViewModel.ToolStep? = null,
     val actionWeek: List<PlannedWorkout>? = null,
+    /** Index into [messages] the calendar result card is anchored to, or null. */
+    val actionWeekAnchor: Int? = null,
     val lastAction: String? = null,
     val showReplan: Boolean = false,
     /**

@@ -74,6 +74,10 @@ class CoachViewModel @Inject constructor(
     fun dismissFollowUps() { followUps.value = emptyList() }
     // After the coach changes the calendar: this week's sessions for the result card.
     val actionWeek = MutableStateFlow<List<PlannedWorkout>?>(null)
+    // Index into [messages] of the assistant turn that produced [actionWeek] — the
+    // card renders inline at this position instead of always trailing the thread,
+    // so it stays where it was generated as the conversation continues past it.
+    val actionWeekAnchor = MutableStateFlow<Int?>(null)
     // Plain-language summary of the write actions the coach just took (card subtitle).
     val lastAction = MutableStateFlow<String?>(null)
     // Whether a full week was (re)planned this turn — gates the card's "Re-plan" escape hatch.
@@ -248,6 +252,7 @@ class CoachViewModel @Inject constructor(
 
     fun dismissActionCard() {
         actionWeek.value = null
+        actionWeekAnchor.value = null
         lastAction.value = null
         showReplan.value = false
     }
@@ -295,14 +300,15 @@ class CoachViewModel @Inject constructor(
             showReplan.value = writes.contains("plan_week")
             // Home and Calendar survive tab switches; tell them the plan moved.
             planChanges.emit("coach")
-        }
-        if (tools.any { it == "plan_week" || it == "generate_workout" || it == "move_workout" }) {
+            // Any write tool can change what's on the calendar (set_rest_day and
+            // make_easier used to be excluded here, so clearing a week to rest
+            // left the result card showing the pre-clear days).
             loadActionWeek()
         }
     }
 
-    // After plan_week / generate_workout / move_workout: show what's actually on
-    // the calendar now, fetched fresh from the source of truth.
+    // After a write tool: show what's actually on the calendar now, fetched fresh
+    // from the source of truth.
     private fun loadActionWeek() = viewModelScope.launch {
         runCatching {
             val monday = LocalDate.now().with(DayOfWeek.MONDAY)
@@ -310,7 +316,14 @@ class CoachViewModel @Inject constructor(
             repo.plannedWorkouts(monday.toString())
                 .filter { it.date <= sunday.toString() }
                 .sortedBy { it.date }
-        }.onSuccess { actionWeek.value = it }
+        }.onSuccess {
+            actionWeek.value = it
+            // Captured here, not in onToolsUsed: this fetch is a network round-trip
+            // that reliably outlasts the typewriter reveal, so by now the assistant's
+            // reply is already the true last entry in messages (append-only, see the
+            // itemsIndexed key comment in CoachScreen).
+            actionWeekAnchor.value = messages.value.lastIndex
+        }
     }
 
     // Chat history
@@ -358,6 +371,10 @@ class CoachViewModel @Inject constructor(
         // it again the moment the thread was reopened. Null suppresses it.
         turnTools.value = null
         showHistory.value = false
+        // A stale card/anchor from whatever thread was open before would otherwise
+        // point at the wrong message index in this (shorter) restored list.
+        actionWeek.value = null
+        actionWeekAnchor.value = null
     }
 
     /** Start a fresh thread. */
@@ -369,6 +386,8 @@ class CoachViewModel @Inject constructor(
         banner.value = null
         turnTools.value = null
         showHistory.value = false
+        actionWeek.value = null
+        actionWeekAnchor.value = null
     }
 
     fun send(text: String) {

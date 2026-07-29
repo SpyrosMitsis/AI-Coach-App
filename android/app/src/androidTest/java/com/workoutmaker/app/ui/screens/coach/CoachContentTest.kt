@@ -128,6 +128,40 @@ class CoachContentTest {
         compose.onAllNodesWithText(PROPOSAL_BANNER).assertCountEquals(0)
     }
 
+    // The original bug: the calendar result card was always the trailing item in
+    // the list, so it re-settled under whatever the newest message was. It must
+    // stay anchored to the turn that produced it (index 1 here) even once later
+    // turns push the "newest message" well past it.
+    @Test fun calendarCardStaysAnchoredPastLaterTurns() {
+        val messages = mutableStateOf(
+            listOf(ChatMessage("user", "clear the week"), ChatMessage("assistant", "Done.")),
+        )
+        compose.setContent {
+            WorkoutMakerTheme {
+                CoachContent(
+                    CoachState(
+                        messages = messages.value,
+                        actionWeek = emptyList(),
+                        actionWeekAnchor = 1,
+                        lastAction = "cleared the week",
+                    ),
+                )
+            }
+        }
+        // SectionLabel uppercases its text, so match the plain "View in
+        // calendar" button instead of the "✓ Updated your calendar" label.
+        compose.onNodeWithText("View in calendar").assertIsDisplayed()
+
+        // A later, unrelated turn arrives; the anchor is untouched (no write
+        // tool ran), same as the real ViewModel only reassigns it in loadActionWeek.
+        messages.value = messages.value + listOf(
+            ChatMessage("user", "how's my fitness?"),
+            ChatMessage("assistant", "Looking solid."),
+        )
+        compose.waitForIdle()
+        compose.onNodeWithText("View in calendar").assertIsDisplayed()
+    }
+
     private companion object {
         const val PROPOSAL_BANNER = "Coach proposed this but didn't apply it:"
     }
