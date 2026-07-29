@@ -28,7 +28,7 @@ scripts/dev.sh deno:check [fn ...]     # type-check functions (default: all)
 scripts/dev.sh fn:call <name> [json]   # drive an edge fn with a seeded-user JWT, print JSON
 scripts/dev.sh fn:logs <name>          # tail a deployed function's logs
 scripts/dev.sh fn:deploy <name ...>    # deploy to project ref
-scripts/dev.sh db:push                 # run pending migrations (asks first)
+scripts/dev.sh db:push                 # run pending migrations
 ```
 
 ## Gotchas (these bite every time)
@@ -101,8 +101,9 @@ scripts/dev.sh deno:test                       # 440+ shared tests
 scripts/dev.sh qa:test                          # QA driver's own tests
 scripts/dev.sh deno:check generate-workout …   # type-check before deploy
 scripts/dev.sh fn:deploy generate-workout coach-chat
-scripts/dev.sh db:push                          # migrations (confirm first)
+scripts/dev.sh db:push                          # run pending migrations
 ```
 
-There are pending migrations and function deploys tracked in my memory — confirm with the
-user before running `db:push` / `fn:deploy`.
+`db:push` / `fn:deploy` can be run directly, no per-call confirmation needed — type-check
+(`deno:check`) and run the shared test suite (`deno:test`) first, and deploy every function
+that imports a changed `_shared/` module, not just the one directly edited.
