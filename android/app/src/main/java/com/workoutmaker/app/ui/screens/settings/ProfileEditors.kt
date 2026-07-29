@@ -44,6 +44,8 @@ import com.workoutmaker.app.ui.theme.palette
 import androidx.compose.foundation.layout.ColumnScope
 import com.workoutmaker.app.data.StartingLift
 import com.workoutmaker.app.ui.theme.amberAccent
+import com.workoutmaker.app.ui.components.GroupedSection
+import com.workoutmaker.app.ui.components.SegmentedToggle
 
 // ===========================================================================
 // Stateless, ViewModel-agnostic profile editors. They take the current value
@@ -107,40 +109,40 @@ internal fun SportGoalsLevel(
     }
 }
 
-// Periodization: a plain-language choice (Steady vs Periodized) with a bar
-// chart of the athlete's own next 8 weeks under whichever option is selected.
-// Shared by onboarding (availability step, below the effort chips that set the
-// weekly target it visualizes) + Settings.
-@OptIn(ExperimentalLayoutApi::class)
+// Periodization: a plain-language choice (Steady vs Periodized). The 8-week
+// forecast chart it feeds is a SEPARATE composable (PeriodizationNumbers below)
+// so Settings can card-box "Progression" and "8-week forecast" as two distinct
+// sections; onboarding's Effort step just calls both in sequence, frameless.
 @Composable
 internal fun PeriodizationControl(
     periodized: Boolean,
     onChange: (Boolean) -> Unit,
-    // The athlete's own weekly TSS target, when they have set one. Drives the
-    // numbers graph; null falls back to a typical week.
+    // The athlete's own weekly TSS target, when they have set one. Unused here
+    // directly, kept for call-site symmetry with PeriodizationNumbers.
     weeklyTssTarget: Int? = null,
 ) {
-    Text("How should your weeks progress?", style = MaterialTheme.typography.labelLarge)
+    SegmentedToggle("Steady", "Periodized", right = periodized, onChange = onChange)
     Text(
-        "Periodized training builds for a few weeks, then eases off with a lighter week so you " +
-            "absorb the work and come back stronger. Steady keeps a similar load every week.",
+        if (periodized) {
+            "Builds up for a few weeks, then eases off so you absorb the work and come back stronger."
+        } else {
+            "Keeps a similar load every week."
+        },
         style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
     )
-    FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-        FilterChip(selected = !periodized, onClick = { onChange(false) }, label = { Text("Steady") })
-        FilterChip(selected = periodized, onClick = { onChange(true) }, label = { Text("Periodized") })
-    }
-    // BOTH choices get the chart, so the decision is a visual comparison
-    // (flat bars vs build-and-recover waves), not a labeled mystery.
-    PeriodizationNumbers(weeklyTssTarget, periodized, Modifier.padding(top = 8.dp))
 }
 
 // The athlete's next 8 weeks as bars, in their OWN numbers — the same rules
 // plan-week plans with (Periodization.projectedWeeks). Deload weeks are amber
-// with a "rest" tag; the caption spells out how the effort choice above feeds
-// this chart, because that coupling is exactly what users found confusing.
+// with a "rest" tag. showHeading is off in Settings (the card's own SectionLabel
+// already says "8-week forecast") and on in onboarding, which has no other label.
 @Composable
-internal fun PeriodizationNumbers(weeklyTssTarget: Int?, periodized: Boolean, modifier: Modifier = Modifier) {
+internal fun PeriodizationNumbers(
+    weeklyTssTarget: Int?,
+    periodized: Boolean,
+    modifier: Modifier = Modifier,
+    showHeading: Boolean = true,
+) {
     val base = weeklyTssTarget ?: Periodization.DEFAULT_WEEKLY_TSS
     val weeks = remember(base, periodized) {
         if (periodized) Periodization.projectedWeeks(base)
@@ -152,7 +154,7 @@ internal fun PeriodizationNumbers(weeklyTssTarget: Int?, periodized: Boolean, mo
     val muted = MaterialTheme.colorScheme.onSurfaceVariant
 
     Column(modifier, verticalArrangement = Arrangement.spacedBy(6.dp)) {
-        Text("Your next 8 weeks (TSS)", style = MaterialTheme.typography.labelLarge)
+        if (showHeading) Text("Your next 8 weeks (TSS)", style = MaterialTheme.typography.labelLarge)
         Row(
             Modifier.fillMaxWidth().height(128.dp),
             horizontalArrangement = Arrangement.spacedBy(4.dp),
@@ -184,18 +186,11 @@ internal fun PeriodizationNumbers(weeklyTssTarget: Int?, periodized: Boolean, mo
                 }
             }
         }
-        val rampPct = ((Periodization.BUILD_RAMP - 1f) * 100).toInt()
-        val cutPct = (Periodization.DELOAD_CUT * 100).toInt()
-        val caption = if (periodized) {
-            "Your weekly load choice above sets the starting point (~$base TSS). Each build " +
-                "week adds ~$rampPct%, and every ${Periodization.DELOAD_AFTER}th week eases " +
-                "off ~$cutPct% (amber) so you absorb the work and come back stronger. The " +
-                "coach re-reads what you actually did each week and adjusts."
-        } else {
-            "Steady keeps every week near your ~$base TSS choice above. Pick Periodized to " +
-                "build up over a few weeks with regular lighter weeks in between."
-        }
-        Text(caption, style = MaterialTheme.typography.bodySmall, color = muted)
+        // The bars themselves already show flat-vs-wave; one short line is enough.
+        Text(
+            "Spread automatically for now, fine-tune any week in Settings.",
+            style = MaterialTheme.typography.bodySmall, color = muted,
+        )
     }
 }
 
@@ -203,10 +198,17 @@ internal fun PeriodizationNumbers(weeklyTssTarget: Int?, periodized: Boolean, mo
 // + an optional longer day. The app spreads the week automatically (no day-by-day
 // tedium, no time-of-day). The optional long day is pinned to a real weekday so
 // the marathon long-run budget still reaches the planner.
+//
+// Rendered as two labeled groups (Schedule, Session length) via GroupedSection —
+// boxed cards in Settings, frameless (label only) in onboarding, per [grouped].
+// This one function stays the single owner of all six pieces of state, since
+// push() combines all of them into one buildAvailability() call regardless of
+// which group a given chip lives in.
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
 internal fun WeeklyAvailabilityEditor(
     availability: List<DayAvailability>,
+    grouped: Boolean = true,
     onChange: (List<DayAvailability>) -> Unit,
 ) {
     // Seed the simple questions once from any existing per-day data.
@@ -215,8 +217,19 @@ internal fun WeeklyAvailabilityEditor(
     var typical by remember { mutableStateOf(seed.typicalMin) }
     var longDays by remember { mutableStateOf(seed.longDays) }
     var longMin by remember { mutableStateOf(seed.longMin) }
+    // Off by default: the app spreads the week automatically. An athlete with a
+    // fixed schedule (e.g. always trains Mon/Wed/Fri) can pin the exact days instead.
+    var pickDays by remember { mutableStateOf(false) }
+    var chosenDays by remember { mutableStateOf<List<String>>(emptyList()) }
+    // What the long-day toggle restores when switched back on. Without it the
+    // switch did nothing: "on" re-assigned the (empty) list to itself, so
+    // checked stayed false and the sub-questions never appeared. Saturday is
+    // the fallback only until the athlete picks their own.
+    var lastLongDays by remember { mutableStateOf(seed.longDays.ifEmpty { listOf("Sat") }) }
 
-    fun push() = onChange(buildAvailability(daysPerWeek, typical, longDays, longMin))
+    fun push() = onChange(
+        buildAvailability(daysPerWeek, typical, longDays, longMin, explicitDays = chosenDays.takeIf { pickDays }),
+    )
 
     // Commit the seeded answers once, when we opened with nothing stored.
     // Every chip below renders as already-selected (4 days, 1h, "None"), but
@@ -227,50 +240,99 @@ internal fun WeeklyAvailabilityEditor(
     // The pre-selection is a promise; this keeps it.
     LaunchedEffect(Unit) { if (availability.isEmpty()) push() }
 
-    Text("How many days a week can you train?", style = MaterialTheme.typography.labelLarge)
-    FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-        DAYS_PER_WEEK.forEach { n ->
-            FilterChip(selected = daysPerWeek == n, onClick = { daysPerWeek = n; push() }, label = { Text("$n") })
-        }
-    }
-    Text("Typical session length", style = MaterialTheme.typography.labelLarge)
-    FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-        TYPICAL_MINUTES.forEach { m ->
-            FilterChip(selected = typical == m, onClick = { typical = m; push() }, label = { Text(durationLabel(m)) })
-        }
-    }
-    // Plural on purpose: a runner has one long day, a triathlete often two
-    // (long ride Saturday, long run Sunday). Tap as many as apply.
-    Text("Longer days? (long run, long ride...)", style = MaterialTheme.typography.labelLarge)
-    FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-        FilterChip(
-            selected = longDays.isEmpty(),
-            onClick = { longDays = emptyList(); push() },
-            label = { Text("None") },
-        )
-        DAYS.forEach { d ->
-            FilterChip(
-                selected = d in longDays,
-                onClick = {
-                    longDays = if (d in longDays) longDays - d else longDays + d
-                    push()
-                },
-                label = { Text(d) },
-            )
-        }
-    }
-    if (longDays.isNotEmpty()) {
-        Text("How long are they?", style = MaterialTheme.typography.labelLarge)
+    GroupedSection(grouped, "Schedule") {
+        Text("Days per week", style = MaterialTheme.typography.labelLarge)
         FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-            LONG_MINUTES.forEach { m ->
-                FilterChip(selected = longMin == m, onClick = { longMin = m; push() }, label = { Text(durationLabel(m)) })
+            DAYS_PER_WEEK.forEach { n ->
+                FilterChip(
+                    selected = daysPerWeek == n,
+                    onClick = {
+                        daysPerWeek = n
+                        // A pick from before a lower count would otherwise sit above
+                        // the new cap (reported: "5/4 selected") until re-tapped.
+                        if (chosenDays.size > n) chosenDays = chosenDays.take(n)
+                        push()
+                    },
+                    label = { Text("$n") },
+                )
+            }
+        }
+        Text("Which days?", style = MaterialTheme.typography.labelLarge)
+        SegmentedToggle(
+            "Spread automatically", "I'll pick", right = pickDays,
+            onChange = { pickDays = it; push() },
+        )
+        if (pickDays) {
+            Text(
+                "${chosenDays.size}/$daysPerWeek selected",
+                style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                DAYS.forEach { d ->
+                    FilterChip(
+                        selected = d in chosenDays,
+                        onClick = {
+                            // Deselecting always works; selecting a new day past the
+                            // count is a no-op instead of over-filling the pick
+                            // (reported: could select 5 days when only 4 were asked for).
+                            chosenDays = when {
+                                d in chosenDays -> chosenDays - d
+                                chosenDays.size < daysPerWeek -> chosenDays + d
+                                else -> chosenDays
+                            }
+                            push()
+                        },
+                        label = { Text(d) },
+                    )
+                }
             }
         }
     }
-    Text(
-        "We'll spread your week automatically. Fine-tune anything later in Settings.",
-        style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
-    )
+    GroupedSection(grouped, "Session length") {
+        Text("Typical length", style = MaterialTheme.typography.labelLarge)
+        FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+            TYPICAL_MINUTES.forEach { m ->
+                FilterChip(selected = typical == m, onClick = { typical = m; push() }, label = { Text(durationLabel(m)) })
+            }
+        }
+        // Plural under the hood (a triathlete can have two long days), but the
+        // toggle only asks "any longer day at all?" — off clears the picks
+        // entirely, same as the old "None" chip.
+        ToggleRow(
+            "Add a longer day", "Long run, long ride, etc.",
+            checked = longDays.isNotEmpty(),
+            onChange = { on ->
+                if (on) {
+                    longDays = lastLongDays
+                } else {
+                    lastLongDays = longDays // so flipping back on restores the picks
+                    longDays = emptyList()
+                }
+                push()
+            },
+        )
+        if (longDays.isNotEmpty()) {
+            Text("Which day", style = MaterialTheme.typography.labelLarge)
+            FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                DAYS.forEach { d ->
+                    FilterChip(
+                        selected = d in longDays,
+                        onClick = {
+                            longDays = if (d in longDays) longDays - d else longDays + d
+                            push()
+                        },
+                        label = { Text(d) },
+                    )
+                }
+            }
+            Text("How long", style = MaterialTheme.typography.labelLarge)
+            FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                LONG_MINUTES.forEach { m ->
+                    FilterChip(selected = longMin == m, onClick = { longMin = m; push() }, label = { Text(durationLabel(m)) })
+                }
+            }
+        }
+    }
 }
 
 // Multi-select equipment (only surfaced when the athlete lifts).
@@ -366,10 +428,21 @@ internal fun availabilityToQuestions(availability: List<DayAvailability>): Avail
     )
 }
 
-// Build the per-day list from the simple answers: spread N days over the week,
-// force the long day in (keeping the count), and cap each day.
-internal fun buildAvailability(daysPerWeek: Int, typical: Int, longDays: List<String>, longMin: Int): List<DayAvailability> {
-    val base = DAY_PATTERNS[daysPerWeek] ?: DAY_PATTERNS.getValue(4)
+// Build the per-day list from the simple answers: spread N days over the week
+// (or use the athlete's own picks, once there are exactly N of them), force the
+// long day in (keeping the count), and cap each day.
+internal fun buildAvailability(
+    daysPerWeek: Int,
+    typical: Int,
+    longDays: List<String>,
+    longMin: Int,
+    explicitDays: List<String>? = null,
+): List<DayAvailability> {
+    // A half-finished pick (wrong count, e.g. mid-selection or a stale count
+    // change) falls back to the auto-spread pattern rather than reaching the
+    // server under-filled.
+    val base = explicitDays?.takeIf { it.size == daysPerWeek }
+        ?: (DAY_PATTERNS[daysPerWeek] ?: DAY_PATTERNS.getValue(4))
     // Every long day IS a training day; the remaining slots fill from the base
     // pattern's regular days in order. (The naive "swap the last base day"
     // version could evict one long day to make room for another.)

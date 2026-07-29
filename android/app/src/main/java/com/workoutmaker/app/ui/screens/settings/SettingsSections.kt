@@ -45,6 +45,7 @@ import com.workoutmaker.app.data.WeightUnit
 import com.workoutmaker.app.data.format
 import com.workoutmaker.app.ui.collectAsStateSafe
 import com.workoutmaker.app.ui.components.SectionCard
+import com.workoutmaker.app.ui.components.SectionLabel
 import android.app.Activity
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material3.contentColorFor
@@ -128,8 +129,12 @@ internal fun SportsGoalsSection(vm: SettingsViewModel) {
     val profile by vm.profile.collectAsStateSafe()
     SectionCard(title = "Your sports") {
         SportSelector(profile.sports) { s -> vm.updateProfile { it.copy(sports = it.sports.toggled(s)) } }
-        // Activity-first: each selected sport gets its own goal(s) + level (+ split for gym).
-        SPORTS.filter { profile.sports.contains(it) }.forEach { sport ->
+    }
+    // Activity-first: each selected sport gets its own card, so two+ sports read
+    // as separate topics instead of one undivided run of goal/level/split chips.
+    SPORTS.filter { profile.sports.contains(it) }.forEach { sport ->
+        SectionCard {
+            SectionLabel(sportLabel(sport))
             SportGoalsLevel(
                 sport = sport,
                 goals = profile.goals_by_sport[sport].orEmpty(),
@@ -152,13 +157,19 @@ internal fun SportsGoalsSection(vm: SettingsViewModel) {
 @Composable
 internal fun TrainingWeekSection(vm: SettingsViewModel) {
     val profile by vm.profile.collectAsStateSafe()
-    SectionCard(title = "Your week") {
-        WeeklyAvailabilityEditor(profile.day_availability) { list -> vm.updateProfile { it.copy(day_availability = list) } }
+    // WeeklyAvailabilityEditor renders its own Schedule + Session length cards.
+    WeeklyAvailabilityEditor(profile.day_availability) { list -> vm.updateProfile { it.copy(day_availability = list) } }
+    SectionCard {
+        SectionLabel("Progression")
         PeriodizationControl(
             periodized = profile.periodized,
             onChange = { p -> vm.updateProfile { it.copy(periodized = p) } },
             weeklyTssTarget = profile.weekly_tss_target,
         )
+    }
+    SectionCard {
+        SectionLabel("8-week forecast")
+        PeriodizationNumbers(profile.weekly_tss_target, profile.periodized, showHeading = false)
     }
     SaveProfileButton(vm)
 }

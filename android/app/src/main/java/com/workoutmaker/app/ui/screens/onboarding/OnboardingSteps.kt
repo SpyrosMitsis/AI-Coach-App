@@ -36,6 +36,7 @@ import com.workoutmaker.app.ui.screens.settings.ChipGroup
 import com.workoutmaker.app.ui.screens.settings.EquipmentSelector
 import com.workoutmaker.app.ui.screens.settings.PerformanceEditor
 import com.workoutmaker.app.ui.screens.settings.PeriodizationControl
+import com.workoutmaker.app.ui.screens.settings.PeriodizationNumbers
 import com.workoutmaker.app.ui.screens.settings.SportGoalsLevel
 import com.workoutmaker.app.ui.screens.settings.SportSelector
 import com.workoutmaker.app.ui.screens.settings.WeeklyAvailabilityEditor
@@ -224,7 +225,9 @@ internal fun StepRace(profile: TrainingProfile, vm: OnboardingViewModel) {
 @Composable
 internal fun StepAvailability(profile: TrainingProfile, vm: OnboardingViewModel) {
     StepColumn {
-        WeeklyAvailabilityEditor(profile.day_availability) { list -> vm.update { it.copy(day_availability = list) } }
+        // Frameless like every other onboarding step (see StepColumn) — same
+        // Schedule/Session length grouping as Settings, just label-only, no cards.
+        WeeklyAvailabilityEditor(profile.day_availability, grouped = false) { list -> vm.update { it.copy(day_availability = list) } }
     }
 }
 
@@ -276,6 +279,7 @@ internal fun StepEffort(profile: TrainingProfile, vm: OnboardingViewModel) {
                 onChange = { p -> vm.update { it.copy(periodized = p) } },
                 weeklyTssTarget = profile.weekly_tss_target,
             )
+            PeriodizationNumbers(profile.weekly_tss_target, profile.periodized)
         }
     }
 }

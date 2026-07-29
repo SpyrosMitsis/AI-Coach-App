@@ -51,6 +51,8 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.border
+import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.IntrinsicSize
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.RowScope
@@ -294,6 +296,61 @@ fun SectionLabel(text: String, modifier: Modifier = Modifier, color: Color = Mat
         letterSpacing = 1.5.sp,
         fontWeight = FontWeight.Bold,
     )
+}
+
+/**
+ * Two-option pill toggle (e.g. Steady/Periodized, Spread automatically/I'll pick) —
+ * one shared container instead of two independent FilterChips, so the choice reads
+ * as ONE decision rather than two buttons that happen to be mutually exclusive.
+ */
+@Composable
+fun SegmentedToggle(leftLabel: String, rightLabel: String, right: Boolean, onChange: (Boolean) -> Unit) {
+    // The TRACK is recessed (deeper than the card behind it, same language as
+    // InsetStat/StatTile) and the selected half sits raised on top of it. With a
+    // transparent track the unselected half read as page background and the
+    // whole thing looked like one button, not a two-way switch. Low, not Lowest:
+    // Lowest is ~17 steps under the card in dark mode and read as a black hole.
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(50))
+            .background(MaterialTheme.colorScheme.surfaceContainerLow)
+            .border(1.dp, MaterialTheme.colorScheme.outlineVariant, RoundedCornerShape(50))
+            .padding(4.dp),
+    ) {
+        listOf(leftLabel to false, rightLabel to true).forEach { (label, value) ->
+            val selected = right == value
+            Box(
+                Modifier
+                    .weight(1f)
+                    .clip(RoundedCornerShape(50))
+                    .background(if (selected) MaterialTheme.colorScheme.secondaryContainer else Color.Transparent)
+                    .clickable { onChange(value) }
+                    .padding(vertical = 10.dp),
+                contentAlignment = Alignment.Center,
+            ) {
+                Text(
+                    label,
+                    style = MaterialTheme.typography.labelLarge,
+                    color = if (selected) MaterialTheme.colorScheme.onSecondaryContainer else MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        }
+    }
+}
+
+/**
+ * A labeled group of content, either boxed in a [SectionCard] (Settings) or left
+ * frameless with just the label (onboarding's steps are deliberately card-free —
+ * see StepColumn) — same content, presentation picked by the caller.
+ */
+@Composable
+fun GroupedSection(grouped: Boolean, label: String, content: @Composable ColumnScope.() -> Unit) {
+    if (grouped) {
+        SectionCard { SectionLabel(label); Column(verticalArrangement = Arrangement.spacedBy(10.dp), content = content) }
+    } else {
+        Column(verticalArrangement = Arrangement.spacedBy(10.dp)) { SectionLabel(label); content() }
+    }
 }
 
 /** Low-contrast metadata chip: Moss background, Sage text (run · 60min · RPE 4). */

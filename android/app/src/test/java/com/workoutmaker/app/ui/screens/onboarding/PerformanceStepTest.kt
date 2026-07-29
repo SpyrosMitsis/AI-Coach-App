@@ -124,6 +124,36 @@ class AvailabilityBuildTest {
         assertEquals(120, q.longMin)
     }
 
+    // Trello #78: athlete can pin the exact weekdays instead of the auto-spread.
+    @Test
+    fun `an explicit day pick with the right count is honored over the auto-spread`() {
+        val days = buildAvailability(
+            daysPerWeek = 3, typical = 60, longDays = emptyList(), longMin = 120,
+            explicitDays = listOf("Tue", "Thu", "Sat"),
+        )
+        assertEquals(listOf("Sat", "Thu", "Tue"), days.map { it.day }.sorted())
+    }
+
+    @Test
+    fun `a long day is still forced in even with an explicit pick`() {
+        val days = buildAvailability(
+            daysPerWeek = 3, typical = 60, longDays = listOf("Sun"), longMin = 120,
+            explicitDays = listOf("Tue", "Thu", "Sat"), // doesn't include the long day
+        )
+        assertEquals(3, days.size)
+        assertEquals(120, days.first { it.day == "Sun" }.max_minutes)
+    }
+
+    @Test
+    fun `an explicit pick with the wrong count falls back to auto-spread`() {
+        val withPick = buildAvailability(
+            daysPerWeek = 4, typical = 60, longDays = emptyList(), longMin = 120,
+            explicitDays = listOf("Tue", "Thu"), // only 2, not 4
+        )
+        val withoutPick = buildAvailability(daysPerWeek = 4, typical = 60, longDays = emptyList(), longMin = 120)
+        assertEquals(withoutPick.map { it.day }, withPick.map { it.day })
+    }
+
     // THE REGRESSION TEST. WeeklyAvailabilityEditor opens every chip
     // pre-selected from availabilityToQuestions(emptyList()), but only pushed
     // on a chip tap, so agreeing with the defaults left day_availability empty.
