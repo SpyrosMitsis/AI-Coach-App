@@ -816,3 +816,63 @@ Deno.test("every calendar write reports week_now", async () => {
     globalThis.fetch = origFetch;
   }
 });
+
+// ---------------------------------------------------------------------------
+// log_stretch_session (Trello #73) — logs a COMPLETED session, so unlike
+// set_rest_day/move_workout its date constraint runs the other way: today is
+// the ceiling, not the floor.
+// ---------------------------------------------------------------------------
+
+Deno.test("coach tools: log_stretch_session is registered as an act tool, not a write of the calendar", () => {
+  const t = TOOL_CATALOG.find((x) => x.name === "log_stretch_session");
+  assert(t, "log_stretch_session missing");
+  assertEquals(t!.kind, "act");
+  const native = nativeToolDefs().map((x) => x.name);
+  assert(native.includes("log_stretch_session"));
+});
+
+Deno.test("log_stretch_session writes date, duration and notes", async () => {
+  const s = writeStub({});
+  const obs = JSON.parse(
+    await executeTool(s.admin, "u1", "auth", "log_stretch_session", {
+      date: "2026-07-27", duration_min: 15.6, notes: "  hips and hamstrings  ",
+    }, "2026-07-29"),
+  );
+  const row = s.of("stretch_logs").find((w) => w.op === "insert");
+  assert(row, "stretch_logs must be written");
+  assertEquals(row!.row.user_id, "u1");
+  assertEquals(row!.row.date, "2026-07-27");
+  assertEquals(row!.row.duration_min, 16); // rounded
+  assertEquals(row!.row.notes, "hips and hamstrings"); // trimmed
+  assertEquals(obs.ok, true);
+  assertEquals(obs.date, "2026-07-27");
+});
+
+Deno.test("log_stretch_session defaults to today when no date is given", async () => {
+  const s = writeStub({});
+  const obs = JSON.parse(
+    await executeTool(s.admin, "u1", "auth", "log_stretch_session", {}, "2026-07-29"),
+  );
+  assertEquals(obs.date, "2026-07-29");
+  assertEquals(s.of("stretch_logs")[0].row.date, "2026-07-29");
+});
+
+Deno.test("log_stretch_session rejects a future date (it logs what already happened)", async () => {
+  const s = writeStub({});
+  const obs = await executeTool(s.admin, "u1", "auth", "log_stretch_session", {
+    date: "2026-07-30",
+  }, "2026-07-29");
+  assert(obs.startsWith("error:"), obs);
+  assertEquals(s.of("stretch_logs").length, 0);
+});
+
+Deno.test("log_stretch_session accepts a past date, unlike set_rest_day/move_workout", async () => {
+  const s = writeStub({});
+  const obs = JSON.parse(
+    await executeTool(s.admin, "u1", "auth", "log_stretch_session", {
+      date: "2026-07-20",
+    }, "2026-07-29"),
+  );
+  assertEquals(obs.ok, true);
+  assertEquals(obs.date, "2026-07-20");
+});

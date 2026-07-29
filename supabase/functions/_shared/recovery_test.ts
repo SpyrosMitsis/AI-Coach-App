@@ -148,9 +148,33 @@ Deno.test("recovery (today): missing today reads as null, not yesterday's value"
   assert(r.hrv!.baseline > 0);             // baseline still available for context
   assertEquals(r.sleep!.hours, null);      // today has no sleep
   assert(r.sleep!.avgHours! > 0);          // but the window avg is shown
-  // No today objective signal → score leans on the 3-day wellness composite only.
+  // No check-in today either → wellness has nothing to lean on, same as
+  // hrv/sleep: the score does not stand on yesterday's self-report.
+  assertEquals(r.wellness, 3);
+  assertEquals(r.basis, "none");
   assert(!r.summary.includes("HRV"));
   assert(!r.summary.includes("slept"));
+});
+
+Deno.test("bug: no wellness check-in today does not inherit yesterday's", () => {
+  // Reported from the app: didn't ask for wellness today, readiness still used
+  // yesterday's check-in as if it were today's. hrv/rhr/sleep already anchor on
+  // `today`; the wellness composite (soreness/energy/sleep_score-derived) did not.
+  const wells = [
+    { date: "2026-07-28", energy: 2, soreness: 4, sleep_score: 60 }, // yesterday, real check-in
+  ];
+  const r = computeRecovery(wells, [], [], "2026-07-29");
+  assertEquals(r.wellness, 3); // neutral default, NOT derived from yesterday's 2/4/60
+  assertEquals(r.basis, "none");
+  assertEquals(r.drivers, []); // no stale Soreness/Energy chip either
+
+  // A check-in dated today still counts, same-day smoothing unaffected.
+  const withToday = computeRecovery(
+    [{ date: "2026-07-29", energy: 2, soreness: 4, sleep_score: 60 }, ...wells],
+    [], [], "2026-07-29",
+  );
+  assertEquals(withToday.basis, "subjective");
+  assert(withToday.wellness < 3); // low energy/high soreness pulls it down
 });
 
 Deno.test("recovery (today): today's sleep present is reported as today's", () => {

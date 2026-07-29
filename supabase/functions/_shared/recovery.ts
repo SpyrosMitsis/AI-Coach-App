@@ -112,7 +112,12 @@ export function computeRecovery(
   rhrSeries: SeriesPoint[],
   today?: string,
 ): Recovery {
-  const recent3 = wells.slice(0, 3);
+  // Anchored on `today`: wells is queried newest-first, so a check-in that
+  // happened today is already at the head and this is unchanged from before.
+  // No check-in today means no subjective reading today — recent3 stays empty
+  // rather than quietly averaging in yesterday's, mirroring how hrv/rhr/sleep
+  // already treat a missing today as missing, not as "reuse the last one".
+  const recent3 = today && !wells.some((w) => w.date === today) ? [] : wells.slice(0, 3);
   // Sleep on the 1..5 scale comes straight from the device sleep score
   // (0..100 → /20, continuous, e.g. 75 → 3.75); neutral 3 when no data.
   const sleepFive = (w: WellnessRow) =>

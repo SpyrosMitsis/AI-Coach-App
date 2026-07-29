@@ -245,6 +245,19 @@ export const TOOL_CATALOG: ToolDef[] = [
     description: "Turn a day into a rest day, removes any planned session on that date (the watch event is removed too). Use when the athlete needs a day off.",
   },
   {
+    name: "log_stretch_session", kind: "act",
+    args: "{ date?: 'YYYY-MM-DD', duration_min?: number, notes?: string }",
+    schema: {
+      type: "object",
+      properties: {
+        date: { type: "string", description: "Day it happened, YYYY-MM-DD; defaults to today. Cannot be in the future." },
+        duration_min: { type: "number", description: "How long, in minutes" },
+        notes: { type: "string", description: "Any detail worth remembering, e.g. 'hips and hamstrings'" },
+      },
+    },
+    description: "Log a completed stretching/mobility session (a record of what the athlete just did, NOT a planned workout — it doesn't touch the calendar). Use when the athlete says they stretched, did mobility work, foam rolled, etc.",
+  },
+  {
     name: "make_easier", kind: "act", args: "{ date?: 'YYYY-MM-DD' }",
     schema: {
       type: "object",
@@ -636,6 +649,7 @@ export async function executeTool(
           wells,
           chrono.map((w) => (w as { hrv_rmssd?: number }).hrv_rmssd).filter(isNum),
           chrono.map((w) => (w as { resting_hr?: number }).resting_hr).filter(isNum),
+          today,
         );
         // basis "none" means nothing was measured: the coach must not read the
         // placeholder 50 back to the athlete as a state of their body.
@@ -724,6 +738,26 @@ export async function executeTool(
           cleared,
           week_now: await weekSnapshot(admin, userId, d),
         });
+      }
+      case "log_stretch_session": {
+        // A completed session, not a calendar edit — no week_now needed. This
+        // records something that already happened, so the date constraint is
+        // the OPPOSITE of dateError's (which floors at today for editing
+        // future plan days): here today is the ceiling, not the floor.
+        const raw = typeof args.date === "string" ? args.date.trim() : "";
+        const todayCeiling = today && ISO_DATE.test(today) ? today : iso(Date.now());
+        if (raw && (!ISO_DATE.test(raw) || raw > todayCeiling)) {
+          return `error: date must be a real date as YYYY-MM-DD, not in the future (today is ${todayCeiling})`;
+        }
+        const d = raw || todayCeiling;
+        const durationMin = typeof args.duration_min === "number" && isFinite(args.duration_min)
+          ? Math.max(0, Math.round(args.duration_min))
+          : null;
+        const notes = typeof args.notes === "string" && args.notes.trim() ? args.notes.trim().slice(0, 500) : null;
+        await admin.from("stretch_logs").insert({
+          user_id: userId, date: d, duration_min: durationMin, notes,
+        });
+        return JSON.stringify({ ok: true, date: d, duration_min: durationMin });
       }
       case "set_training_pause": {
         const until = String(args.until_date ?? "");

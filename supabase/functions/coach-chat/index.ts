@@ -133,6 +133,7 @@ const WRITE_TOOLS = new Set([
   "remove_goal_race",
   "set_rest_day",
   "make_easier",
+  "log_stretch_session",
   "set_training_pause",
   "resume_training",
   // Mutates the profile, not the calendar: counts as "acted" for the
