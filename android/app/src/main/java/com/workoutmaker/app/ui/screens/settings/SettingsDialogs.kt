@@ -30,6 +30,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.foundation.text.KeyboardOptions
@@ -273,32 +274,36 @@ internal fun goalTargetHint(sport: String): String = when (sport) {
 internal fun latestTestDate(tests: List<ThresholdTest>, kind: String): String? =
     tests.filter { it.kind == kind }.maxByOrNull { it.date }?.date
 
-/** One read-only threshold: what it is, what it's set to, and when. */
+/** One performance anchor: what it is, what it is set to, and what it costs to leave it empty. */
 @Composable
-private fun ThresholdRow(label: String, value: String?, setOn: String?) {
-    Row(
-        Modifier.fillMaxWidth(),
-        horizontalArrangement = Arrangement.SpaceBetween,
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        Text(label, style = MaterialTheme.typography.bodyMedium)
-        Column(horizontalAlignment = Alignment.End) {
-            Text(
-                value ?: "Not set",
-                style = MaterialTheme.typography.titleMedium,
-                color = if (value != null) MaterialTheme.colorScheme.primary
-                else MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-            setOn?.let {
-                Text(
-                    "set $it",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
+private fun AnchorRow(label: String, value: String?, setOn: String?, whyItMatters: String) {
+    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+        Row(
+            Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.Bottom,
+        ) {
+            Column {
+                Text(label, style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
+                setOn?.let {
+                    Text("Set $it", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
             }
+            Text(
+                value ?: "— : —",
+                style = MaterialTheme.typography.headlineSmall,
+                fontWeight = FontWeight.Bold,
+                color = if (value != null) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outline,
+            )
+        }
+        // Only say what is at stake while it IS at stake; once the number is
+        // there the warning is just noise on a solved problem.
+        if (value == null) {
+            Text(whyItMatters, style = MaterialTheme.typography.bodySmall, color = amberAccent())
         }
     }
 }
+
 @Composable
 internal fun ZonesSection(vm: SettingsViewModel) {
     val profile by vm.profile.collectAsStateSafe()
@@ -314,20 +319,38 @@ internal fun ZonesSection(vm: SettingsViewModel) {
     // applyThreshold — the same value settable two ways, one of which quietly
     // recorded a date and one of which didn't. Logging a test is now the only
     // editor, so every threshold the app holds knows when it was set.
-    SectionCard(title = "Thresholds") {
-        Text("Your current thresholds; the zones below are derived from them. LTHR = lactate-threshold HR, threshold pace ≈ your 1-hour race pace.",
-            style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-        ThresholdRow("LTHR", profile.lthr?.let { "$it bpm" }, latestTestDate(tests, "lthr"))
-        ThresholdRow(
+    // One number per sport, each with the line explaining what it costs to leave
+    // it empty. A number that is missing says so in place of showing a dash and
+    // hoping you notice, because "your zones are guessed" is the whole stake.
+    SectionCard {
+        Text(
+            "One number per sport sets every zone below it.",
+            style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        AnchorRow(
             "Threshold pace",
             profile.threshold_pace_per_km?.let { "$it /km" },
             latestTestDate(tests, "threshold_pace"),
+            "Without this, run zones are guessed from your age. A 20-minute time trial fixes it.",
         )
-        ThresholdRow("FTP", profile.ftp?.let { "$it W" }, latestTestDate(tests, "ftp"))
+        HorizontalDivider(color = MaterialTheme.colorScheme.surfaceContainerHigh)
+        AnchorRow(
+            "FTP",
+            profile.ftp?.let { "$it W" },
+            latestTestDate(tests, "ftp"),
+            "Your one-hour power. Sets every ride target.",
+        )
+        HorizontalDivider(color = MaterialTheme.colorScheme.surfaceContainerHigh)
+        AnchorRow(
+            "LTHR",
+            profile.lthr?.let { "$it bpm" },
+            latestTestDate(tests, "lthr"),
+            "Lactate-threshold heart rate. Without it, HR zones come from your age.",
+        )
         OutlinedButton(onClick = { showTest = true }, enabled = !busy, modifier = Modifier.fillMaxWidth()) {
-            Text("Log a test")
+            Text("Test me")
         }
-        Text("Logging a test updates the threshold and its zones automatically.",
+        Text("Logging a test updates the number and its zones automatically.",
             style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
     }
 

@@ -2,7 +2,15 @@ package com.workoutmaker.app.ui.screens.calendar
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.material3.ModalBottomSheet
+import androidx.compose.material3.ExperimentalMaterial3Api
+import java.time.format.TextStyle
+import java.time.format.DateTimeFormatter
+import java.util.Locale
+import com.workoutmaker.app.strength.WorkoutEntity
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Spacer
@@ -29,6 +37,9 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.foundation.layout.width
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.text.font.FontWeight
@@ -259,6 +270,7 @@ internal fun MonthGrid(
     strengthDates: Set<String>,
     activityDates: Set<String>,
     onSelect: (LocalDate) -> Unit,
+    onPeek: (LocalDate) -> Unit = {},
 ) {
     val today = LocalDate.now()
     val leading = month.atDay(1).dayOfWeek.value - 1 // Monday = 0
@@ -293,6 +305,7 @@ internal fun MonthGrid(
                             hasActivity = date.toString() in activityDates,
                             modifier = Modifier.weight(1f),
                             onClick = { onSelect(date) },
+                            onLongClick = { onPeek(date) },
                         )
                     } else {
                         Box(Modifier.weight(1f).aspectRatio(1f))
@@ -304,6 +317,7 @@ internal fun MonthGrid(
     }
 }
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun DayCell(
     date: LocalDate,
@@ -314,6 +328,7 @@ private fun DayCell(
     hasActivity: Boolean,
     modifier: Modifier,
     onClick: () -> Unit,
+    onLongClick: () -> Unit,
 ) {
     val bg = if (isSelected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.surfaceContainerHigh
     val fg = if (isSelected) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurface
@@ -328,7 +343,10 @@ private fun DayCell(
                     Modifier.border(1.dp, MaterialTheme.colorScheme.primary, RoundedCornerShape(10.dp))
                 else Modifier,
             )
-            .clickable { onClick() },
+            // Long-press peeks at what is actually planned that day without
+            // leaving the month. Tapping still selects, so the gesture adds a
+            // shortcut rather than moving the day's detail behind a long-press.
+            .combinedClickable(onClick = onClick, onLongClick = onLongClick),
         contentAlignment = Alignment.Center,
     ) {
         Column(horizontalAlignment = Alignment.CenterHorizontally) {
@@ -387,5 +405,237 @@ internal fun looksLike(plannedType: String, actualType: String?): Boolean {
         "swim" -> a.contains("swim")
         "strength" -> a.contains("weight") || a.contains("strength") || a.contains("workout") || a.contains("gym")
         else -> false
+    }
+}
+
+/**
+ * Long-press peek: what is on a day, without leaving the month.
+ *
+ * Read-only by design. Tapping a day already selects it and scrolls the full,
+ * editable detail into view below the grid; this is the glance you take while
+ * scanning the month, so it answers "what is on Thursday" and gets out of the
+ * way. Everything that CHANGES a session stays in the detail below, where an
+ * accidental long-press cannot reach it.
+ */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+internal fun DayPeekSheet(
+    date: LocalDate,
+    sessions: List<PlannedWorkout>,
+    strength: List<WorkoutEntity>,
+    activities: List<CompletedActivity>,
+    onDismiss: () -> Unit,
+) {
+    ModalBottomSheet(onDismissRequest = onDismiss) {
+        Column(
+            Modifier.fillMaxWidth().padding(start = 20.dp, end = 20.dp, bottom = 32.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
+            Text(
+                date.dayOfWeek.getDisplayName(TextStyle.FULL, Locale.getDefault()) + " · " +
+                    date.format(DateTimeFormatter.ofPattern("d MMMM")),
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.Bold,
+            )
+            val done = sessions.count { it.completed } + strength.size
+            Text(
+                "${sessions.size} planned · $done done",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+
+            sessions.forEach { w ->
+                val workout = w.workout_json
+                SectionCard {
+                    SectionLabel(
+                        "${w.type.uppercase()} · " + when {
+                            w.completed -> "DONE"
+                            w.skipped -> "SKIPPED"
+                            else -> "PLANNED"
+                        },
+                        color = if (w.completed) MaterialTheme.colorScheme.primary else typeColor(w.type),
+                    )
+                    Text(workout.title, style = MaterialTheme.typography.titleMedium)
+                    ChipRow(
+                        buildList {
+                            if (workout.duration_minutes > 0) add("${workout.duration_minutes.toInt()} min")
+                            if (workout.rpe_target > 0) add("RPE ${workout.rpe_target.toInt()}")
+                            if (workout.tss_estimate > 0) add("~${workout.tss_estimate.toInt()} TSS")
+                        },
+                    )
+                    workout.coach_note.takeIf { it.isNotBlank() }?.let {
+                        Text(
+                            it,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                }
+            }
+
+            strength.forEach { sw ->
+                SectionCard {
+                    SectionLabel("DONE · STRENGTH", color = MaterialTheme.colorScheme.secondary)
+                    Text(sw.name, style = MaterialTheme.typography.titleMedium)
+                    ChipRow(
+                        buildList {
+                            add("${sw.totalVolumeKg.toInt()} kg")
+                            if (sw.durationSec > 0) add("${sw.durationSec / 60} min")
+                        },
+                    )
+                }
+            }
+
+            activities.forEach { act ->
+                SectionCard {
+                    val label = act.type?.replaceFirstChar { c -> c.uppercase() } ?: "Activity"
+                    SectionLabel("DONE · ${label.uppercase()}", color = MaterialTheme.colorScheme.primary)
+                    Text(label, style = MaterialTheme.typography.titleMedium)
+                    ChipRow(activityMeta(act))
+                }
+            }
+
+            if (sessions.isEmpty() && strength.isEmpty() && activities.isEmpty()) {
+                Text(
+                    "Nothing on this day.",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        }
+    }
+}
+
+/**
+ * The week as an agenda, one row per day.
+ *
+ * Deliberately NOT a smaller month grid: a grid of coloured dots answers "which
+ * days am I training", which the month already answers. Over seven days there is
+ * room to say WHAT each session is, which is the question you actually have
+ * about the week in front of you.
+ */
+@OptIn(ExperimentalFoundationApi::class)
+@Composable
+internal fun WeekAgenda(
+    weekStart: LocalDate,
+    selected: LocalDate,
+    byDate: Map<String, List<PlannedWorkout>>,
+    strengthDates: Set<String>,
+    activityDates: Set<String>,
+    onSelect: (LocalDate) -> Unit,
+    onPeek: (LocalDate) -> Unit,
+) {
+    val today = LocalDate.now()
+    SectionCard {
+        (0..6).forEach { i ->
+            val date = weekStart.plusDays(i.toLong())
+            val key = date.toString()
+            val sessions = byDate[key].orEmpty()
+            val isSelected = date == selected
+            Row(
+                Modifier.fillMaxWidth()
+                    .clip(RoundedCornerShape(12.dp))
+                    .background(
+                        if (isSelected) MaterialTheme.colorScheme.primaryContainer else Color.Transparent,
+                    )
+                    .combinedClickable(onClick = { onSelect(date) }, onLongClick = { onPeek(date) })
+                    .padding(horizontal = 10.dp, vertical = 10.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Column(
+                    Modifier.width(44.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                ) {
+                    Text(
+                        date.dayOfWeek.getDisplayName(TextStyle.SHORT, Locale.getDefault()),
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    Text(
+                        "${date.dayOfMonth}",
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = if (date == today) FontWeight.Bold else FontWeight.Normal,
+                        color = if (date == today) MaterialTheme.colorScheme.primary
+                        else MaterialTheme.colorScheme.onSurface,
+                    )
+                }
+                Column(
+                    Modifier.weight(1f).padding(start = 10.dp),
+                    verticalArrangement = Arrangement.spacedBy(2.dp),
+                ) {
+                    if (sessions.isEmpty() && key !in strengthDates && key !in activityDates) {
+                        Text(
+                            "Rest",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.outline,
+                        )
+                    }
+                    sessions.forEach { w ->
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Box(Modifier.size(6.dp).background(typeColor(w.type), CircleShape))
+                            Text(
+                                "  " + w.workout_json.title,
+                                style = MaterialTheme.typography.bodySmall,
+                                color = if (w.completed) MaterialTheme.colorScheme.onSurfaceVariant
+                                else MaterialTheme.colorScheme.onSurface,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                            )
+                        }
+                    }
+                    if (key in strengthDates) {
+                        Text(
+                            "Strength logged",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.secondary,
+                        )
+                    }
+                }
+                // Same "actually done" ring the month grid uses, so the two views
+                // do not teach two different vocabularies.
+                if (key in activityDates) {
+                    Box(
+                        Modifier.size(8.dp).clip(CircleShape)
+                            .border(1.4.dp, MaterialTheme.colorScheme.primary, CircleShape),
+                    )
+                }
+            }
+        }
+    }
+}
+
+/** What the dots under each day mean. Four colours are three too many to guess. */
+@Composable
+internal fun CalendarLegend() {
+    Row(
+        Modifier.fillMaxWidth().padding(horizontal = 4.dp),
+        horizontalArrangement = Arrangement.spacedBy(12.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        listOf(
+            "Endurance" to typeColor("run"),
+            "Strength" to MaterialTheme.colorScheme.secondary,
+            "Rest" to typeColor("rest"),
+        ).forEach { (label, color) ->
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Box(Modifier.size(6.dp).background(color, CircleShape))
+                Text(
+                    "  $label",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        }
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Box(
+                Modifier.size(6.dp).clip(CircleShape)
+                    .border(1.2.dp, MaterialTheme.colorScheme.primary, CircleShape),
+            )
+            Text(
+                "  Done",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
     }
 }

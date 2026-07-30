@@ -1,10 +1,16 @@
 package com.workoutmaker.app.ui.screens.onboarding
 
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Celebration
+import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
@@ -15,6 +21,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import com.workoutmaker.app.data.EnduranceGoals
 import com.workoutmaker.app.data.TrainingProfile
 import com.workoutmaker.app.ui.collectAsStateSafe
 import com.workoutmaker.app.ui.components.SectionCard
@@ -28,15 +35,34 @@ import com.workoutmaker.app.ui.screens.settings.sportLabel
 @Composable
 internal fun StepReview(profile: TrainingProfile, vm: OnboardingViewModel) {
     StepColumn {
-        Text("You're all set", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+        // The one step that reports instead of asking, so it gets a centred
+        // header rather than the standard left-aligned question (see stepHeadline).
+        Column(
+            Modifier.fillMaxWidth().padding(bottom = 6.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            Icon(
+                Icons.Filled.Celebration,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.primary,
+                modifier = Modifier.size(34.dp),
+            )
+            Text("You're all set", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
+        }
         profile.display_name?.takeIf { it.isNotBlank() }?.let { ReviewLine("Name", it) }
         val trained = SPORTS.filter { profile.sports.contains(it) }
         if (trained.isEmpty()) {
             ReviewLine("Activities", "-")
         } else trained.forEach { sport ->
+            // An endurance sport reads back its actual target ("Run 21.1 km at
+            // 5:22 /km"), not the catalog name that target was filed under.
+            val target = profile.distance_goal_km[sport]?.takeIf { it > 0 }?.let {
+                EnduranceGoals.goalPhrase(sport, it, profile.goal_pace_sec_per_km[sport])
+            }
             val goals = profile.goals_by_sport[sport].orEmpty().joinToString(", ")
             val level = profile.experience_by_sport[sport]
-            val detail = listOfNotNull(goals.ifBlank { null }, level).joinToString(" · ").ifBlank { "-" }
+            val detail = listOfNotNull(target ?: goals.ifBlank { null }, level).joinToString(" · ").ifBlank { "-" }
             ReviewLine(sportLabel(sport), detail)
         }
         if (profile.day_availability.isNotEmpty()) {

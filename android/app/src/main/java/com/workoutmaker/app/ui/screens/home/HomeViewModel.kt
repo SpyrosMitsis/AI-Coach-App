@@ -9,6 +9,8 @@ import com.workoutmaker.app.data.GenerateRequest
 import com.workoutmaker.app.data.WorkoutRepository
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharingStarted
+import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import javax.inject.Inject
 import com.workoutmaker.app.data.AppPreferences
@@ -63,6 +65,20 @@ class HomeViewModel @Inject constructor(
     // generated from guesses. Nudge until the profile is minimally usable
     // (sports + availability); dismissal snoozes for 14 days.
     val showSetupNudge = MutableStateFlow(false)
+
+    // The athlete's own Home layout. Read straight from prefs so Home and the
+    // Customize screen are never briefly out of step with each other.
+    val homeLayout = prefs.homeLayout.stateIn(viewModelScope, SharingStarted.Eagerly, HomeLayout())
+
+    fun moveHomeCard(card: HomeCard, up: Boolean) = viewModelScope.launch {
+        prefs.setHomeLayout(homeLayout.value.moved(card, up))
+    }
+
+    fun toggleHomeCard(card: HomeCard) = viewModelScope.launch {
+        prefs.setHomeLayout(homeLayout.value.toggledHidden(card))
+    }
+
+    fun resetHomeLayout() = viewModelScope.launch { prefs.setHomeLayout(defaultHomeLayout()) }
     private suspend fun refreshSetupNudge() {
         val p = profile.value ?: return
         val unusable = p.sports.isEmpty() || p.day_availability.isEmpty()

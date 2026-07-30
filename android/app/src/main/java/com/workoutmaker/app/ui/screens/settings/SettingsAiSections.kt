@@ -36,6 +36,8 @@ import com.workoutmaker.app.data.LlmProvider
 import com.workoutmaker.app.data.format
 import com.workoutmaker.app.ui.collectAsStateSafe
 import com.workoutmaker.app.ui.components.SectionCard
+import com.workoutmaker.app.ui.components.ProviderPicker
+import com.workoutmaker.app.ui.components.SectionLabel
 import android.app.Activity
 import android.content.Intent
 import android.net.Uri
@@ -69,15 +71,12 @@ internal fun KnowledgeSection(vm: SettingsViewModel) {
     val busy by vm.busy.collectAsStateSafe()
     val profile by vm.profile.collectAsStateSafe()
     // Same structured editor onboarding uses; edits profile.injuries.
-    SectionCard(title = "Injuries") {
-        Text(
-            "Areas the coach avoids loading. It picks safer alternatives and respects the severity you set.",
-            style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
-        )
+    SectionCard {
+        // The count headline lives in the screen header now (detailHeader).
         InjuryEditor(profile.injuries) { v -> vm.updateProfile { it.copy(injuries = v) } }
-        Button(onClick = { vm.saveProfile() }, enabled = !busy, modifier = Modifier.fillMaxWidth()) { Text("Save injuries") }
+        Button(onClick = { vm.saveProfile() }, enabled = !busy, modifier = Modifier.fillMaxWidth()) { Text("Save rules") }
     }
-    SectionCard(title = "Hard rules") {
+    SectionCard(title = "Notes for the coach") {
         Text(
             "Durable facts your coach must respect on every plan, e.g. \"left knee, avoid deep lunges\", " +
                 "\"no leg press machine\", \"only dumbbells at home\", \"hate burpees\". The coach chat updates this " +
@@ -189,9 +188,12 @@ internal const val KOFI_URL = "https://ko-fi.com/PLACEHOLDER"
 @Composable
 internal fun SupportSection(vm: SettingsViewModel) {
     val context = LocalContext.current
-    SectionCard(title = "Support the developer") {
+    SectionCard {
+        // Honest about both rails: Pro is a subscription and a tip is not, and
+        // the copy must not imply the app has only one of them.
         Text(
-            "This app is free and open source. If it helps your training, a small tip keeps it alive.",
+            "You're on the free path, your own key paid straight to the provider. Pro swaps that " +
+                "for hosted AI; a tip is the same help without the subscription.",
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
@@ -274,11 +276,13 @@ internal fun AiSection(vm: SettingsViewModel) {
     }
 
     SectionCard(title = "Active provider") {
-        FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-            LlmProvider.entries.forEach { p ->
-                FilterChip(selected = vm.active == p, onClick = { vm.selectProvider(p) }, label = { Text(if (p.freeTier) "${p.label} ✦" else p.label) })
-            }
-        }
+        // The same picker onboarding uses: choosing a model is one act, and it
+        // should not look like two different features in two places.
+        ProviderPicker(
+            selected = vm.active,
+            options = LlmProvider.entries,
+            onSelect = { vm.selectProvider(it) },
+        )
         Text("✦ = has a free tier. Add a key below; the others act as fallbacks.",
             style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
         // The model is the single biggest lever on coach quality — the free default

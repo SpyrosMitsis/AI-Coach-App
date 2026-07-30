@@ -178,3 +178,36 @@ class AvailabilityBuildTest {
         assertEquals(211, ceiling)
     }
 }
+
+// The onboarding week is described by the three questions and DRAWN by the
+// preview chart. These pin the two things the chart depends on: the total it
+// prints, and the fact that the questions produce a week the chart can scale.
+class WeekPreviewTest {
+    @Test
+    fun `the week total reads in hours and minutes`() {
+        assertEquals("45m", weekTotalLabel(45))
+        assertEquals("5h", weekTotalLabel(300))
+        assertEquals("5h 30m", weekTotalLabel(330))
+        assertEquals("6h 05m", weekTotalLabel(365))
+        assertEquals("0m", weekTotalLabel(0))
+    }
+
+    @Test
+    fun `a long day always towers over the typical ones in the chart`() {
+        val week = buildAvailability(daysPerWeek = 4, typical = 60, longDays = listOf("Sat"), longMin = 120)
+        val top = week.maxOf { it.max_minutes }
+        assertEquals(120, top)
+        // The long day is the only one drawn in full-height primary.
+        assertEquals(1, week.count { it.max_minutes >= LONG_DAY_MINUTES })
+        assertEquals("Sat", week.first { it.max_minutes >= LONG_DAY_MINUTES }.day)
+        assertEquals("5h", weekTotalLabel(week.sumOf { it.max_minutes }))
+    }
+
+    @Test
+    fun `a week with no long day still scales, every bar to the same height`() {
+        val week = buildAvailability(daysPerWeek = 3, typical = 45, longDays = emptyList(), longMin = 120)
+        assertEquals(45, week.maxOf { it.max_minutes })
+        assertEquals(0, week.count { it.max_minutes >= LONG_DAY_MINUTES })
+        assertEquals("2h 15m", weekTotalLabel(week.sumOf { it.max_minutes }))
+    }
+}

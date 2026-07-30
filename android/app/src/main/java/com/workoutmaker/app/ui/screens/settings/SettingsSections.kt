@@ -12,12 +12,25 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
+import com.workoutmaker.app.data.EnduranceGoals
 import com.workoutmaker.app.ui.theme.palette
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Flag
+import androidx.compose.material.icons.filled.FitnessCenter
+import androidx.compose.material.icons.filled.Pool
+import androidx.compose.material.icons.automirrored.filled.DirectionsBike
+import androidx.compose.material.icons.automirrored.filled.DirectionsRun
+import androidx.compose.material.icons.outlined.CalendarMonth
 import androidx.compose.material.icons.outlined.Flag
+import androidx.compose.material.icons.outlined.ScreenLockPortrait
+import androidx.compose.material.icons.outlined.WbTwilight
 import androidx.compose.material.icons.outlined.Palette
+import androidx.compose.material.icons.outlined.Person
+import androidx.compose.material.icons.automirrored.outlined.ShowChart
+import androidx.compose.material.icons.outlined.Sync
+import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.Button
 import androidx.compose.material3.FilterChip
@@ -36,6 +49,8 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.foundation.text.KeyboardOptions
@@ -46,6 +61,7 @@ import com.workoutmaker.app.data.format
 import com.workoutmaker.app.ui.collectAsStateSafe
 import com.workoutmaker.app.ui.components.SectionCard
 import com.workoutmaker.app.ui.components.SectionLabel
+import com.workoutmaker.app.ui.components.SegmentedToggle
 import android.app.Activity
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material3.contentColorFor
@@ -79,7 +95,45 @@ internal fun AboutYouSection(vm: SettingsViewModel, onOpenBodyHistory: () -> Uni
     val profile by vm.profile.collectAsStateSafe()
     // Injuries live on "Injuries & constraints", the briefing toggle on
     // "Planning" — this page is purely who you are, physically.
-    SectionCard(title = "About you") {
+    SectionCard {
+        // Your initials, so the screen about you opens with you on it. Falls back
+        // to a person glyph before there is a name to take initials from.
+        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(14.dp)) {
+            Box(
+                Modifier.size(52.dp).background(MaterialTheme.colorScheme.primaryContainer, CircleShape),
+                contentAlignment = Alignment.Center,
+            ) {
+                val initials = profile.display_name.orEmpty().trim()
+                    .split(" ").filter { it.isNotBlank() }.take(2)
+                    .joinToString("") { it.first().uppercase() }
+                if (initials.isBlank()) {
+                    Icon(
+                        Icons.Outlined.Person,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.onPrimaryContainer,
+                    )
+                } else {
+                    Text(
+                        initials,
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.Bold,
+                        color = MaterialTheme.colorScheme.onPrimaryContainer,
+                    )
+                }
+            }
+            Column(Modifier.weight(1f)) {
+                Text(
+                    profile.display_name?.takeIf { it.isNotBlank() } ?: "No name yet",
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.SemiBold,
+                )
+                Text(
+                    "What the coach calls you",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        }
         OutlinedTextField(
             profile.display_name ?: "", { v -> vm.updateProfile { it.copy(display_name = v.ifBlank { null }) } },
             label = { Text("Your name") }, placeholder = { Text("What the coach calls you") },
@@ -114,11 +168,45 @@ internal fun AboutYouSection(vm: SettingsViewModel, onOpenBodyHistory: () -> Uni
                 keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal), modifier = Modifier.weight(1f),
             )
         }
-        Text(
-            "Normally read from your Intervals.icu profile; weight and body fat also sync from a Health Connect smart scale. Anything set here overrides those; leave blank to use the synced value.",
-            style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
-        )
-        TextButton(onClick = onOpenBodyHistory) { Text("Body trends →") }
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            Icon(
+                Icons.Outlined.Sync,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.size(16.dp),
+            )
+            Text(
+                "Weight and body fat sync from Intervals.icu and a Health Connect scale. Edit one to override it.",
+                style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+    }
+    // Body trends is a place to go, not a field to fill, so it reads as a row.
+    SectionCard {
+        Row(
+            Modifier.fillMaxWidth().clickable { onOpenBodyHistory() },
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Icon(
+                Icons.AutoMirrored.Outlined.ShowChart,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.primary,
+                modifier = Modifier.padding(end = 14.dp).size(22.dp),
+            )
+            Column(Modifier.weight(1f)) {
+                Text("Body trends", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
+                Text(
+                    "Weight, body fat and lean mass over time",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            Icon(
+                Icons.AutoMirrored.Filled.KeyboardArrowRight,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.outline,
+            )
+        }
     }
     SaveProfileButton(vm)
 }
@@ -127,31 +215,131 @@ internal fun AboutYouSection(vm: SettingsViewModel, onOpenBodyHistory: () -> Uni
 @Composable
 internal fun SportsGoalsSection(vm: SettingsViewModel) {
     val profile by vm.profile.collectAsStateSafe()
-    SectionCard(title = "Your sports") {
-        SportSelector(profile.sports) { s -> vm.updateProfile { it.copy(sports = it.sports.toggled(s)) } }
-    }
-    // Activity-first: each selected sport gets its own card, so two+ sports read
-    // as separate topics instead of one undivided run of goal/level/split chips.
-    SPORTS.filter { profile.sports.contains(it) }.forEach { sport ->
+    var expanded by remember { mutableStateOf<String?>(null) }
+
+    // Every sport, chosen or not, as one row: what it is, what you have told me
+    // about it, and a way in. A sport you do not train reads as an invitation
+    // rather than an unticked box, and the summary line means you can see all
+    // four states without opening anything.
+    SPORTS.forEach { sport ->
+        val on = profile.sports.contains(sport)
         SectionCard {
-            SectionLabel(sportLabel(sport))
+            Row(
+                Modifier.fillMaxWidth().clickable {
+                    if (!on) vm.updateProfile { it.copy(sports = it.sports.toggled(sport)) }
+                    expanded = if (expanded == sport) null else sport
+                },
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Icon(
+                    sportIcon(sport),
+                    contentDescription = null,
+                    tint = if (on) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(end = 14.dp).size(24.dp),
+                )
+                Column(Modifier.weight(1f)) {
+                    Text(
+                        sportLabel(sport),
+                        style = MaterialTheme.typography.titleSmall,
+                        fontWeight = FontWeight.SemiBold,
+                        color = if (on) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    Text(
+                        sportSummary(sport, profile),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                if (on) {
+                    // Dropping a sport is destructive enough to need its own
+                    // target, not a second meaning for tapping the row.
+                    TextButton(onClick = {
+                        vm.updateProfile { it.copy(sports = it.sports.toggled(sport)) }
+                        expanded = null
+                    }) { Text("Remove") }
+                }
+                Icon(
+                    Icons.AutoMirrored.Filled.KeyboardArrowRight,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.outline,
+                )
+            }
+            if (on && expanded == sport) SportDetail(sport, profile, vm)
+        }
+    }
+    SaveProfileButton(vm)
+}
+
+/** One line saying what this sport is currently set to, for the row above. */
+private fun sportSummary(sport: String, profile: TrainingProfile): String {
+    if (!profile.sports.contains(sport)) return "Pick a goal to include it in planning"
+    val target = profile.distance_goal_km[sport]?.takeIf { it > 0 }
+        ?.let { EnduranceGoals.goalPhrase(sport, it, profile.goal_pace_sec_per_km[sport]) }
+    val goals = profile.goals_by_sport[sport].orEmpty().joinToString(", ").ifBlank { null }
+    val bits = listOfNotNull(target ?: goals, profile.experience_by_sport[sport])
+    return bits.joinToString(" · ").ifBlank { "No goal set yet" }
+}
+
+private fun sportIcon(sport: String) = when (sport) {
+    "run" -> Icons.AutoMirrored.Filled.DirectionsRun
+    "ride" -> Icons.AutoMirrored.Filled.DirectionsBike
+    "swim" -> Icons.Filled.Pool
+    else -> Icons.Filled.FitnessCenter
+}
+
+@Composable
+private fun SportDetail(sport: String, profile: TrainingProfile, vm: SettingsViewModel) {
+    Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            // Onboarding's picker records a precise target ("Run 21.1 km at
+            // 5:22 /km"), which OVERRIDES the catalog goal when the profile is
+            // saved. Show it, or a goal edited here would silently do nothing.
+            profile.distance_goal_km[sport]?.takeIf { it > 0 }?.let { km ->
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        EnduranceGoals.goalPhrase(sport, km, profile.goal_pace_sec_per_km[sport]),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.weight(1f),
+                    )
+                    TextButton(
+                        onClick = {
+                            vm.updateProfile {
+                                it.copy(
+                                    distance_goal_km = it.distance_goal_km - sport,
+                                    goal_pace_sec_per_km = it.goal_pace_sec_per_km - sport,
+                                )
+                            }
+                        },
+                    ) { Text("Clear") }
+                }
+            }
             SportGoalsLevel(
                 sport = sport,
                 goals = profile.goals_by_sport[sport].orEmpty(),
                 level = profile.experience_by_sport[sport],
                 splitStyle = profile.split_style,
-                onGoalToggle = { g -> vm.updateProfile { it.copy(goals_by_sport = it.goals_by_sport.toggleIn(sport, g)) } },
+                // Picking a goal by hand is an override: drop the distance target
+                // so the chip the athlete just tapped is the one that survives.
+                onGoalToggle = { g ->
+                    vm.updateProfile {
+                        it.copy(
+                            goals_by_sport = it.goals_by_sport.toggleIn(sport, g),
+                            distance_goal_km = it.distance_goal_km - sport,
+                            goal_pace_sec_per_km = it.goal_pace_sec_per_km - sport,
+                        )
+                    }
+                },
                 onLevel = { lvl -> vm.updateProfile { it.copy(experience_by_sport = it.experience_by_sport + (sport to lvl)) } },
                 onSplit = { s -> vm.updateProfile { it.copy(split_style = if (s == "Auto") null else s) } },
             )
-        }
+            // The gym's kit belongs with the gym, not in a card of its own at
+            // the bottom that only applies to one of the four sports.
+            if (sport == "strength") {
+                EquipmentSelector(profile.equipment_list) { e ->
+                    vm.updateProfile { it.copy(equipment_list = it.equipment_list.toggled(e)) }
+                }
+            }
     }
-    if (sportNeedsEquipment(profile.sports)) {
-        SectionCard(title = "Equipment") {
-            EquipmentSelector(profile.equipment_list) { e -> vm.updateProfile { it.copy(equipment_list = it.equipment_list.toggled(e)) } }
-        }
-    }
-    SaveProfileButton(vm)
 }
 
 @Composable
@@ -178,33 +366,63 @@ internal fun TrainingWeekSection(vm: SettingsViewModel) {
 @Composable
 internal fun WorkoutDefaultsSection(vm: SettingsViewModel) {
     val s by vm.appSettings.collectAsStateSafe()
-    SectionCard(title = "Units") {
-        FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-            WeightUnit.entries.forEach { u ->
-                FilterChip(selected = s.units == u, onClick = { vm.setUnits(u) }, label = { Text(u.label) })
-            }
-        }
-        Text("Used by the plate calculator and weight labels.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+    SectionCard {
+        // Two units, so a two-way switch rather than two chips that happen to
+        // be exclusive (same reasoning as SegmentedToggle everywhere else).
+        SegmentedToggle(
+            WeightUnit.entries.first().label,
+            WeightUnit.entries.last().label,
+            right = s.units == WeightUnit.entries.last(),
+            onChange = { right -> vm.setUnits(if (right) WeightUnit.entries.last() else WeightUnit.entries.first()) },
+        )
+        Text(
+            "Used by the plate maths and every weight label in the app.",
+            style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
     }
-    SectionCard(title = "Default rest timer") {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Text(restLabel(s.defaultRestSec), Modifier.weight(1f), style = MaterialTheme.typography.titleMedium, color = MaterialTheme.colorScheme.primary)
-            OutlinedButton(onClick = { vm.setDefaultRest((s.defaultRestSec - 15).coerceAtLeast(0)) }) { Text("−15s") }
-            Spacer(Modifier.width(8.dp))
-            OutlinedButton(onClick = { vm.setDefaultRest(s.defaultRestSec + 15) }) { Text("+15s") }
+    SectionCard {
+        Text("Rest between sets, when a lift doesn't say", style = MaterialTheme.typography.titleSmall)
+        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+            OutlinedButton(onClick = { vm.setDefaultRest((s.defaultRestSec - 15).coerceAtLeast(0)) }) { Text("−15") }
+            Text(
+                restLabel(s.defaultRestSec),
+                Modifier.weight(1f),
+                style = MaterialTheme.typography.headlineSmall,
+                fontWeight = FontWeight.Bold,
+                textAlign = TextAlign.Center,
+            )
+            OutlinedButton(onClick = { vm.setDefaultRest(s.defaultRestSec + 15) }) { Text("+15") }
         }
-        Text("Applied to exercises without a specific rest time (e.g. custom lifts).", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
     }
-    SectionCard(title = "Barbell weight") {
-        FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-            BAR_WEIGHTS.forEach { w ->
-                FilterChip(selected = s.barbellKg == w, onClick = { vm.setBarbell(w) }, label = { Text("${s.units.format(w)} ${s.units.suffix}") })
-            }
+    SectionCard {
+        Text("Bar weight the plate maths subtracts", style = MaterialTheme.typography.titleSmall)
+        ChoiceTiles(
+            BAR_WEIGHTS.take(3).map { w ->
+                TileChoice(
+                    label = s.units.suffix,
+                    value = s.units.format(w),
+                    selected = s.barbellKg == w,
+                    onClick = { vm.setBarbell(w) },
+                )
+            },
+        )
+        // The fourth bar (7 kg) is rare enough to sit under the tiles rather
+        // than squash them, but it must stay reachable.
+        BAR_WEIGHTS.drop(3).forEach { w ->
+            FilterChip(
+                selected = s.barbellKg == w,
+                onClick = { vm.setBarbell(w) },
+                label = { Text("${s.units.format(w)} ${s.units.suffix}") },
+            )
         }
-        Text("Base weight the plate calculator subtracts.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
     }
-    SectionCard(title = "Display") {
-        ToggleRow("Keep screen on during workouts", "Stops the display sleeping while you train.", s.keepScreenOn) { vm.setKeepScreenOn(it) }
+    SectionCard {
+        IconToggleRow(
+            Icons.Outlined.ScreenLockPortrait,
+            "Keep the screen awake",
+            "While a session is running",
+            s.keepScreenOn,
+        ) { vm.setKeepScreenOn(it) }
     }
 }
 
@@ -215,58 +433,82 @@ internal fun PlanningSection(vm: SettingsViewModel) {
     val profile by vm.profile.collectAsStateSafe()
     val busy by vm.busy.collectAsStateSafe()
     val haptics = LocalHapticFeedback.current
-    SectionCard(title = "Automatic coaching") {
-        ToggleRow("Auto-plan next week", "Every Sunday the AI lays out your week and (if connected) pushes it to your watch.", autoPlan) { vm.setAutoPlan(it) }
+    SectionCard {
+        IconToggleRow(
+            Icons.Outlined.CalendarMonth,
+            "Write next week for me",
+            "Sunday evening, pushed to your watch",
+            autoPlan,
+        ) { vm.setAutoPlan(it) }
         HorizontalDivider(color = MaterialTheme.colorScheme.surfaceContainerHigh)
         // Saved immediately — a toggle that silently needs a Save button reads
         // as broken. (Moved here from Profile: it's coach behavior, not identity.)
-        ToggleRow(
-            "Daily coach briefing",
-            "A short, human note from your coach at the top of Home each day. Costs one AI call per day; turn off to avoid any automatic spend.",
+        IconToggleRow(
+            Icons.Outlined.WbTwilight,
+            "Morning briefing",
+            "A note from your coach on Home, about one AI call a day",
             profile.briefing,
         ) { checked ->
             vm.updateProfile { it.copy(briefing = checked) }
             vm.saveProfile()
         }
     }
-    SectionCard(title = "Weekly load target") {
-        // The same effort chips onboarding offers: fractions of the athlete's
-        // own availability ceiling, so the suggestion is always achievable.
+    SectionCard {
+        Text("How much load should a normal week carry?", style = MaterialTheme.typography.titleSmall)
+        // The same three options onboarding offers, as tiles: each is a fraction
+        // of the athlete's OWN availability ceiling, so the number beside the
+        // name is the part worth comparing, and none of them is out of reach.
         val minutes = profile.day_availability.sumOf { it.max_minutes }
-        Periodization.availabilityCeiling(minutes)?.let { ceiling ->
-            FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                Periodization.Effort.entries.forEach { e ->
+        val ceiling = Periodization.availabilityCeiling(minutes)
+        if (ceiling != null) {
+            ChoiceTiles(
+                Periodization.Effort.entries.map { e ->
                     val target = e.targetFor(ceiling)
-                    FilterChip(
+                    TileChoice(
+                        label = e.label,
+                        value = "~$target",
                         selected = profile.weekly_tss_target == target,
                         onClick = { vm.updateProfile { it.copy(weekly_tss_target = target) } },
-                        label = { Text("${e.label} · ~$target") },
                     )
-                }
-            }
+                },
+            )
+            Text(
+                "Priced from your ${durationLabel(minutes)} week, so none of these is out of reach.",
+                style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        } else {
+            Text(
+                "Set your training days first and these price themselves from the time you actually have.",
+                style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
         }
+        // Kept: the exact-number escape hatch, for anyone who knows the TSS they want.
         OutlinedTextField(
             (profile.weekly_tss_target?.toString() ?: ""), { v -> vm.updateProfile { it.copy(weekly_tss_target = v.toIntOrNull()) } },
-            label = { Text("Target weekly TSS (optional)") }, singleLine = true,
+            label = { Text("Or set the number yourself") }, singleLine = true,
             keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number), modifier = Modifier.fillMaxWidth(),
         )
-        Text("Guides how much training load the weekly planner aims for. Leave blank to auto-estimate.",
-            style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
     }
-    SectionCard(title = "Challenge level") {
-        Text(
-            "A standing bias on how hard sessions feel. The coach still adapts to your daily readiness on top of this.",
-            style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
-        )
-        FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-            listOf("Easier" to "easier", "Standard" to null, "Harder" to "harder").forEach { (label, value) ->
-                FilterChip(
+    SectionCard {
+        Text("And how hard should it feel?", style = MaterialTheme.typography.titleSmall)
+        ChoiceTiles(
+            listOf("Easier" to "easier", "Standard" to null, "Harder" to "harder").map { (label, value) ->
+                TileChoice(
+                    label = label,
+                    value = when (value) {
+                        "easier" -> "−"
+                        "harder" -> "+"
+                        else -> "="
+                    },
                     selected = profile.challenge == value,
                     onClick = { vm.updateProfile { it.copy(challenge = value) } },
-                    label = { Text(label) },
                 )
-            }
-        }
+            },
+        )
+        Text(
+            "A standing bias, on top of which the coach still adapts to your daily readiness.",
+            style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
     }
     Button(
         onClick = { haptics.performHapticFeedback(HapticFeedbackType.LongPress); vm.saveProfile() },
@@ -302,6 +544,7 @@ internal fun AppearanceSection(vm: SettingsViewModel) {
 // ---------------------------------------------------------------------------
 // P1 — goal races (A/B/C) + countdown
 // ---------------------------------------------------------------------------
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 internal fun RacesSection(vm: SettingsViewModel) {
     val races by vm.races.collectAsStateSafe()
@@ -313,14 +556,43 @@ internal fun RacesSection(vm: SettingsViewModel) {
         vm.addRace(race, setGoal); showAdd = false
     }
 
-    SectionCard(title = "Goals & races") {
-        Text("Set goals for any sport, races, FTP targets, swim times, lifts. Your A-goal drives periodization and the taper; B/C goals are tune-ups shown on the countdown.",
-            style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-        if (races.isEmpty()) {
-            EmptyState(
-                title = "No goals yet",
-                subtitle = "Add a goal race or target to drive your periodization.",
-                icon = Icons.Filled.Flag,
+    // Nothing set yet is the common case here, so it gets a real screen rather
+    // than an apologetic line above an empty list: what a goal buys you, one
+    // button, and three shortcuts for the goals people actually set.
+    if (races.isEmpty()) {
+        SectionCard {
+            Column(
+                Modifier.fillMaxWidth().padding(vertical = 12.dp),
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.spacedBy(10.dp),
+            ) {
+                Box(
+                    Modifier.size(56.dp).background(MaterialTheme.colorScheme.surfaceContainerLowest, CircleShape),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Icon(
+                        Icons.Filled.Flag,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.size(26.dp),
+                    )
+                }
+                Text("No goals yet", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
+                Text(
+                    "B and C goals show on the countdown as tune-ups.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    textAlign = TextAlign.Center,
+                )
+                Button(onClick = { showAdd = true }) { Text("Add your first goal") }
+            }
+        }
+    }
+    SectionCard {
+        if (races.isNotEmpty()) {
+            Text(
+                "Races, FTP targets, swim times, lifts. B and C goals are tune-ups shown on the countdown.",
+                style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
         }
         races.forEach { r ->
@@ -350,6 +622,14 @@ internal fun RacesSection(vm: SettingsViewModel) {
             }
         }
         OutlinedButton(onClick = { showAdd = true }, modifier = Modifier.fillMaxWidth()) { Text("Add goal") }
+        // Shortcuts into the same dialog for the three goals people actually
+        // set. They only pre-frame the ask; the dialog still owns every field.
+        SectionLabel("Quick add")
+        FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+            listOf("10K race", "FTP target", "Lift PR").forEach { label ->
+                FilterChip(selected = false, onClick = { showAdd = true }, label = { Text(label) })
+            }
+        }
     }
 }
 

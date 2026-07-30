@@ -7,6 +7,8 @@ import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.intPreferencesKey
 import androidx.datastore.preferences.core.longPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
+import com.workoutmaker.app.ui.screens.home.HomeLayout
+import com.workoutmaker.app.ui.screens.home.homeLayoutFrom
 import androidx.datastore.preferences.preferencesDataStore
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.flow.Flow
@@ -107,6 +109,30 @@ class AppPreferences @Inject constructor(
         val setupNudgeDismissedAt = longPreferencesKey("setup_nudge_dismissed_at")
         val calendarRead = booleanPreferencesKey("calendar_read")
         val calendarWrite = booleanPreferencesKey("calendar_write")
+        // Home layout: the athlete's own card order, and what they switched off.
+        // Two CSVs of card keys rather than a serialized object, so an unknown
+        // key from a future or past release is skipped instead of failing to parse.
+        val homeOrder = stringPreferencesKey("home_card_order")
+        val homeHidden = stringPreferencesKey("home_cards_hidden")
+        // Month or week on the calendar. A view preference, not a navigation
+        // state: an athlete who only ever wants the week should get the week
+        // on every cold start, not just until the process dies.
+        val calendarWeekView = booleanPreferencesKey("calendar_week_view")
+    }
+
+    val calendarWeekView: Flow<Boolean> =
+        context.dataStore.data.map { it[Keys.calendarWeekView] ?: false }
+
+    suspend fun setCalendarWeekView(on: Boolean) = edit { it[Keys.calendarWeekView] = on }
+
+    /** The athlete's Home layout, or the default when they have never touched it. */
+    val homeLayout: Flow<HomeLayout> = context.dataStore.data.map { p ->
+        homeLayoutFrom(p[Keys.homeOrder], p[Keys.homeHidden])
+    }
+
+    suspend fun setHomeLayout(layout: HomeLayout) = edit {
+        it[Keys.homeOrder] = layout.orderCsv
+        it[Keys.homeHidden] = layout.hiddenCsv
     }
 
     // The Home "finish setting up your coach" card for onboarding skippers.
