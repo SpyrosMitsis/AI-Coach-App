@@ -1,6 +1,7 @@
 package com.workoutmaker.app.ui.screens.settings
 
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.Row
@@ -9,6 +10,21 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.background
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.outlined.DeleteForever
+import androidx.compose.material.icons.outlined.Download
+import androidx.compose.material.icons.outlined.UploadFile
+import androidx.compose.material.icons.automirrored.outlined.Logout
+import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
+import androidx.compose.material.icons.filled.CheckCircle
+import androidx.compose.material.icons.filled.Error
+import androidx.compose.material.icons.outlined.CalendarMonth
+import androidx.compose.material.icons.outlined.EventAvailable
+import androidx.compose.material.icons.outlined.Favorite
+import androidx.compose.material.icons.outlined.Link
+import androidx.compose.material.icons.outlined.ScreenLockPortrait
+import androidx.compose.material.icons.outlined.Timer
+import androidx.compose.material.icons.outlined.Vibration
+import androidx.compose.material.icons.outlined.WbTwilight
 import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.outlined.AutoAwesome
@@ -17,6 +33,7 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
@@ -29,6 +46,9 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import com.workoutmaker.app.ui.components.StatTileGrid
+import com.workoutmaker.app.ui.components.SectionLabel
+import androidx.compose.foundation.clickable
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.foundation.text.KeyboardOptions
@@ -80,11 +100,20 @@ internal fun ConnectionsSection(vm: SettingsViewModel) {
     }
     val connected = intervalsSaved != null || intervalsStatus?.startsWith("✓") == true
 
-    SectionCard(title = "Intervals.icu") {
-        StatusChip("Intervals.icu", connected)
+    LinkCard(
+        icon = Icons.Outlined.Link,
+        title = "Intervals.icu",
+        status = intervalsSaved?.let { "Linked as athlete ${it.first}" } ?: "Not connected",
+        connected = connected,
+        body = if (connected) {
+            "Sends structured workouts to your watch and pulls your history back every 30 minutes."
+        } else {
+            "Without it I never see what you actually did, only what I asked for."
+        },
+    ) {
         intervalsSaved?.let { (athlete, hint) ->
             Text(
-                "Saved: athlete $athlete · API key ${hint ?: "••••••••"}",
+                "Athlete $athlete · API key ${hint ?: "••••••••"}",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.primary,
             )
@@ -96,8 +125,8 @@ internal fun ConnectionsSection(vm: SettingsViewModel) {
                 modifier = Modifier.fillMaxWidth(),
             ) { Text(if (busy) "Syncing…" else "Sync now") }
         }
-        Text("Pushes structured workouts to your Amazfit watch (via Zepp → Intervals.icu). Find the athlete ID + API key in Intervals.icu → Settings → Developer.",
-            style = MaterialTheme.typography.bodySmall)
+        Text("Find the athlete ID and API key in Intervals.icu → Settings → Developer.",
+            style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
         var athleteId by remember { mutableStateOf("") }
         var apiKey by remember { mutableStateOf("") }
         OutlinedTextField(
@@ -113,10 +142,14 @@ internal fun ConnectionsSection(vm: SettingsViewModel) {
         Button(onClick = { vm.connectIntervals(athleteId.trim(), apiKey.trim()) }, enabled = !busy && athleteId.isNotBlank() && apiKey.isNotBlank(), modifier = Modifier.fillMaxWidth()) { Text("Verify & connect") }
         intervalsStatus?.let { Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.primary) }
     }
-    SectionCard(title = "Health Connect") {
-        StatusChip("Health Connect", vm.healthAvailable)
-        Text("Pulls HRV, resting HR, sleep and steps from your phone (Zepp/Amazfit, Google Fit, Fitbit…) to sharpen your daily readiness score.",
-            style = MaterialTheme.typography.bodySmall)
+    LinkCard(
+        icon = Icons.Outlined.Favorite,
+        title = "Health Connect",
+        status = if (vm.healthAvailable) "Available on this phone" else "Not available",
+        connected = healthStatus?.startsWith("✓") == true,
+        body = "Without sleep and HRV, your readiness score is a guess from training load alone. " +
+            "Pulls from Zepp/Amazfit, Google Fit, Fitbit and the rest.",
+    ) {
         Button(
             onClick = {
                 if (!vm.healthAvailable) vm.setHealthStatus("Health Connect isn't available. Install/update it from the Play Store.")
@@ -143,7 +176,8 @@ internal fun ConnectionsSection(vm: SettingsViewModel) {
         ) { Text("Open Health Connect (manage permissions)") }
         healthStatus?.let { Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.primary) }
     }
-    SectionCard(title = "Device calendar") {
+    SectionCard {
+        Text("Your calendar", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
         val s by vm.appSettings.collectAsStateSafe()
         val calendarStatus by vm.calendarStatus.collectAsStateSafe()
         val readPermLauncher = rememberLauncherForActivityResult(
@@ -163,9 +197,10 @@ internal fun ConnectionsSection(vm: SettingsViewModel) {
                 "For planning, only busy TIMES are used; event titles never leave your phone.",
             style = MaterialTheme.typography.bodySmall,
         )
-        ToggleRow(
-            "Plan around my calendar",
-            "The planner reads your busy times and puts long or hard sessions on your free days.",
+        IconToggleRow(
+            Icons.Outlined.CalendarMonth,
+            "Plan around busy times",
+            "Titles never leave the phone",
             s.calendarRead,
         ) { on ->
             when {
@@ -175,9 +210,10 @@ internal fun ConnectionsSection(vm: SettingsViewModel) {
             }
         }
         HorizontalDivider(color = MaterialTheme.colorScheme.surfaceContainerHigh)
-        ToggleRow(
-            "Show workouts in my calendar",
-            "Planned sessions appear as all-day entries on the day, no clock time, no reminders.",
+        IconToggleRow(
+            Icons.Outlined.EventAvailable,
+            "Show workouts there",
+            "All-day entries, no reminders",
             s.calendarWrite,
         ) { on ->
             when {
@@ -196,13 +232,14 @@ internal fun NotificationsSection(vm: SettingsViewModel) {
     val s by vm.appSettings.collectAsStateSafe()
     val context = LocalContext.current
     SectionCard {
-        ToggleRow("Morning readiness summary", "One notification at wake-up with your readiness score and the day's plan.", s.morningNotify) { vm.setMorningNotify(it) }
+        IconToggleRow(Icons.Outlined.WbTwilight, "Morning readiness", "At wake-up, your score and today's plan", s.morningNotify) { vm.setMorningNotify(it) }
         HorizontalDivider(color = MaterialTheme.colorScheme.surfaceContainerHigh)
-        ToggleRow("Rest-timer alert", "Notify when a rest period ends, even if the app is in the background.", s.restNotify) { vm.setRestNotify(it) }
+        IconToggleRow(Icons.Outlined.Timer, "Rest is over", "Works with the app in the background", s.restNotify) { vm.setRestNotify(it) }
         HorizontalDivider(color = MaterialTheme.colorScheme.surfaceContainerHigh)
-        ToggleRow("Vibrate on rest end", "Buzz the phone when the rest timer finishes.", s.restVibrate) { vm.setRestVibrate(it) }
+        IconToggleRow(Icons.Outlined.Vibration, "Buzz too", "When the rest timer finishes", s.restVibrate) { vm.setRestVibrate(it) }
     }
-    SectionCard(title = "Rest-end chime") {
+    SectionCard {
+        Text("Sound, tap to hear it", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
         FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
             RestChime.entries.forEach { c ->
                 FilterChip(
@@ -217,7 +254,7 @@ internal fun NotificationsSection(vm: SettingsViewModel) {
             }
         }
         Text(
-            "Played when the rest timer finishes while the app is open. Uses the media volume, sounds even on silent, alongside your music. Background alerts use the system notification sound.",
+            "Media volume, so it cuts through music and plays on silent. Background alerts use the system notification sound.",
             style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
     }
@@ -257,11 +294,22 @@ internal fun DiagnosticsSection(vm: SettingsViewModel) {
     val appSettings by vm.appSettings.collectAsStateSafe()
     val cap = appSettings.spendCapUsd
 
-    SectionCard(title = "AI spend (estimated)") {
-        Text("Today ${money(spentToday)} · 7d ${money(spent7)} · 30d ${money(spent30)}",
-            style = MaterialTheme.typography.titleSmall)
-        Text("${within30.size} generations in 30d" + (if (fails > 0) " · $fails failed" else " · all OK"),
-            style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+    SectionCard {
+        // The 30-day total as the hero, because that is the number anyone opening
+        // this screen came to see. The windows beside it give it a shape.
+        Text(money(spent30), style = MaterialTheme.typography.displaySmall, fontWeight = FontWeight.Bold)
+        Text(
+            "Last 30 days · ${within30.size} generations · " +
+                (if (fails > 0) "$fails failed" else "all succeeded"),
+            style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        StatTileGrid(
+            listOf(
+                "Today" to money(spentToday),
+                "7 days" to money(spent7),
+                "Cap" to (if (cap > 0) money(cap) else "off"),
+            ),
+        )
 
         // Soft monthly cap: a warning banner only — never blocks generation.
         if (cap > 0 && spent30 >= cap) {
@@ -285,24 +333,46 @@ internal fun DiagnosticsSection(vm: SettingsViewModel) {
             },
             modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
         )
-        if (byFeature.isNotEmpty()) {
-            Text("By feature (30d): " + byFeature.joinToString(" · ") { "${it.key} ${money(it.value)}" },
-                style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.padding(top = 6.dp))
-        }
-        if (byProvider.isNotEmpty()) {
-            Text("By provider (30d): " + byProvider.joinToString(" · ") { "${it.key} ${money(it.value)}" },
-                style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+    }
+    // Where it went, as a readable column rather than one run-on line. Sorted by
+    // cost, so the thing worth turning off is always at the top.
+    if (byFeature.isNotEmpty()) {
+        SectionCard {
+            SectionLabel("Where it went")
+            byFeature.forEach { BreakdownRow(it.key, money(it.value)) }
+            if (byProvider.isNotEmpty()) {
+                HorizontalDivider(color = MaterialTheme.colorScheme.surfaceContainerHigh)
+                byProvider.forEach { BreakdownRow(it.key, money(it.value)) }
+            }
         }
     }
-    SectionCard(title = "Recent generations") {
+    SectionCard {
+        SectionLabel("Latest calls")
         logs.take(12).forEach { l ->
             Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                Text(if (l.parsed_ok) "✓" else "✗", color = if (l.parsed_ok) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.error)
+                Icon(
+                    if (l.parsed_ok) Icons.Filled.CheckCircle else Icons.Filled.Error,
+                    contentDescription = null,
+                    tint = if (l.parsed_ok) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.error,
+                    modifier = Modifier.padding(end = 10.dp).size(18.dp),
+                )
+                Column(Modifier.weight(1f)) {
+                    Text(
+                        l.feature ?: "?",
+                        style = MaterialTheme.typography.bodyMedium,
+                        fontWeight = FontWeight.SemiBold,
+                    )
+                    Text(
+                        "${l.created_at?.take(16)?.replace('T', ' ') ?: ""} · ${l.provider ?: "?"}" +
+                            (if (!l.parsed_ok && l.error != null) " · ${l.error.take(40)}" else ""),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
                 Text(
-                    "  ${l.created_at?.take(16)?.replace('T', ' ') ?: ""} · ${l.feature ?: "?"} · ${l.provider ?: "?"} · ${money(l.estimated_cost_usd ?: 0.0)}" +
-                        (if (!l.parsed_ok && l.error != null) ", ${l.error.take(50)}" else ""),
+                    if (l.parsed_ok) money(l.estimated_cost_usd ?: 0.0) else "-",
                     style = MaterialTheme.typography.bodySmall,
+                    fontWeight = FontWeight.SemiBold,
                 )
             }
         }
@@ -336,9 +406,13 @@ internal fun DataSection(vm: SettingsViewModel) {
         }
     }
     result?.let { ImportResultDialog(it) { vm.dismissImportResult() } }
-    SectionCard(title = "Import strength history") {
-        Text("Import a CSV export from Strong or Hevy. Workouts, sets and weights (kg/lb) are detected automatically. Re-importing the same file is safe: sessions you already have are skipped.",
-            style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+    LinkCard(
+        icon = Icons.Outlined.UploadFile,
+        title = "Bring history in",
+        status = "A CSV from Strong or Hevy",
+        connected = false,
+        body = "Units and set types are detected for you, and importing the same file twice changes nothing.",
+    ) {
         Button(
             // Broadest filter: some file pickers (notably Samsung's) grey out CSVs
             // when given several specific MIME types. "*/*" reliably shows them.
@@ -351,7 +425,7 @@ internal fun DataSection(vm: SettingsViewModel) {
                     modifier = Modifier.size(18.dp), strokeWidth = 2.dp,
                     color = MaterialTheme.colorScheme.onPrimary)
                 Text("  Importing…")
-            } else Text("Choose CSV file")
+            } else Text("Choose a file")
         }
         importStatus?.let { Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.primary) }
     }
@@ -377,9 +451,13 @@ internal fun ExportCard(vm: SettingsViewModel) {
             status = ok.fold({ "✓ Exported $it sets to CSV." }, { "Export failed: ${it.message}" })
         }
     }
-    SectionCard(title = "Export your data") {
-        Text("Save your entire strength history as a Strong-compatible CSV. You can re-import it here or open it anywhere.",
-            style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+    LinkCard(
+        icon = Icons.Outlined.Download,
+        title = "Take it with you",
+        status = "Strong-compatible CSV",
+        connected = false,
+        body = "Your entire strength history, re-importable here or openable anywhere.",
+    ) {
         OutlinedButton(
             onClick = { exportLauncher.launch("workout-maker-strength-${java.time.LocalDate.now()}.csv") },
             modifier = Modifier.fillMaxWidth(),
@@ -393,11 +471,53 @@ internal fun AccountSection(vm: SettingsViewModel) {
     val deleteState = vm.deleteAccountState.collectAsStateSafe().value
     val confirmDelete = remember { mutableStateOf(false) }
     SectionCard {
-        Text("Workout Maker", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
-        Text("Personalised endurance + strength coaching.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-        OutlinedButton(onClick = { vm.signOut() }, modifier = Modifier.fillMaxWidth()) { Text("Sign out") }
+        Row(
+            Modifier.fillMaxWidth().clickable { vm.signOut() },
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Icon(
+                Icons.AutoMirrored.Outlined.Logout,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.primary,
+                modifier = Modifier.padding(end = 14.dp).size(22.dp),
+            )
+            Text(
+                "Sign out",
+                Modifier.weight(1f),
+                style = MaterialTheme.typography.titleSmall,
+                fontWeight = FontWeight.SemiBold,
+            )
+            Icon(
+                Icons.AutoMirrored.Filled.KeyboardArrowRight,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.outline,
+            )
+        }
+    }
+    // The irreversible one gets its own card and spells out the consequence
+    // before the button, not after it.
+    SectionCard {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Icon(
+                Icons.Outlined.DeleteForever,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.error,
+                modifier = Modifier.padding(end = 14.dp).size(22.dp),
+            )
+            Text(
+                "Delete everything",
+                style = MaterialTheme.typography.titleSmall,
+                fontWeight = FontWeight.SemiBold,
+            )
+        }
+        Text(
+            "Profile, workouts, strength logs, coach conversations and stored keys. " +
+                "There is no undo, and anything already in Intervals.icu stays there.",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
         TextButton(onClick = { confirmDelete.value = true }, modifier = Modifier.fillMaxWidth()) {
-            Text("Delete account & all data", color = MaterialTheme.colorScheme.onErrorContainer)
+            Text("Delete my account", color = MaterialTheme.colorScheme.error)
         }
         if (deleteState != null && deleteState.isNotEmpty()) {
             Text(deleteState, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onErrorContainer)

@@ -54,22 +54,6 @@ import com.workoutmaker.app.ui.components.SegmentedToggle
 // the app's FilterChip + FlowRow idiom and theme-aware colours.
 // ===========================================================================
 
-// The sports the athlete actually trains; gates the per-activity + equipment steps.
-@OptIn(ExperimentalLayoutApi::class)
-@Composable
-internal fun SportSelector(selected: List<String>, onToggle: (String) -> Unit) {
-    Text("Which activities do you want to train?", style = MaterialTheme.typography.labelLarge)
-    FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-        SPORTS.forEach { s ->
-            FilterChip(selected = selected.contains(s), onClick = { onToggle(s) }, label = { Text(sportLabel(s)) })
-        }
-    }
-    Text(
-        "Only what you pick gets scheduled. Combine freely, e.g. Running and Gym.",
-        style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
-    )
-}
-
 // Activity-first goals: for ONE sport, its goal(s) + level, and (for the gym)
 // its preferred split. The onboarding shows one of these per activity; Settings
 // loops them for every selected sport.

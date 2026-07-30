@@ -152,8 +152,12 @@ internal fun sportLabel(key: String): String = when (key) {
 internal fun sportNeedsEquipment(sports: List<String>): Boolean = sports.contains("strength")
 
 // The goal-race step appears when any activity has a race-shaped goal.
+// A named race goal, or any concrete distance target: naming a distance is a
+// stronger signal than picking "Racing" off a list, so "is there a date on it?"
+// is exactly the right follow-up question.
 internal fun shouldAskGoalRace(p: TrainingProfile): Boolean =
-    p.goals_by_sport.values.any { goals -> goals.any { it in RACE_GOALS } }
+    p.goals_by_sport.values.any { goals -> goals.any { it in RACE_GOALS } } ||
+        p.distance_goal_km.values.any { it > 0 }
 
 // Best-effort migration: assign each legacy flat goal to the activity whose
 // catalog lists it, so an existing account pre-fills the per-activity editors.
@@ -594,6 +598,9 @@ class SettingsViewModel @Inject constructor(
     }
 
     fun signOut() = viewModelScope.launch { repo.signOut() }
+
+    /** The signed-in address, for the Account screen's headline. Null when unknown. */
+    fun userEmail(): String? = repo.auth.currentUserOrNull()?.email?.takeIf { it.isNotBlank() }
 
     // null = idle, "" = in flight, anything else = error text.
     val deleteAccountState = MutableStateFlow<String?>(null)
