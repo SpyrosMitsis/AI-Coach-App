@@ -1,11 +1,20 @@
 package com.workoutmaker.app.ui.screens.onboarding
 
+import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.ExperimentalLayoutApi
-import androidx.compose.foundation.layout.FlowRow
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material3.Button
-import androidx.compose.material3.FilterChip
+import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
@@ -16,12 +25,17 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import com.workoutmaker.app.data.LlmProvider
 import com.workoutmaker.app.ui.collectAsStateSafe
 import com.workoutmaker.app.ui.components.SectionCard
+import com.workoutmaker.app.ui.components.ProviderPicker
 import android.app.Activity
 import androidx.compose.ui.platform.LocalContext
 
@@ -92,7 +106,11 @@ private fun ByoKeyCard(vm: OnboardingViewModel) {
             "This app is free and you bring your own LLM key. You pay your provider directly for what you use. Pick one to start.",
             style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
-        FlowRowProviders(vm)
+        ProviderPicker(
+            selected = vm.provider,
+            options = LlmProvider.entries.filter { it != LlmProvider.CUSTOM },
+            onSelect = { vm.provider = it },
+        )
         if (vm.provider.freeKeyUrl.isNotBlank()) {
             // Only Groq and Gemini actually have free tiers; don't promise one
             // for the paid providers.
@@ -105,19 +123,6 @@ private fun ByoKeyCard(vm: OnboardingViewModel) {
             Text("Save & test")
         }
         status?.let { Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.primary) }
-    }
-}
-
-@OptIn(ExperimentalLayoutApi::class)
-@Composable
-private fun FlowRowProviders(vm: OnboardingViewModel) {
-    FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-        // Custom (bring-your-own endpoint) needs extra base-URL/model fields, so
-        // it's configured later in Settings — not during quick onboarding.
-        LlmProvider.entries.filter { it != LlmProvider.CUSTOM }.forEach { p ->
-            FilterChip(selected = vm.provider == p, onClick = { vm.provider = p },
-                label = { Text(if (p.freeTier) "${p.label} ✦" else p.label) })
-        }
     }
 }
 

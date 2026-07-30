@@ -1,27 +1,48 @@
 package com.workoutmaker.app.ui.screens.onboarding
 
+import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
-import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
-import androidx.compose.material3.FilterChip
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.DirectionsBike
+import androidx.compose.material.icons.automirrored.filled.DirectionsRun
+import androidx.compose.material.icons.filled.CheckCircle
+import androidx.compose.material.icons.filled.FitnessCenter
+import androidx.compose.material.icons.filled.Pool
+import androidx.compose.material.icons.filled.Psychology
+import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
+import com.workoutmaker.app.data.EnduranceGoals
 import com.workoutmaker.app.data.Race
 import com.workoutmaker.app.data.TrainingProfile
 import com.workoutmaker.app.ui.collectAsStateSafe
@@ -33,14 +54,17 @@ import java.time.format.DateTimeFormatter
 import com.workoutmaker.app.ui.screens.settings.AddRaceDialog
 import com.workoutmaker.app.ui.screens.settings.AppearancePicker
 import com.workoutmaker.app.ui.screens.settings.ChipGroup
+import com.workoutmaker.app.ui.screens.settings.EXPERIENCE_BY_SPORT
 import com.workoutmaker.app.ui.screens.settings.EquipmentSelector
+import com.workoutmaker.app.ui.screens.settings.LEVELS
 import com.workoutmaker.app.ui.screens.settings.PerformanceEditor
 import com.workoutmaker.app.ui.screens.settings.PeriodizationControl
 import com.workoutmaker.app.ui.screens.settings.PeriodizationNumbers
+import com.workoutmaker.app.ui.screens.settings.SPORTS
 import com.workoutmaker.app.ui.screens.settings.SportGoalsLevel
-import com.workoutmaker.app.ui.screens.settings.SportSelector
 import com.workoutmaker.app.ui.screens.settings.WeeklyAvailabilityEditor
 import com.workoutmaker.app.ui.screens.settings.durationLabel
+import com.workoutmaker.app.ui.screens.settings.sportLabel
 import com.workoutmaker.app.ui.screens.settings.toggleIn
 import com.workoutmaker.app.ui.screens.settings.toggled
 
@@ -48,17 +72,39 @@ import com.workoutmaker.app.ui.screens.settings.toggled
 internal fun StepWelcome(vm: OnboardingViewModel) {
     val s by vm.appSettings.collectAsStateSafe()
     StepColumn {
-        Text(
-            "Let's set up your coach",
-            style = MaterialTheme.typography.titleMedium,
-            fontWeight = FontWeight.SemiBold,
-        )
-        Text(
-            "A few quick steps and your AI coach will plan training that fits your goals, " +
-                "your week and your equipment. Everything here can be changed later in Settings.",
-            style = MaterialTheme.typography.bodyMedium,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-        )
+        // The coach introduces itself before it interrogates you. Centred hero,
+        // not a form label: this is the only screen with nothing to fill in, so
+        // it is the one chance to set who is doing the asking.
+        Column(
+            Modifier.fillMaxWidth().padding(vertical = 12.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.spacedBy(16.dp),
+        ) {
+            Box(
+                Modifier.size(76.dp).clip(CircleShape)
+                    .background(MaterialTheme.colorScheme.primaryContainer),
+                contentAlignment = Alignment.Center,
+            ) {
+                Icon(
+                    Icons.Filled.Psychology,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.onPrimaryContainer,
+                    modifier = Modifier.size(38.dp),
+                )
+            }
+            Text(
+                "I'll write your training. First, tell me about you.",
+                style = MaterialTheme.typography.headlineSmall,
+                fontWeight = FontWeight.Bold,
+                textAlign = TextAlign.Center,
+            )
+            Text(
+                "A few quick steps. Everything is optional and changeable in Settings.",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                textAlign = TextAlign.Center,
+            )
+        }
         // The theme picker rides along here (it used to be a whole step): one
         // fewer screen between the athlete and the questions that matter.
         AppearancePicker(
@@ -87,10 +133,7 @@ internal fun StepAppearance(vm: OnboardingViewModel) {
 internal fun StepPersonal(profile: TrainingProfile, vm: OnboardingViewModel) {
     val year = LocalDate.now().year
     StepColumn {
-        Text(
-            "This tunes training load, recovery and intensity to you. All optional, but it helps the coach calibrate.",
-            style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
-        )
+        // The "why we ask" line lives in the step header now (stepHeadline).
         OutlinedTextField(
             profile.display_name ?: "",
             { v -> vm.update { it.copy(display_name = v.ifBlank { null }) } },
@@ -136,26 +179,145 @@ internal fun StepPersonal(profile: TrainingProfile, vm: OnboardingViewModel) {
     }
 }
 
+// Full-width rows, not chips. This is the highest-consequence answer in the whole
+// flow (it decides which later steps even exist), and a chip row made it look like
+// a footnote. Settings keeps the compact chip selector: there the sports are
+// already chosen and the screen is a summary, not a decision.
 @Composable
 internal fun StepSports(profile: TrainingProfile, vm: OnboardingViewModel) {
     StepColumn {
-        SportSelector(profile.sports) { s -> vm.update { it.copy(sports = it.sports.toggled(s)) } }
+        SPORTS.forEach { sport ->
+            SportRow(
+                sport = sport,
+                selected = profile.sports.contains(sport),
+                onClick = { vm.update { it.copy(sports = it.sports.toggled(sport)) } },
+            )
+        }
     }
 }
 
-// One activity's own questions: its goal(s) + level (+ split for the gym).
+@Composable
+private fun SportRow(sport: String, selected: Boolean, onClick: () -> Unit) {
+    val icon = when (sport) {
+        "run" -> Icons.AutoMirrored.Filled.DirectionsRun
+        "ride" -> Icons.AutoMirrored.Filled.DirectionsBike
+        "swim" -> Icons.Filled.Pool
+        else -> Icons.Filled.FitnessCenter
+    }
+    Row(
+        Modifier.fillMaxWidth().height(62.dp)
+            .clip(RoundedCornerShape(18.dp))
+            .background(
+                if (selected) MaterialTheme.colorScheme.primaryContainer
+                else MaterialTheme.colorScheme.surfaceContainerHigh,
+            )
+            .clickable(onClick = onClick)
+            .padding(horizontal = 18.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(14.dp),
+    ) {
+        Icon(
+            icon,
+            contentDescription = null,
+            tint = if (selected) MaterialTheme.colorScheme.onPrimaryContainer
+            else MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.size(26.dp),
+        )
+        Text(
+            sportLabel(sport),
+            style = MaterialTheme.typography.titleMedium,
+            fontWeight = FontWeight.SemiBold,
+            color = if (selected) MaterialTheme.colorScheme.onPrimaryContainer
+            else MaterialTheme.colorScheme.onSurface,
+            modifier = Modifier.weight(1f),
+        )
+        if (selected) {
+            Icon(
+                Icons.Filled.CheckCircle,
+                contentDescription = "Selected",
+                tint = MaterialTheme.colorScheme.onPrimaryContainer,
+                modifier = Modifier.size(24.dp),
+            )
+        }
+    }
+}
+
+// One activity's own questions. The gym keeps the goal/level/split chips it has
+// always had; the endurance sports ask the same thing with a line and a flag,
+// because "how far" has a real answer between the named distances and "how fast"
+// was never asked at all.
 @Composable
 internal fun StepActivity(sport: String, profile: TrainingProfile, vm: OnboardingViewModel) {
-    StepColumn {
-        SportGoalsLevel(
-            sport = sport,
-            goals = profile.goals_by_sport[sport].orEmpty(),
-            level = profile.experience_by_sport[sport],
-            splitStyle = profile.split_style,
-            onGoalToggle = { g -> vm.update { it.copy(goals_by_sport = it.goals_by_sport.toggleIn(sport, g)) } },
-            onLevel = { lvl -> vm.update { it.copy(experience_by_sport = it.experience_by_sport + (sport to lvl)) } },
-            onSplit = { s -> vm.update { it.copy(split_style = if (s == "Auto") null else s) } },
+    if (EnduranceGoals.isEndurance(sport)) StepDistanceGoal(sport, profile, vm)
+    else {
+        StepColumn {
+            SportGoalsLevel(
+                sport = sport,
+                goals = profile.goals_by_sport[sport].orEmpty(),
+                level = profile.experience_by_sport[sport],
+                splitStyle = profile.split_style,
+                onGoalToggle = { g -> vm.update { it.copy(goals_by_sport = it.goals_by_sport.toggleIn(sport, g)) } },
+                onLevel = { lvl -> vm.update { it.copy(experience_by_sport = it.experience_by_sport + (sport to lvl)) } },
+                onSplit = { s -> vm.update { it.copy(split_style = if (s == "Auto") null else s) } },
+            )
+        }
+    }
+}
+
+@Composable
+private fun StepDistanceGoal(sport: String, profile: TrainingProfile, vm: OnboardingViewModel) {
+    // The control drives local state so the flag tracks the thumb at frame rate;
+    // the profile is written only when a value actually settles on something new.
+    var fraction by remember(sport) {
+        mutableFloatStateOf(
+            profile.distance_goal_km[sport]?.let { EnduranceGoals.fractionForKm(sport, it) }
+                ?: EnduranceGoals.defaultFraction(),
         )
+    }
+    var paceSec by remember(sport) {
+        mutableIntStateOf(profile.goal_pace_sec_per_km[sport] ?: EnduranceGoals.defaultPaceSec(sport))
+    }
+
+    fun commit() {
+        val km = EnduranceGoals.kmForFraction(sport, fraction)
+        vm.update { p ->
+            if (p.distance_goal_km[sport] == km && p.goal_pace_sec_per_km[sport] == paceSec) {
+                p
+            } else {
+                p.copy(
+                    distance_goal_km = p.distance_goal_km + (sport to km),
+                    goal_pace_sec_per_km = p.goal_pace_sec_per_km + (sport to paceSec),
+                    // The named goal is DERIVED, so the goal-race step, the
+                    // Settings chips and the legacy goal string all still see
+                    // the catalog value they key on.
+                    goals_by_sport = p.goals_by_sport +
+                        (sport to listOfNotNull(EnduranceGoals.catalogGoal(sport, km))),
+                )
+            }
+        }
+    }
+
+    // The picker opens on a real, pre-selected target. Same lesson as the week
+    // step: a pre-selection the athlete agrees with has to leave something behind.
+    LaunchedEffect(sport) { if (profile.distance_goal_km[sport] == null) commit() }
+
+    StepColumn {
+        DistanceGoalPicker(
+            sport = sport,
+            fraction = fraction,
+            paceSec = paceSec,
+            onFraction = { fraction = it },
+            onRelease = { fraction = EnduranceGoals.snapFraction(sport, fraction); commit() },
+            onPace = { paceSec = EnduranceGoals.clampPace(sport, it); commit() },
+        )
+        // Asked here rather than on a screen of its own: the distance says what
+        // you want, the level says what you can currently absorb, and the coach
+        // needs both to turn one into the other.
+        ChipGroup(
+            "What level are you?",
+            EXPERIENCE_BY_SPORT[sport] ?: LEVELS,
+            profile.experience_by_sport[sport],
+        ) { lvl -> vm.update { it.copy(experience_by_sport = it.experience_by_sport + (sport to lvl)) } }
     }
 }
 
@@ -178,10 +340,6 @@ internal fun StepRace(profile: TrainingProfile, vm: OnboardingViewModel) {
         vm.addGoalRace(race, setGoal); showAdd = false
     }
     StepColumn {
-        Text(
-            "Optional. Set the event you're building toward and your A-goal drives periodization and the taper. You can add or change it later in Settings.",
-            style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
-        )
         val goalDate = profile.goal_date?.let { runCatching { LocalDate.parse(it) }.getOrNull() }
         if (goalDate != null) {
             // The race as a real card: date, phase countdown, target pace, and
@@ -225,9 +383,15 @@ internal fun StepRace(profile: TrainingProfile, vm: OnboardingViewModel) {
 @Composable
 internal fun StepAvailability(profile: TrainingProfile, vm: OnboardingViewModel) {
     StepColumn {
-        // Frameless like every other onboarding step (see StepColumn) — same
-        // Schedule/Session length grouping as Settings, just label-only, no cards.
-        WeeklyAvailabilityEditor(profile.day_availability, grouped = false) { list -> vm.update { it.copy(day_availability = list) } }
+        // Answer first, questions underneath. Three taps set the whole week; the
+        // chart above just shows what they produced, which is the part a chip row
+        // genuinely cannot convey (which weekdays, and how the long day compares).
+        WeekPreviewBars(profile.day_availability)
+        // Frameless like every other onboarding step (see StepColumn): the same
+        // Schedule/Session length grouping Settings uses, label-only, no cards.
+        WeeklyAvailabilityEditor(profile.day_availability, grouped = false) { list ->
+            vm.update { it.copy(day_availability = list) }
+        }
     }
 }
 
@@ -248,28 +412,32 @@ internal fun StepEffort(profile: TrainingProfile, vm: OnboardingViewModel) {
             )
         } else {
             // Show the week these options are priced from. It is the only input
-            // to the chips below, and it was previously invisible: an athlete
+            // to the options below, and it was previously invisible: an athlete
             // who accepted the defaults never saw what got recorded.
             Text(
-                "Your week: ${profile.day_availability.size} days, ${durationLabel(minutes)} total",
-                style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
+                "Your week: ${profile.day_availability.size} days, ${durationLabel(minutes)}. " +
+                    "Priced from the time you actually have.",
+                style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
-            Text(
-                "How hard should your weeks be?",
-                style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.SemiBold,
-            )
-            FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                Periodization.Effort.entries.forEach { e ->
-                    val target = e.targetFor(ceiling)
-                    FilterChip(
-                        selected = profile.weekly_tss_target == target,
-                        onClick = { vm.update { it.copy(weekly_tss_target = target) } },
-                        label = { Text("${e.label} · ~$target TSS") },
-                    )
-                }
+            // Rows, not chips: each option carries what it MEANS ("80%, the usual
+            // pick") next to its number, which is the part that lets a beginner
+            // choose. A chip could only ever show the TSS, which is jargon.
+            Periodization.Effort.entries.forEach { e ->
+                val target = e.targetFor(ceiling)
+                EffortRow(
+                    label = e.label,
+                    note = when (e) {
+                        Periodization.Effort.LIGHT -> "60% of your ceiling, room to spare"
+                        Periodization.Effort.MODERATE -> "80%, the usual pick"
+                        Periodization.Effort.SOLID -> "95%, little room to spare"
+                    },
+                    tss = "~$target TSS",
+                    selected = profile.weekly_tss_target == target,
+                    onClick = { vm.update { it.copy(weekly_tss_target = target) } },
+                )
             }
             Text(
-                "Based on your ${minutes / 60}h ${minutes % 60}min week. The coach plans toward this; change it anytime in Settings.",
+                "The coach plans toward this. Change it anytime in Settings.",
                 style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
             // Progression lives right under the effort choice so the chart can
@@ -285,12 +453,47 @@ internal fun StepEffort(profile: TrainingProfile, vm: OnboardingViewModel) {
 }
 
 @Composable
+private fun EffortRow(label: String, note: String, tss: String, selected: Boolean, onClick: () -> Unit) {
+    Row(
+        Modifier.fillMaxWidth()
+            .clip(RoundedCornerShape(18.dp))
+            .background(
+                if (selected) MaterialTheme.colorScheme.primaryContainer
+                else MaterialTheme.colorScheme.surfaceContainerHigh,
+            )
+            .clickable(onClick = onClick)
+            .padding(horizontal = 18.dp, vertical = 16.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(12.dp),
+    ) {
+        Column(Modifier.weight(1f)) {
+            Text(
+                label,
+                style = MaterialTheme.typography.titleSmall,
+                fontWeight = FontWeight.SemiBold,
+                color = if (selected) MaterialTheme.colorScheme.onPrimaryContainer
+                else MaterialTheme.colorScheme.onSurface,
+            )
+            Text(
+                note,
+                style = MaterialTheme.typography.bodySmall,
+                color = if (selected) MaterialTheme.colorScheme.onPrimaryContainer
+                else MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+        Text(
+            tss,
+            style = MaterialTheme.typography.titleSmall,
+            fontWeight = FontWeight.SemiBold,
+            color = if (selected) MaterialTheme.colorScheme.onPrimaryContainer
+            else MaterialTheme.colorScheme.onSurface,
+        )
+    }
+}
+
+@Composable
 internal fun StepEquipment(profile: TrainingProfile, vm: OnboardingViewModel) {
     StepColumn {
-        Text(
-            "Pick what you can train with, the coach only prescribes lifts your kit supports.",
-            style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
-        )
         EquipmentSelector(profile.equipment_list) { e -> vm.update { it.copy(equipment_list = it.equipment_list.toggled(e)) } }
     }
 }
@@ -301,11 +504,6 @@ internal fun StepEquipment(profile: TrainingProfile, vm: OnboardingViewModel) {
 @Composable
 internal fun StepInjuries(profile: TrainingProfile, vm: OnboardingViewModel) {
     StepColumn {
-        Text(
-            "Anything the coach should train around? Injuries, niggles or areas to protect. " +
-                "The coach avoids loading these and picks safer alternatives.",
-            style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
-        )
         InjuryEditor(profile.injuries) { v -> vm.update { it.copy(injuries = v) } }
     }
 }

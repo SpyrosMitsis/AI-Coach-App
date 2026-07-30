@@ -87,6 +87,13 @@ data class TrainingProfile(
     // for brand-new lifters until real strength logs exist (generate-workout
     // falls back to these only when it finds no history).
     val starting_lifts: List<StartingLift> = emptyList(),
+    // --- The endurance target, per sport (the distance-goal picker) ---------
+    // How far, in km. The named goal in goals_by_sport is DERIVED from this
+    // (EnduranceGoals.catalogGoal) so everything keyed on named goals keeps
+    // working; this is the precise number that name throws away.
+    val distance_goal_km: Map<String, Double> = emptyMap(),
+    // How fast, as seconds per kilometre for all three sports (see PaceSpec).
+    val goal_pace_sec_per_km: Map<String, Int> = emptyMap(),
 )
 
 @Serializable
@@ -109,7 +116,18 @@ data class DayAvailability(
 // Settings save) so the live edge functions keep working with no changes.
 fun TrainingProfile.deriveLegacyFields(): TrainingProfile {
     // Flat goals come from the per-activity picks (fallback to any existing flat list).
-    val flatGoals = if (goals_by_sport.isNotEmpty()) goals_by_sport.values.flatten().distinct() else goals
+    val picked = if (goals_by_sport.isNotEmpty()) goals_by_sport else emptyMap()
+    // A sport with a real distance target speaks for itself: "Run 21.1 km at
+    // 5:22 /km" replaces its catalog name ("Half Marathon") in the flat list the
+    // backend reads, because the name is the part the athlete did not choose.
+    // goals_by_sport itself is left alone, so the goal-race gate and the
+    // Settings chips still see the catalog value they key on.
+    val targets = distance_goal_km.filterValues { it > 0 }
+    val flatFromSports = picked.filterKeys { it !in targets.keys }.values.flatten()
+    val targetPhrases = targets.entries.sortedBy { it.key }.map { (sport, km) ->
+        EnduranceGoals.goalPhrase(sport, km, goal_pace_sec_per_km[sport])
+    }
+    val flatGoals = (flatFromSports + targetPhrases).distinct().ifEmpty { goals }
     val derivedGoal = if (flatGoals.isNotEmpty()) flatGoals.joinToString(" + ") else goal
     val derivedExperience = when {
         experience_by_sport.isEmpty() -> experience
