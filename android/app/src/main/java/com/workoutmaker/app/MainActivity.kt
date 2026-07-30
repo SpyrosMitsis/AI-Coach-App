@@ -37,6 +37,7 @@ import com.workoutmaker.app.ui.AuthGate
 import com.workoutmaker.app.ui.screens.history.BodyHistoryScreen
 import com.workoutmaker.app.ui.screens.calendar.CalendarScreen
 import com.workoutmaker.app.ui.screens.coach.CoachScreen
+import com.workoutmaker.app.ui.screens.home.CustomizeHomeScreen
 import com.workoutmaker.app.ui.screens.home.HomeScreen
 import com.workoutmaker.app.ui.screens.history.RecoveryHistoryScreen
 import com.workoutmaker.app.ui.screens.settings.SettingsScreen
@@ -316,7 +317,11 @@ private fun MainScaffold() {
                             restoreState = true
                         }
                     },
+                    onCustomizeHome = { nav.navigate("customize-home") { launchSingleTop = true } },
                 )
+            }
+            composable("customize-home") {
+                CustomizeHomeScreen(onBack = { nav.popBackStack() })
             }
             composable("recovery-history") {
                 RecoveryHistoryScreen(onBack = { nav.popBackStack() })

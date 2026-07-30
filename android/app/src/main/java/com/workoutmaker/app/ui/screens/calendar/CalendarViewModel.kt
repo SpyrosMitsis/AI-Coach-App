@@ -12,6 +12,9 @@ import com.workoutmaker.app.data.WorkoutTemplate
 import com.workoutmaker.app.data.CompletedActivity
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.MutableStateFlow
+import com.workoutmaker.app.data.AppPreferences
+import kotlinx.coroutines.flow.SharingStarted
+import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import java.time.LocalDate
 import javax.inject.Inject
@@ -54,7 +57,13 @@ class CalendarViewModel @Inject constructor(
     private val strength: StrengthRepository,
     private val strengthHandoff: StrengthHandoff,
     private val planChanges: PlanChangeBus,
+    private val prefs: AppPreferences,
 ) : ViewModel() {
+    // Month or week, remembered across cold starts (see AppPreferences).
+    val weekView = prefs.calendarWeekView.stateIn(viewModelScope, SharingStarted.Eagerly, false)
+
+    fun setWeekView(on: Boolean) = viewModelScope.launch { prefs.setCalendarWeekView(on) }
+
     // A date another screen asked the calendar to open on (chat's "view this
     // workout"). The screen consumes it once and clears it.
     val pendingFocusDate: MutableStateFlow<String?> get() = planChanges.focusDate

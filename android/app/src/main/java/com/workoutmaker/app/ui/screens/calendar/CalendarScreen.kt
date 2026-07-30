@@ -38,6 +38,8 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
+import java.time.format.DateTimeFormatter
+import com.workoutmaker.app.ui.components.SegmentedToggle
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
@@ -124,6 +126,13 @@ fun CalendarScreen(vm: CalendarViewModel = hiltViewModel(), onOpenStrength: () -
     var showBuilder by remember { mutableStateOf(false) }
     var showRequest by remember { mutableStateOf(false) }
     var confirmDelete by remember { mutableStateOf<PlannedWorkout?>(null) }
+    // Long-press peek at a day's sessions, straight from the month grid.
+    var peekDate by remember { mutableStateOf<LocalDate?>(null) }
+    // Month reads the shape of a training block; week reads what is actually on.
+    // Stored in prefs rather than remembered: someone who only ever wants the
+    // week should get the week on every cold start, not just until the process
+    // dies (rememberSaveable would not survive the app being closed).
+    val weekView by vm.weekView.collectAsStateSafe()
     var moveTarget by remember { mutableStateOf<PlannedWorkout?>(null) }
     var activityDetail by remember { mutableStateOf<CompletedActivity?>(null) }
     var strengthDetail by remember { mutableStateOf<WorkoutEntity?>(null) }
@@ -154,6 +163,18 @@ fun CalendarScreen(vm: CalendarViewModel = hiltViewModel(), onOpenStrength: () -
     LaunchedEffect(weekStart) { vm.loadWeekPlan(weekStart) }
 
     // Activity detail is a full sub-screen.
+    // The peek rides above everything: it is a glance, so it opens and closes
+    // without disturbing which day is selected below it.
+    peekDate?.let { d ->
+        DayPeekSheet(
+            date = d,
+            sessions = primaryFirst(byDate[d.toString()].orEmpty()),
+            strength = strengthByDate[d.toString()].orEmpty(),
+            activities = activitiesByDate[d.toString()].orEmpty(),
+            onDismiss = { peekDate = null },
+        )
+    }
+
     activityDetail?.let { act ->
         BackHandler { activityDetail = null }
         DetailOverlay {
@@ -197,7 +218,7 @@ fun CalendarScreen(vm: CalendarViewModel = hiltViewModel(), onOpenStrength: () -
 
     ScreenScaffold(
         title = "Calendar",
-        subtitle = "${workouts.size} planned",
+        subtitle = "${workouts.size} planned · ${workouts.count { it.completed }} done",
         eyebrow = "TRAINING PLAN",
         isRefreshing = loading,
         onRefresh = { vm.load() },
@@ -248,30 +269,68 @@ fun CalendarScreen(vm: CalendarViewModel = hiltViewModel(), onOpenStrength: () -
                 goalDate = calProfile?.goal_date?.let { runCatching { LocalDate.parse(it) }.getOrNull() },
             )
 
-            // Month switcher
-            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                IconButton(onClick = { visibleMonth = visibleMonth.minusMonths(1) }) {
-                    Icon(Icons.Filled.ChevronLeft, contentDescription = "Previous month")
-                }
-                Text(
-                    "${visibleMonth.month.getDisplayName(TextStyle.FULL, Locale.getDefault())} ${visibleMonth.year}",
-                    style = MaterialTheme.typography.titleMedium,
-                    fontWeight = FontWeight.SemiBold,
-                    textAlign = TextAlign.Center,
-                    modifier = Modifier.weight(1f),
-                )
-                IconButton(onClick = { visibleMonth = visibleMonth.plusMonths(1) }) {
-                    Icon(Icons.Filled.ChevronRight, contentDescription = "Next month")
-                }
-            }
+            SegmentedToggle("Month", "Week", right = weekView) { vm.setWeekView(it) }
 
-            MonthGrid(
-                month = visibleMonth,
-                selected = selectedDate,
-                byDate = byDate,
-                strengthDates = strengthByDate.keys,
-                activityDates = activitiesByDate.keys,
-                onSelect = { selectedDate = it },
+            if (weekView) {
+                // The week steps by weeks; stepping it by months would be a
+                // different control wearing the same arrows.
+                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                    IconButton(onClick = { selectedDate = selectedDate.minusWeeks(1) }) {
+                        Icon(Icons.Filled.ChevronLeft, contentDescription = "Previous week")
+                    }
+                    Text(
+                        "${weekStart.format(DateTimeFormatter.ofPattern("d MMM"))} → " +
+                            weekStart.plusDays(6).format(DateTimeFormatter.ofPattern("d MMM")),
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.SemiBold,
+                        textAlign = TextAlign.Center,
+                        modifier = Modifier.weight(1f),
+                    )
+                    IconButton(onClick = { selectedDate = selectedDate.plusWeeks(1) }) {
+                        Icon(Icons.Filled.ChevronRight, contentDescription = "Next week")
+                    }
+                }
+                WeekAgenda(
+                    weekStart = weekStart,
+                    selected = selectedDate,
+                    byDate = byDate,
+                    strengthDates = strengthByDate.keys,
+                    activityDates = activitiesByDate.keys,
+                    onSelect = { selectedDate = it },
+                    onPeek = { peekDate = it },
+                )
+            } else {
+                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                    IconButton(onClick = { visibleMonth = visibleMonth.minusMonths(1) }) {
+                        Icon(Icons.Filled.ChevronLeft, contentDescription = "Previous month")
+                    }
+                    Text(
+                        "${visibleMonth.month.getDisplayName(TextStyle.FULL, Locale.getDefault())} ${visibleMonth.year}",
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.SemiBold,
+                        textAlign = TextAlign.Center,
+                        modifier = Modifier.weight(1f),
+                    )
+                    IconButton(onClick = { visibleMonth = visibleMonth.plusMonths(1) }) {
+                        Icon(Icons.Filled.ChevronRight, contentDescription = "Next month")
+                    }
+                }
+
+                MonthGrid(
+                    month = visibleMonth,
+                    selected = selectedDate,
+                    byDate = byDate,
+                    strengthDates = strengthByDate.keys,
+                    activityDates = activitiesByDate.keys,
+                    onSelect = { selectedDate = it },
+                    onPeek = { peekDate = it },
+                )
+            }
+            CalendarLegend()
+            Text(
+                "Long-press any day to see what is on it.",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.outline,
             )
 
             // Selected-day sessions

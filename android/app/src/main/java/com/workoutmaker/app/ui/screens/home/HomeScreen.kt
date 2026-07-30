@@ -42,6 +42,8 @@ import com.workoutmaker.app.ui.components.InfoIcon
 import com.workoutmaker.app.ui.components.Metrics
 import com.workoutmaker.app.ui.components.SkeletonCard
 import com.workoutmaker.app.ui.components.QuoteBlock
+import androidx.compose.runtime.key
+import androidx.compose.material.icons.filled.Tune
 import com.workoutmaker.app.ui.components.ScreenScaffold
 import com.workoutmaker.app.ui.components.SectionCard
 import com.workoutmaker.app.ui.components.SectionLabel
@@ -88,6 +90,7 @@ import com.workoutmaker.app.data.undoSkip
 fun HomeScreen(
     onOpenRecoveryHistory: () -> Unit = {},
     onOpenSettings: () -> Unit = {},
+    onCustomizeHome: () -> Unit = {},
     vm: HomeViewModel = hiltViewModel(),
 ) {
     val summary by vm.summary.collectAsStateSafe()
@@ -306,6 +309,15 @@ fun HomeScreen(
         // of no evidence at all. Show the absence instead, and the way to fix it.
         val unmeasured = rec?.basis == "none"
 
+        // Everything below is the athlete's own order (Customize home). key() is
+        // load-bearing: without it a reorder would shuffle each card's remember
+        // slots into its neighbour's, and the open/closed state of a detail
+        // drawer would follow the POSITION instead of the card.
+        val layout by vm.homeLayout.collectAsStateSafe()
+        layout.visible.forEach { card ->
+            key(card) {
+                when (card) {
+                    HomeCard.READINESS -> {
         SectionCard(mod) {
             if (isStale && !unmeasured) RecoveryStaleBanner(s.recovery_synced_date)
             Row(verticalAlignment = Alignment.CenterVertically) {
@@ -445,26 +457,30 @@ fun HomeScreen(
 
             SectionLabel("AI · ${s.active_llm_provider}", color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
+                    }
 
-        // Daily wellness check-in — shown only once today's is still unanswered
-        // (energy == null) AND last night's sleep has synced from Intervals.icu
-        // (rec.sleep present), so it surfaces when you actually wake up rather
-        // than at midnight. Fallback: if sleep still hasn't arrived by late
-        // morning (watch not worn / didn't sync), show it anyway so the check-in
-        // is never permanently locked out.
-        // Gate on TODAY's sleep specifically (hours != null) — not just any sleep
-        // object — so the card waits for this morning's sync instead of firing at
-        // midnight on yesterday's data.
-        val sleptToday = rec?.sleep?.hours != null
-        val pastFallback = LocalTime.now() >= LocalTime.of(11, 0)
-        if (isToday && wellnessLoaded && wellnessToday?.energy == null && (sleptToday || pastFallback)) {
-            WellnessCheckinCard(mod, busy = wellnessBusy) { e, sore -> vm.saveWellness(e, sore) }
-        }
+                    // Shown only once today's is still unanswered (energy == null)
+                    // AND last night's sleep has synced from Intervals.icu, so it
+                    // surfaces when you actually wake up rather than at midnight.
+                    // Fallback: if sleep still hasn't arrived by late morning
+                    // (watch not worn / didn't sync), show it anyway so the
+                    // check-in is never permanently locked out. Gates on TODAY's
+                    // sleep (hours != null), not just any sleep object.
+                    HomeCard.WELLNESS -> {
+                        val sleptToday = rec?.sleep?.hours != null
+                        val pastFallback = LocalTime.now() >= LocalTime.of(11, 0)
+                        if (isToday && wellnessLoaded && wellnessToday?.energy == null && (sleptToday || pastFallback)) {
+                            WellnessCheckinCard(mod, busy = wellnessBusy) { e, sore -> vm.saveWellness(e, sore) }
+                        }
+                    }
 
-        s.goal?.let { g -> GoalCard(mod, g) }
+                    HomeCard.GOAL -> s.goal?.let { g -> GoalCard(mod, g) }
 
-        s.week_review?.let { wr -> WeekReviewCard(mod, wr, if (isToday) weekReviewNote else null) }
+                    HomeCard.WEEK -> s.week_review?.let { wr ->
+                        WeekReviewCard(mod, wr, if (isToday) weekReviewNote else null)
+                    }
 
+                    HomeCard.WORKOUT -> {
         SectionCard(mod, title = if (isToday) "Today's Workout" else "Workout") {
             val tw = s.today_workout
             val w = tw?.workout_json
@@ -593,12 +609,29 @@ fun HomeScreen(
             }
         }
 
-        // How the latest session (today's or yesterday's) actually went — the
-        // analyzer's verdict, one tap from the full breakdown. Server-picked;
-        // absent whenever nothing recent has an analysis.
-        s.debrief?.let { d -> SessionDebriefCard(mod, d) { vm.openDebrief(d) } }
+                    }
 
-        fitness?.let { f -> FitnessSection(mod, f, onOpenActivity = { vm.openActivity(it) }) }
+                    // How the latest session (today's or yesterday's) actually
+                    // went: the analyzer's verdict, one tap from the full
+                    // breakdown. Server-picked, so absent whenever nothing
+                    // recent has an analysis.
+                    HomeCard.DEBRIEF -> s.debrief?.let { d ->
+                        SessionDebriefCard(mod, d) { vm.openDebrief(d) }
+                    }
+
+                    HomeCard.FITNESS -> fitness?.let { f ->
+                        FitnessSection(mod, f, onOpenActivity = { vm.openActivity(it) })
+                    }
+                }
+            }
+        }
+
+        // The way in to reordering all of the above. Last on the page on
+        // purpose: it is a thing you do once, not a thing you do daily.
+        GhostButton(onClick = onCustomizeHome, modifier = mod) {
+            Icon(Icons.Filled.Tune, contentDescription = null, modifier = Modifier.size(18.dp))
+            Text("  Customize home")
+        }
     }
 }
 
