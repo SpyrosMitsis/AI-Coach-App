@@ -227,8 +227,11 @@ internal fun AddGoalSheet(
                     GoalStep.DISTANCE -> "How far, and how fast?"
                     GoalStep.TARGET -> if (sport == GYM_SPORT) "What are you lifting for?" else "What are you chasing?"
                     GoalStep.PRIORITY -> "How much does it matter?"
+                    // "the marathon" reads as a sentence; "the 10k" reads as a
+                    // typo, so a name carrying a number keeps its own case.
                     GoalStep.DATE -> post?.name?.takeIf { priority == "A" }
-                        ?.let { "When is the ${it.lowercase()}?" } ?: "When is it?"
+                        ?.let { n -> if (n.any { it.isDigit() }) n else n.lowercase() }
+                        ?.let { "When is the $it?" } ?: "When is it?"
                 },
                 sub = when (step) {
                     GoalStep.PRIORITY -> "This decides how much of your plan bends around it."
@@ -846,10 +849,14 @@ private fun PhaseStrip(phases: List<Pair<String, Int>>) {
                 Box(Modifier.weight(weeks.toFloat()).height(8.dp).background(tint(label)))
             }
         }
+        // Each label is only as wide as its own slice, so a short phase cannot
+        // hold "TAPER 2w" and was clipping to "TAPER" by accident. Drop the
+        // weeks deliberately instead, on the slices too narrow to say them.
+        val total = phases.sumOf { it.second }.toFloat()
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(3.dp)) {
             phases.forEach { (label, weeks) ->
                 Text(
-                    "$label ${weeks}w",
+                    if (weeks / total >= 0.25f) "$label ${weeks}w" else label,
                     style = MaterialTheme.typography.labelSmall,
                     fontWeight = FontWeight.SemiBold,
                     color = if (label == "TAPER") amber else MaterialTheme.colorScheme.onSurfaceVariant,

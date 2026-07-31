@@ -191,6 +191,85 @@ export const STEPS: Step[] = [
   },
 
   {
+    // The guided goal sheet: four questions, one per screen, and the two that
+    // are easy to get wrong on a real phone. Step 2 is onboarding's own
+    // distance picker inside a bottom sheet (a Canvas figure and a drag track
+    // that have never been laid out in one before), and the counter has to say
+    // FOUR for the gym, which takes a different second question.
+    name: "goal-sheet",
+    async run({ d, ok, snap }) {
+      const opened = await d.openTab("Settings", { textContains: "Goals & races" });
+      const entry = opened.find({ textContains: "Goals & races" }, d.appId)!;
+      await d.tap({ text: entry.text }, { settle: 2500 });
+
+      // "Add goal" is the button on the empty state and the list alike.
+      await d.tap({ textContains: "Add goal" }, { settle: 2200 });
+      const step1 = await snap("step1");
+      ok.that(step1.has({ textContains: "What's the event?" }, d.appId), "step 1 asks the event");
+      ok.that(step1.has({ textContains: "STEP 1 OF 4" }, d.appId), "counter starts at 1 of 4");
+      // The name field sits ABOVE the sport tiles: the athlete arrives holding
+      // the name, and the tiles are the qualifier.
+      const field = step1.find({ textContains: "Call it what you call it" }, d.appId);
+      const runTile = step1.find({ text: "Run" }, d.appId);
+      ok.that(field !== null && runTile !== null, "name field and sport tiles are both present");
+      if (field && runTile) {
+        ok.that(field.bounds.y1 < runTile.bounds.y1, "the name field is above the tiles",
+          `field ${field.bounds.y1}, tiles ${runTile.bounds.y1}`);
+      }
+
+      // Name it, and the sheet must not have panned the button off screen.
+      await d.tap({ textContains: "Call it what you call it" }, { settle: 1200 });
+      await d.type("QA Marathon");
+      await d.closeKeyboard();
+      const named = await snap("named");
+      const cont = named.find({ textContains: "Continue" }, d.appId);
+      ok.that(cont !== null, "Continue is reachable with the name typed");
+
+      // Step 2 for a run: the picker, the pace panel, and the figure.
+      await d.tap({ textContains: "Continue" }, { settle: 2500 });
+      const step2 = await snap("step2-distance");
+      ok.that(step2.has({ textContains: "How far, and how fast?" }, d.appId), "step 2 is the picker");
+      ok.that(step2.has({ textContains: "STEP 2 OF 4" }, d.appId), "counter reads 2 of 4");
+      ok.that(step2.has({ textContains: "Distance goal" }, d.appId), "the drag track rendered");
+      ok.that(step2.has({ desc: "Faster" }, d.appId) && step2.has({ desc: "Slower" }, d.appId),
+        "the pace steppers rendered");
+
+      // The stepper that could only ever move once (a pointerInput(Unit) that
+      // never restarted). Press it three times and the pace must keep moving.
+      const paceOf = (dump: Awaited<ReturnType<typeof snap>>) =>
+        dump.findAll({ re: /^\d+:\d\d$/ }, d.appId).map((n) => n.text)[0] ?? null;
+      const before = paceOf(step2);
+      for (let i = 0; i < 3; i++) await d.tap({ desc: "Faster" }, { settle: 700 });
+      const after = paceOf(await snap("step2-stepped"));
+      ok.that(before !== null && after !== null && before !== after,
+        "the pace stepper keeps stepping", `${before} then ${after}`);
+
+      // Step 3, then step 4 with the phase strip a main goal earns.
+      await d.tap({ textContains: "Continue" }, { settle: 2200 });
+      const step3 = await snap("step3-priority");
+      ok.that(step3.has({ textContains: "How much does it matter?" }, d.appId), "step 3 asks priority");
+      ok.that(step3.has({ text: "Main goal" }, d.appId) && step3.has({ text: "Tune-up" }, d.appId),
+        "the three priorities are cards");
+
+      await d.tap({ textContains: "Next: when is it?" }, { settle: 2200 });
+      const step4 = await snap("step4-date");
+      ok.that(step4.has({ textContains: "STEP 4 OF 4" }, d.appId), "counter ends at 4 of 4");
+      ok.that(step4.has({ text: "RACE DAY" }, d.appId), "the date readout rendered");
+      ok.that(step4.has({ textContains: "weeks away" }, d.appId), "the countdown rendered");
+      ok.that(step4.has({ textContains: "TAPER" }, d.appId), "a main goal shows the phase strip");
+      ok.that(step4.has({ textContains: "Add goal" }, d.appId), "the last step offers Add goal");
+
+      // Leave without saving: this is the athlete's real goal list. Two backs,
+      // not one: the first closes the sheet and the second leaves the Goals
+      // page for the Settings index. Stopping on the sub-page left the next
+      // step tapping a Settings tab it was already inside, which cannot pop it.
+      await d.back();
+      await d.back();
+      await d.toTabBar();
+    },
+  },
+
+  {
     name: "settings-thresholds",
     async run({ d, ok, snap }) {
       const opened = await d.openTab("Settings", { textContains: "numbers & zones" });
@@ -201,8 +280,11 @@ export const STEPS: Step[] = [
       for (const label of ["LTHR", "Threshold pace", "FTP"]) {
         ok.that(dump.has({ text: label }, d.appId), `threshold shown: ${label}`);
       }
-      const logTest = dump.find({ textContains: "Log a test" }, d.appId);
-      ok.that(logTest !== null, "'Log a test' is the editor");
+      // "Test me" is the button; the card's own caption explains that logging a
+      // test is what updates the number. The check is that ONE editor exists,
+      // so it anchors on the button the screen actually shows.
+      const logTest = dump.find({ textContains: "Test me" }, d.appId);
+      ok.that(logTest !== null, "'Test me' is the editor");
 
       // Read-only means read-only IN THE THRESHOLDS CARD. The "Your numbers"
       // card below it is a different feature (1RM seeds) and is legitimately

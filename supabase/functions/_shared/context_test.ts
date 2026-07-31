@@ -1,9 +1,11 @@
 import { assert, assertEquals, assertStringIncludes } from "jsr:@std/assert@1";
+import type { SupabaseClient } from "jsr:@supabase/supabase-js@2";
 import {
   calendarBlock,
   clipText,
   executionLine,
   raceLine,
+  racesBlock,
   recoveryBlock,
   testAgeNote,
   weeksBetween,
@@ -169,4 +171,74 @@ Deno.test("testAgeNote: says how much to trust the number", () => {
   assertStringIncludes(testAgeNote("2024-08-09", "2026-08-09"), "worth retesting");
   // A date in the future is a clock problem, not a fresh test.
   assertEquals(testAgeNote("2027-01-01", "2026-08-09"), "");
+});
+
+// --- racesBlock, against a stubbed table -----------------------------------
+//
+// The query chain is half the behaviour (which rows, which order, which
+// window), so the stub records it rather than just handing back data.
+
+type Recorded = { table: string; select: string; filters: string[]; limit: number | null };
+
+function adminWithRaces(rows: unknown[], rec: Recorded) {
+  const builder = {
+    select(cols: string) {
+      rec.select = cols;
+      return builder;
+    },
+    eq(col: string, v: unknown) {
+      rec.filters.push(`eq:${col}=${v}`);
+      return builder;
+    },
+    gte(col: string, v: unknown) {
+      rec.filters.push(`gte:${col}=${v}`);
+      return builder;
+    },
+    order(col: string, _o: unknown) {
+      rec.filters.push(`order:${col}`);
+      return builder;
+    },
+    limit(n: number) {
+      rec.limit = n;
+      return Promise.resolve({ data: rows, error: null });
+    },
+  };
+  return {
+    from(table: string) {
+      rec.table = table;
+      return builder;
+    },
+  } as unknown as SupabaseClient;
+}
+
+Deno.test("racesBlock: every upcoming goal, newest window, with its rule", async () => {
+  const rec: Recorded = { table: "", select: "", filters: [], limit: null };
+  const admin = adminWithRaces([
+    { name: "Club 10K", date: "2026-09-06", priority: "B", sport: "run", distance: "10K" },
+    { name: "Athens Marathon", date: "2026-11-08", priority: "A", sport: "run", distance: "Marathon", target: "5:22 /km" },
+  ], rec);
+
+  const block = await racesBlock(admin, "u1", "2026-08-09");
+
+  // Asked the right question of the right table.
+  assertEquals(rec.table, "races");
+  assertEquals(rec.limit, 8);
+  assertEquals(rec.filters, ["eq:user_id=u1", "gte:date=2026-08-09", "order:date"]);
+
+  assertStringIncludes(block, "GOALS ON THE CALENDAR:");
+  assertStringIncludes(block, "Club 10K");
+  assertStringIncludes(block, "TUNE-UP");
+  assertStringIncludes(block, "Athens Marathon");
+  assertStringIncludes(block, "MAIN GOAL");
+  assertStringIncludes(block, "target 5:22 /km");
+});
+
+Deno.test("racesBlock: no goals means no heading at all", async () => {
+  const rec: Recorded = { table: "", select: "", filters: [], limit: null };
+  assertEquals(await racesBlock(adminWithRaces([], rec), "u1", "2026-08-09"), "");
+  // A row that cannot be rendered is not a heading either.
+  assertEquals(
+    await racesBlock(adminWithRaces([{ date: "2026-09-01" }], rec), "u1", "2026-08-09"),
+    "",
+  );
 });

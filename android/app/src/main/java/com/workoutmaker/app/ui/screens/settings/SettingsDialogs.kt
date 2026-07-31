@@ -82,7 +82,9 @@ private fun AnchorRow(label: String, value: String?, setOn: String?, whyItMatter
                 }
             }
             Text(
-                value ?: "— : —",
+                // "Not set", not a dash placeholder: em dashes are out by house
+                // rule, and a row of punctuation says less than the two words do.
+                value ?: "Not set",
                 style = MaterialTheme.typography.headlineSmall,
                 fontWeight = FontWeight.Bold,
                 color = if (value != null) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outline,
