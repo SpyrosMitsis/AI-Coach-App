@@ -57,12 +57,16 @@ import com.workoutmaker.app.ui.components.rememberAnimationsEnabled
 import com.workoutmaker.app.ui.screens.settings.SPORTS
 import com.workoutmaker.app.ui.screens.settings.shouldAskGoalRace
 import com.workoutmaker.app.ui.screens.settings.sportLabel
-import com.workoutmaker.app.ui.screens.settings.sportNeedsEquipment
 
-// The onboarding steps, in order. RACE and EQUIPMENT are conditional; the rest
-// always show. Conditional steps come AFTER the step that decides them (SPORTS),
-// so the visible-step index of the current screen never shifts under the user.
-internal enum class ObStep { WELCOME, APPEARANCE, PERSONAL, SPORTS, ACTIVITY, PERFORMANCE, RACE, AVAILABILITY, EFFORT, EQUIPMENT, INJURIES, COACH, CONNECT, PERMISSIONS, REVIEW }
+// The onboarding steps, in order. RACE and the gym block are conditional; the
+// rest always show. Conditional steps come AFTER the step that decides them
+// (SPORTS), so the visible-step index of the current screen never shifts under
+// the user.
+// GYM_* are the gym's four questions, which used to be one screen of twenty-two
+// chips (goals, level and split together, with the kit stranded on its own step
+// much later). One question per screen, and the kit joins them so the four read
+// as one conversation about the gym instead of two separated by the whole week.
+internal enum class ObStep { WELCOME, APPEARANCE, PERSONAL, SPORTS, ACTIVITY, GYM_GOALS, GYM_LEVEL, GYM_SPLIT, PERFORMANCE, RACE, AVAILABILITY, EFFORT, EQUIPMENT, INJURIES, COACH, CONNECT, PERMISSIONS, REVIEW }
 
 // A step, plus (for ACTIVITY) which sport it asks about.
 internal data class StepSpec(val kind: ObStep, val sport: String? = null)
@@ -74,8 +78,20 @@ internal fun visibleSteps(p: TrainingProfile): List<StepSpec> = buildList {
     // Import before asking: a connected watch answers the zones/thresholds
     // questions the later steps would otherwise pose, so CONNECT comes early.
     add(StepSpec(ObStep.CONNECT))
-    // One guided step per selected activity (goal + level; the gym adds its split).
-    SPORTS.filter { p.sports.contains(it) }.forEach { add(StepSpec(ObStep.ACTIVITY, it)) }
+    // One guided step per selected activity. The endurance sports ask "how far"
+    // on one screen; the gym asks four questions, because its answers are four
+    // unrelated things (what for, how experienced, what shape, what kit) and
+    // stacking them made the busiest screen in the app.
+    SPORTS.filter { p.sports.contains(it) }.forEach { sport ->
+        if (sport == GYM) {
+            add(StepSpec(ObStep.GYM_GOALS))
+            add(StepSpec(ObStep.GYM_LEVEL))
+            add(StepSpec(ObStep.GYM_SPLIT))
+            add(StepSpec(ObStep.EQUIPMENT))
+        } else {
+            add(StepSpec(ObStep.ACTIVITY, sport))
+        }
+    }
     // "Your numbers": optional performance anchors, one section per sport.
     if (p.sports.isNotEmpty()) add(StepSpec(ObStep.PERFORMANCE))
     if (shouldAskGoalRace(p)) add(StepSpec(ObStep.RACE))
@@ -83,7 +99,6 @@ internal fun visibleSteps(p: TrainingProfile): List<StepSpec> = buildList {
     // Effort + progression get their own page: they price themselves from the
     // week just chosen, and burying them under the day picker hid the choice.
     add(StepSpec(ObStep.EFFORT))
-    if (sportNeedsEquipment(p.sports)) add(StepSpec(ObStep.EQUIPMENT))
     add(StepSpec(ObStep.INJURIES))
     add(StepSpec(ObStep.COACH))
     // Permissions last, right before Review: by here the user has seen what the
@@ -118,6 +133,12 @@ internal fun stepHeadline(spec: StepSpec): Pair<String, String?>? = when (spec.k
         else -> (spec.sport?.let { "${sportLabel(it)}: what are you chasing?" } ?: "What are you chasing?") to
             "Your goal and level decide what the sessions are FOR, not just how long they are."
     }
+    ObStep.GYM_GOALS -> "What are you chasing?" to
+        "Pick as many as fit. This decides what the sessions are for, not just how long they run."
+    ObStep.GYM_LEVEL -> "How long have you been lifting?" to
+        "Slide to where you are. It sets the starting loads and how fast I add weight."
+    ObStep.GYM_SPLIT -> "How should the week break up?" to
+        "Leave it to me unless you already train a particular way."
     ObStep.PERFORMANCE -> "Your numbers" to
         "Optional anchors. Every one you fill makes the prescribed paces and weights sharper."
     ObStep.RACE -> "Anything on the calendar?" to
@@ -264,7 +285,10 @@ fun OnboardingScreen(vm: OnboardingViewModel = hiltViewModel()) {
                         ObStep.APPEARANCE -> StepAppearance(vm)
                         ObStep.PERSONAL -> StepPersonal(profile, vm)
                         ObStep.SPORTS -> StepSports(profile, vm)
-                        ObStep.ACTIVITY -> StepActivity(spec.sport ?: "strength", profile, vm)
+                        ObStep.ACTIVITY -> StepActivity(spec.sport ?: GYM, profile, vm)
+                        ObStep.GYM_GOALS -> StepGymGoals(profile, vm)
+                        ObStep.GYM_LEVEL -> StepGymLevel(profile, vm)
+                        ObStep.GYM_SPLIT -> StepGymSplit(profile, vm)
                         ObStep.PERFORMANCE -> StepPerformance(profile, vm)
                         ObStep.RACE -> StepRace(profile, vm)
                         ObStep.AVAILABILITY -> StepAvailability(profile, vm)

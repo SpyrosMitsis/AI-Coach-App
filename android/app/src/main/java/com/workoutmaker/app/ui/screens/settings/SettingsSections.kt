@@ -15,6 +15,14 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import com.workoutmaker.app.data.EnduranceGoals
 import com.workoutmaker.app.ui.screens.onboarding.EnduranceSportQuestions
+import com.workoutmaker.app.ui.screens.onboarding.GYM
+import com.workoutmaker.app.ui.screens.onboarding.GymGoalPicker
+import com.workoutmaker.app.ui.screens.onboarding.GymKitPicker
+import com.workoutmaker.app.ui.screens.onboarding.GymLevelPicker
+import com.workoutmaker.app.ui.screens.onboarding.GymSceneCard
+import com.workoutmaker.app.ui.screens.onboarding.GymSplitPicker
+import com.workoutmaker.app.ui.screens.onboarding.gymSummary
+import com.workoutmaker.app.ui.screens.onboarding.toggledGymKit
 import com.workoutmaker.app.ui.screens.onboarding.WeekPreviewBars
 import com.workoutmaker.app.ui.theme.palette
 import androidx.compose.material.icons.Icons
@@ -297,10 +305,14 @@ private fun SportDetail(sport: String, profile: TrainingProfile, vm: SettingsVie
             // button, because a goal chip tapped here would silently lose to the
             // distance target on save. There is nothing to lose to now: it is the
             // same control writing the same fields.
-            if (EnduranceGoals.isEndurance(sport)) {
-                EnduranceSportQuestions(sport, profile) { f -> vm.updateProfile(f) }
-            } else {
-                SportGoalsLevel(
+            when {
+                EnduranceGoals.isEndurance(sport) ->
+                    EnduranceSportQuestions(sport, profile) { f -> vm.updateProfile(f) }
+                // The gym gets onboarding's own four controls, boxed one
+                // question per card so the screen is scannable, with the scene
+                // on top answering "what does my gym currently look like".
+                sport == GYM -> GymSettings(profile, vm)
+                else -> SportGoalsLevel(
                     sport = sport,
                     goals = profile.goals_by_sport[sport].orEmpty(),
                     level = profile.experience_by_sport[sport],
@@ -310,13 +322,44 @@ private fun SportDetail(sport: String, profile: TrainingProfile, vm: SettingsVie
                     onSplit = { s -> vm.updateProfile { it.copy(split_style = if (s == "Auto") null else s) } },
                 )
             }
-            // The gym's kit belongs with the gym, not in a card of its own at
-            // the bottom that only applies to one of the four sports.
-            if (sport == "strength") {
-                EquipmentSelector(profile.equipment_list) { e ->
-                    vm.updateProfile { it.copy(equipment_list = it.equipment_list.toggled(e)) }
-                }
-            }
+    }
+}
+
+/**
+ * The gym in Settings: the same four controls onboarding uses, each in its own
+ * labelled box. Onboarding gets one question per screen because it is a guided
+ * first pass; Settings gets one question per card because the athlete arrived
+ * knowing which of the four they came to change.
+ */
+@Composable
+private fun GymSettings(profile: TrainingProfile, vm: SettingsViewModel) {
+    SectionCard {
+        SectionLabel("Your gym")
+        GymSceneCard(profile.equipment_list, caption = gymSummary(profile).ifBlank { null })
+    }
+    SectionCard {
+        SectionLabel("What you're chasing")
+        GymGoalPicker(profile) { g ->
+            vm.updateProfile { it.copy(goals_by_sport = it.goals_by_sport.toggleIn(GYM, g)) }
+        }
+    }
+    SectionCard {
+        SectionLabel("Level")
+        GymLevelPicker(profile) { lvl ->
+            vm.updateProfile { it.copy(experience_by_sport = it.experience_by_sport + (GYM to lvl)) }
+        }
+    }
+    SectionCard {
+        SectionLabel("Preferred split")
+        GymSplitPicker(profile) { s ->
+            vm.updateProfile { it.copy(split_style = if (s == "Auto") null else s) }
+        }
+    }
+    SectionCard {
+        SectionLabel("Your kit")
+        GymKitPicker(profile) { item ->
+            vm.updateProfile { it.copy(equipment_list = toggledGymKit(it.equipment_list, item)) }
+        }
     }
 }
 

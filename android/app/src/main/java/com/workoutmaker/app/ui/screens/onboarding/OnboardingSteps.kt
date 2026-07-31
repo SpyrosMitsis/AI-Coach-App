@@ -5,6 +5,7 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
@@ -58,7 +59,6 @@ import com.workoutmaker.app.ui.screens.settings.AppearancePicker
 import com.workoutmaker.app.ui.screens.settings.ChipGroup
 import com.workoutmaker.app.ui.screens.settings.EXPERIENCE_BY_SPORT
 import com.workoutmaker.app.ui.screens.settings.GOALS_BY_SPORT
-import com.workoutmaker.app.ui.screens.settings.EquipmentSelector
 import com.workoutmaker.app.ui.screens.settings.LEVELS
 import com.workoutmaker.app.ui.screens.settings.PerformanceEditor
 import com.workoutmaker.app.ui.screens.settings.PeriodizationControl
@@ -449,8 +449,62 @@ private fun EffortRow(label: String, note: String, tss: String, selected: Boolea
 
 @Composable
 internal fun StepEquipment(profile: TrainingProfile, vm: OnboardingViewModel) {
+    StepGymScene(profile) {
+        GymKitPicker(profile) { item ->
+            vm.update { it.copy(equipment_list = toggledGymKit(it.equipment_list, item)) }
+        }
+    }
+}
+
+// --- The gym's four questions ----------------------------------------------
+//
+// Each one is the scene, then the question. The scene is the same composable on
+// all four screens and keeps whatever the athlete has built so far, so it reads
+// as one room being furnished rather than four unrelated forms: by the kit step
+// the figure is standing in the gym the earlier answers described.
+
+@Composable
+private fun StepGymScene(profile: TrainingProfile, content: @Composable ColumnScope.() -> Unit) {
     StepColumn {
-        EquipmentSelector(profile.equipment_list) { e -> vm.update { it.copy(equipment_list = it.equipment_list.toggled(e)) } }
+        GymSceneCard(profile.equipment_list, caption = gymSummary(profile).ifBlank { null })
+        content()
+    }
+}
+
+@Composable
+internal fun StepGymGoals(profile: TrainingProfile, vm: OnboardingViewModel) {
+    StepGymScene(profile) {
+        GymGoalPicker(profile) { g ->
+            vm.update { it.copy(goals_by_sport = it.goals_by_sport.toggleIn(GYM, g)) }
+        }
+    }
+}
+
+@Composable
+internal fun StepGymLevel(profile: TrainingProfile, vm: OnboardingViewModel) {
+    // The level step pre-selects rather than opening on nothing: a slider with
+    // no value has to guess anyway, so it may as well show its guess and let the
+    // athlete disagree with it. Same reasoning as the distance picker's seed.
+    LaunchedEffect(Unit) {
+        if (profile.experience_by_sport[GYM] == null) {
+            gymLevels().firstOrNull()?.let { first ->
+                vm.update { it.copy(experience_by_sport = it.experience_by_sport + (GYM to first)) }
+            }
+        }
+    }
+    StepGymScene(profile) {
+        GymLevelPicker(profile) { lvl ->
+            vm.update { it.copy(experience_by_sport = it.experience_by_sport + (GYM to lvl)) }
+        }
+    }
+}
+
+@Composable
+internal fun StepGymSplit(profile: TrainingProfile, vm: OnboardingViewModel) {
+    StepGymScene(profile) {
+        GymSplitPicker(profile) { s ->
+            vm.update { it.copy(split_style = if (s == "Auto") null else s) }
+        }
     }
 }
 

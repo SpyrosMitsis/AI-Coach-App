@@ -319,17 +319,9 @@ internal fun WeeklyAvailabilityEditor(
     }
 }
 
-// Multi-select equipment (only surfaced when the athlete lifts).
-@OptIn(ExperimentalLayoutApi::class)
-@Composable
-internal fun EquipmentSelector(selected: List<String>, onToggle: (String) -> Unit) {
-    Text("What equipment can you use?", style = MaterialTheme.typography.labelLarge)
-    FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-        EQUIPMENT_ITEMS.forEach { e ->
-            FilterChip(selected = selected.contains(e), onClick = { onToggle(e) }, label = { Text(e) })
-        }
-    }
-}
+// The equipment chip row lived here. It is GymKitPicker now: "Full gym" was one
+// chip among nine, so the answer that makes the other eight moot looked exactly
+// like the other eight.
 
 // Theme palette + light/dark, shared by onboarding Appearance and Settings.
 @Composable

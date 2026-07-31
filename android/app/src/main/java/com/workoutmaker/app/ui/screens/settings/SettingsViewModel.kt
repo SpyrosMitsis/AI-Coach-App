@@ -149,7 +149,9 @@ internal fun sportLabel(key: String): String = when (key) {
 }
 
 // Equipment step is only relevant when the athlete trains in the gym.
-internal fun sportNeedsEquipment(sports: List<String>): Boolean = sports.contains("strength")
+// sportNeedsEquipment() lived here to gate a standalone equipment step. The kit
+// question belongs to the gym now and is added with the gym's other three, so
+// the gate is just "did they pick the gym", asked where the steps are built.
 
 // The goal-race step appears when any activity has a race-shaped goal.
 // A named race goal, or any concrete distance target: naming a distance is a
