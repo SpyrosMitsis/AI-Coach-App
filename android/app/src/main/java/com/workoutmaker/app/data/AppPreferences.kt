@@ -122,7 +122,21 @@ class AppPreferences @Inject constructor(
         // CSV of the same names missingNumbers() produces, for the same reason
         // the Home layout is a CSV: an unknown name is skipped, never a crash.
         val hushedNumbers = stringPreferencesKey("hushed_numbers")
+        // The "Finish setup" card at the top of Settings, sent away for good.
+        val setupCardDismissed = booleanPreferencesKey("setup_card_dismissed")
     }
+
+    /**
+     * Whether the athlete has sent the Settings "Finish setup" card away. Once,
+     * permanently: every row in it is a shortcut to a row already in the list
+     * below, which keeps its own amber value, so dismissing hides the nagging
+     * and none of the information. A card that came back would just be the same
+     * nag again, which is the thing being dismissed.
+     */
+    val setupCardDismissed: Flow<Boolean> =
+        context.dataStore.data.map { it[Keys.setupCardDismissed] ?: false }
+
+    suspend fun dismissSetupCard() = edit { it[Keys.setupCardDismissed] = true }
 
     val calendarWeekView: Flow<Boolean> =
         context.dataStore.data.map { it[Keys.calendarWeekView] ?: false }

@@ -178,8 +178,9 @@ internal fun SettingsIndex(vm: SettingsViewModel, onOpen: (String) -> Unit) {
             shape = RoundedCornerShape(50),
         )
 
-        if (pending.isNotEmpty() && query.isBlank()) {
-            FinishSetupCard(pending, mod, onOpen)
+        val setupDismissed by vm.setupCardDismissed.collectAsStateSafe()
+        if (pending.isNotEmpty() && query.isBlank() && !setupDismissed) {
+            FinishSetupCard(pending, mod, onOpen) { vm.dismissSetupCard() }
         }
 
         val groups = remember(query) { filterSettings(query) }
@@ -255,9 +256,19 @@ internal fun filterSettings(query: String): List<SettingsGroup> {
  * What setup left undone, with a way straight to it. This is what turns the
  * index from a menu into a nudge, and it is the only place in the app that
  * says out loud which unset field is currently costing the athlete something.
+ *
+ * Dismissable, and cheaply so: every row here is a shortcut to a row in the
+ * list below, which carries the same fact in the same amber. Sending the card
+ * away costs the athlete no information, only the pressure, and a nudge with no
+ * way to decline it is not a nudge.
  */
 @Composable
-private fun FinishSetupCard(pending: List<Pair<String, String>>, modifier: Modifier, onOpen: (String) -> Unit) {
+private fun FinishSetupCard(
+    pending: List<Pair<String, String>>,
+    modifier: Modifier,
+    onOpen: (String) -> Unit,
+    onDismiss: () -> Unit,
+) {
     val titles = remember { SETTINGS_GROUPS.flatMap { it.items }.associate { it.id to it.title } }
     val amber = amberAccent()
     Column(
@@ -281,6 +292,14 @@ private fun FinishSetupCard(pending: List<Pair<String, String>>, modifier: Modif
                 style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
+            IconButton(onClick = onDismiss, modifier = Modifier.size(28.dp)) {
+                Icon(
+                    Icons.Filled.Close,
+                    contentDescription = "Hide finish setup",
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.size(18.dp),
+                )
+            }
         }
         pending.forEach { (id, why) ->
             Row(

@@ -342,6 +342,9 @@ class SettingsViewModel @Inject constructor(
         prefs.setNumberHushed(name, hushed)
     }
 
+    val setupCardDismissed = prefs.setupCardDismissed.stateIn(viewModelScope, SharingStarted.Eagerly, false)
+    fun dismissSetupCard() = viewModelScope.launch { prefs.dismissSetupCard() }
+
     // Q11: build a Strong-compatible CSV of all strength history for the user to save.
     suspend fun buildExportCsv(): String = strength.exportCsv()
 
