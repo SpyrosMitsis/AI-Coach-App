@@ -46,15 +46,15 @@ import com.workoutmaker.app.ui.components.SectionLabel
  * undiscoverable, fails on a mis-grab, and fights the screen's own scroll.
  * Two buttons say exactly what they do and can be hit repeatedly.
  *
- * Pinned cards are shown, not omitted: seeing "Readiness, pinned" answers the
- * question "where did readiness go" before it is asked.
+ * Cards that cannot be switched off are shown, not omitted: seeing "Readiness,
+ * pinned" answers the question "where did readiness go" before it is asked.
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun CustomizeHomeScreen(vm: HomeViewModel = hiltViewModel(), onBack: () -> Unit) {
     val layout by vm.homeLayout.collectAsStateSafe()
-    val onHome = layout.order.filter { it.pinned || it !in layout.hidden }
-    val hidden = layout.order.filter { !it.pinned && it in layout.hidden }
+    val onHome = layout.visible
+    val hidden = layout.order.filter { !it.alwaysOn && it in layout.hidden }
 
     Scaffold(
         containerColor = MaterialTheme.colorScheme.background,
@@ -73,8 +73,8 @@ fun CustomizeHomeScreen(vm: HomeViewModel = hiltViewModel(), onBack: () -> Unit)
                 SectionLabel("Home layout")
                 Text("Customize home", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
                 Text(
-                    "Readiness and today's workout are pinned. Everything else you can move or " +
-                        "switch off, and anything you switch off stays off until you turn it back on here.",
+                    "Readiness is pinned to the top. Everything else moves, including today's " +
+                        "workout, and anything you switch off stays off until you turn it back on here.",
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
@@ -86,8 +86,8 @@ fun CustomizeHomeScreen(vm: HomeViewModel = hiltViewModel(), onBack: () -> Unit)
                     CardRow(
                         card = card,
                         visible = true,
-                        canMoveUp = !card.pinned && i > 0 && !onHome[i - 1].pinned,
-                        canMoveDown = !card.pinned && i < onHome.lastIndex,
+                        canMoveUp = card.movable && i > 0 && onHome[i - 1].movable,
+                        canMoveDown = card.movable && i < onHome.lastIndex && onHome[i + 1].movable,
                         onMove = { up -> vm.moveHomeCard(card, up) },
                         onToggle = { vm.toggleHomeCard(card) },
                     )
@@ -128,7 +128,7 @@ private fun CardRow(
     onToggle: () -> Unit,
 ) {
     Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-        if (card.pinned) {
+        if (!card.movable) {
             Icon(
                 Icons.Filled.Lock,
                 contentDescription = "Pinned",
@@ -145,9 +145,11 @@ private fun CardRow(
             Text(card.title, style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
             Text(card.blurb, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
-        if (card.pinned) {
+        if (card.alwaysOn) {
+            // "Pinned" is about the slot, "Always on" about the switch. Today's
+            // workout is the second without being the first.
             Text(
-                "Pinned",
+                if (card.movable) "Always on" else "Pinned",
                 Modifier.clip(RoundedCornerShape(50))
                     .background(MaterialTheme.colorScheme.surfaceContainerHigh)
                     .padding(horizontal = 10.dp, vertical = 4.dp),

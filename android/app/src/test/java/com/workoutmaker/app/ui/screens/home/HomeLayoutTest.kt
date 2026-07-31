@@ -24,23 +24,32 @@ class HomeLayoutTest {
         assertEquals(defaultHomeLayout().visible, back.visible)
     }
 
-    // The screen is FOR readiness and today's session. A layout that can hide
-    // both is a blank page, so the two pinned cards ignore every edit.
+    // The screen is FOR readiness and today's session, so neither can be
+    // switched off: a layout that can hide both is a blank page.
     @Test
-    fun `pinned cards cannot be hidden or moved`() {
+    fun `always-on cards cannot be hidden`() {
         val l = defaultHomeLayout()
         assertEquals(l, l.toggledHidden(HomeCard.READINESS))
         assertEquals(l, l.toggledHidden(HomeCard.WORKOUT))
-        assertEquals(l.order, l.moved(HomeCard.READINESS, up = false).order)
-        assertEquals(l.order, l.moved(HomeCard.WORKOUT, up = true).order)
+    }
+
+    // Always on is not the same as welded in place.
+    @Test
+    fun `today's workout moves even though it cannot be hidden`() {
+        val l = defaultHomeLayout().moved(HomeCard.WORKOUT, up = false)
+        assertEquals(HomeCard.WEEK, l.order[1])
+        assertEquals(HomeCard.WORKOUT, l.order[2])
+        assertTrue(HomeCard.WORKOUT in l.visible)
     }
 
     @Test
-    fun `a movable card cannot be pushed above the pinned block`() {
+    fun `readiness is pinned to the top`() {
         val l = defaultHomeLayout()
-        // WEEK sits directly under the two pinned cards, so up is a no-op.
-        assertEquals(HomeCard.WEEK, l.order[2])
-        assertEquals(l.order, l.moved(HomeCard.WEEK, up = true).order)
+        assertEquals(l.order, l.moved(HomeCard.READINESS, up = false).order)
+        // And nothing can be swapped over it, so the top slot stays readiness.
+        assertEquals(l.order, l.moved(HomeCard.WORKOUT, up = true).order)
+        val week = l.moved(HomeCard.WEEK, up = true).moved(HomeCard.WEEK, up = true)
+        assertEquals(HomeCard.READINESS, week.order[0])
     }
 
     @Test

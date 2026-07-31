@@ -65,10 +65,18 @@ export function ZonesRaces() {
     mutationFn: async (r: Race) => {
       const { error } = await supabase.from("races").delete().eq("id", r.id);
       if (error) throw error;
-      // Deleting the active goal also clears it from the profile (and Home).
-      if (o && o.goal === r.name && o.goal_date === r.date) {
+      // Deleting the active goal also moves the anchor, which periodization and
+      // taper read. Matched on the DATE alone: `goal` is rewritten from the
+      // athlete's training goals elsewhere, so a name comparison quietly stops
+      // matching and leaves the anchor on a race that no longer exists. The
+      // soonest remaining A goal takes over rather than leaving no anchor.
+      if (o && o.goal_date === r.date) {
+        const today = new Date().toISOString().slice(0, 10);
+        const nextGoal = (races.data ?? [])
+          .filter((x) => x.id !== r.id && (x.priority ?? "A").toUpperCase() === "A" && x.date >= today)
+          .sort((a, b) => a.date.localeCompare(b.date))[0];
         const next = {
-          ...o, goal: undefined, goal_date: undefined,
+          ...o, goal: nextGoal?.name, goal_date: nextGoal?.date,
           ...(r.target && o.target_pace === r.target ? { target_pace: undefined } : {}),
         };
         const { error: e2 } = await supabase.from("user_profiles").update({ onboarding: next })

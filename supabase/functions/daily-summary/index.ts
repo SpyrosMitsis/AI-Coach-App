@@ -14,6 +14,7 @@ import { applyFallbackFitness } from "../_shared/load.ts";
 import { hostedLlm } from "../_shared/entitlement.ts";
 import { pickDebrief, type SessionDebrief } from "../_shared/debrief.ts";
 import { computeBodyTrend } from "../_shared/body_trend.ts";
+import { pickGoalRace, type RaceRow } from "../_shared/context.ts";
 
 const DAY = 86_400_000;
 const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
@@ -234,19 +235,25 @@ Deno.serve(async (req) => {
     };
 
     // --- goal tracking ------------------------------------------------------
+    // Goals and races is the source of truth: the card names the athlete's own
+    // race row, and shows nothing when that page is empty. See pickGoalRace.
     const onboard = (profile?.onboarding ?? {}) as { goal?: string; goal_date?: string };
+    const { data: raceRows } = await admin.from("races")
+      .select("name, date, priority").eq("user_id", userId)
+      .gte("date", today).order("date", { ascending: true }).limit(8);
+    const goalRace = pickGoalRace((raceRows ?? []) as RaceRow[], today, onboard.goal_date);
     let goal = null as null | {
       goal: string; goal_date: string | null; weeks_to_goal: number | null;
       phase: string; ctl_trend: number; on_track: string;
     };
-    if (onboard.goal || onboard.goal_date) {
-      let weeksToGoal: number | null = null;
-      if (onboard.goal_date) {
-        const wk = (new Date(onboard.goal_date).getTime() - anchorMs) / (7 * 86_400_000);
-        weeksToGoal = wk >= 0 ? Math.round(wk) : null;
-      }
-      const phase = weeksToGoal == null ? "General / maintenance"
-        : weeksToGoal <= 2 ? "Taper" : weeksToGoal <= 6 ? "Peak" : weeksToGoal <= 14 ? "Build" : "Base";
+    if (goalRace) {
+      const goalDate = goalRace.date as string;
+      // Noon-UTC on both sides, or race day itself lands half a day in the past
+      // and the countdown reads "no date" on the morning that matters most.
+      const wk = (new Date(goalDate + "T12:00:00Z").getTime() - anchorMs) / (7 * 86_400_000);
+      const weeksToGoal = Math.max(0, Math.round(wk));
+      const phase = weeksToGoal <= 2 ? "Taper"
+        : weeksToGoal <= 6 ? "Peak" : weeksToGoal <= 14 ? "Build" : "Base";
       // acts is ordered ASCENDING here (unlike goalBlock's descending input),
       // so the trend is newest minus oldest.
       const ctlVals = acts.filter((a) => a.ctl != null).map((a) => Number(a.ctl));
@@ -254,7 +261,14 @@ Deno.serve(async (req) => {
       const onTrack = ctlTrend > 1 ? "Fitness building, on track"
         : ctlTrend < -1 ? (phase === "Taper" ? "Tapering as planned" : "Fitness slipping, rebuild consistency")
         : "Holding steady";
-      goal = { goal: onboard.goal ?? "Goal", goal_date: onboard.goal_date ?? null, weeks_to_goal: weeksToGoal, phase, ctl_trend: ctlTrend, on_track: onTrack };
+      goal = {
+        goal: (goalRace.name as string).trim(),
+        goal_date: goalDate,
+        weeks_to_goal: weeksToGoal,
+        phase,
+        ctl_trend: ctlTrend,
+        on_track: onTrack,
+      };
     }
 
     return json({

@@ -4,6 +4,7 @@ import {
   calendarBlock,
   clipText,
   executionLine,
+  pickGoalRace,
   raceLine,
   racesBlock,
   recoveryBlock,
@@ -152,6 +153,44 @@ Deno.test("raceLine: past races and half-filled rows render nothing", () => {
   assertEquals(raceLine({ name: "Old race", date: "2026-01-01", priority: "A" }, "2026-08-09"), null);
   assertEquals(raceLine({ date: "2026-12-01" }, "2026-08-09"), null);
   assertEquals(raceLine({ name: "No date" }, "2026-08-09"), null);
+});
+
+// Home's Goal card and the Goals and races page disagreed because they read
+// different fields. These pin the one rule they now share.
+Deno.test("pickGoalRace: the anchor date decides which race the card counts to", () => {
+  const races = [
+    { name: "Club 10K", date: "2026-09-06", priority: "B" },
+    { name: "Athens Marathon", date: "2026-11-08", priority: "A" },
+  ];
+  assertEquals(pickGoalRace(races, "2026-08-09", "2026-09-06")?.name, "Club 10K");
+  // An anchor pointing at a race that was deleted falls back to the soonest A.
+  assertEquals(pickGoalRace(races, "2026-08-09", "2026-05-01")?.name, "Athens Marathon");
+  assertEquals(pickGoalRace(races, "2026-08-09", null)?.name, "Athens Marathon");
+});
+
+Deno.test("pickGoalRace: with no A goal the soonest race stands in", () => {
+  const races = [
+    { name: "Parkrun", date: "2026-10-03", priority: "C" },
+    { name: "Club 10K", date: "2026-09-06", priority: "B" },
+  ];
+  assertEquals(pickGoalRace(races, "2026-08-09", null)?.name, "Club 10K");
+});
+
+Deno.test("pickGoalRace: no upcoming race means no goal, whatever the profile says", () => {
+  // The empty Goals and races page is the answer, not a reason to fall back to
+  // onboarding.goal — that fallback is what showed three goals against one race.
+  assertEquals(pickGoalRace([], "2026-08-09", "2026-11-08"), null);
+  assertEquals(
+    pickGoalRace([{ name: "Last year's marathon", date: "2025-11-09", priority: "A" }], "2026-08-09", "2025-11-09"),
+    null,
+  );
+  // Race day itself still counts.
+  assertEquals(
+    pickGoalRace([{ name: "Athens Marathon", date: "2026-08-09", priority: "A" }], "2026-08-09", null)?.name,
+    "Athens Marathon",
+  );
+  // Half-filled rows are not goals.
+  assertEquals(pickGoalRace([{ date: "2026-11-08", priority: "A" }], "2026-08-09", null), null);
 });
 
 Deno.test("weeksBetween: whole weeks, negative once it is past", () => {

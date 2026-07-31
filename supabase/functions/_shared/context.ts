@@ -392,6 +392,35 @@ export function raceLine(r: RaceRow, today: string): string | null {
 }
 
 /**
+ * Which goal the countdown counts down to.
+ *
+ * THE BUG THIS FIXES: Home's Goal card was built from onboarding.goal, which is
+ * ALSO where deriveLegacyFields writes the athlete's combined training goals
+ * ("Ride 40 km + Run 42.2 km + Swim 1.9 km"). One field, two meanings: Home
+ * showed a goal per sport while Goals and races showed one race, and neither
+ * could be edited into agreeing with the other. So the `races` rows decide, and
+ * onboarding.goal_date only picks between them.
+ *
+ * Preference order: the row the anchor date points at, then the soonest A goal,
+ * then the soonest goal of any priority. Past dates never win: a countdown to
+ * last month is not a goal. Returns null when the athlete has no upcoming race,
+ * which is the honest answer, and the same one Goals and races gives.
+ */
+export function pickGoalRace<T extends RaceRow>(
+  races: readonly T[],
+  today: string,
+  anchorDate?: string | null,
+): T | null {
+  const upcoming = races
+    .filter((r) => !!r?.name && !!r?.date && String(r.date) >= today)
+    .sort((a, b) => String(a.date).localeCompare(String(b.date)));
+  if (!upcoming.length) return null;
+  return upcoming.find((r) => !!anchorDate && r.date === anchorDate) ??
+    upcoming.find((r) => (r.priority ?? "A").toUpperCase() === "A") ??
+    upcoming[0];
+}
+
+/**
  * Every upcoming goal, with what each one is owed. Renders "" when the athlete
  * has none, so the prompt never carries an empty heading.
  */
