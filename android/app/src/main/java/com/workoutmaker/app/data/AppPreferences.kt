@@ -8,6 +8,7 @@ import androidx.datastore.preferences.core.intPreferencesKey
 import androidx.datastore.preferences.core.longPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
 import com.workoutmaker.app.ui.screens.home.HomeLayout
+import com.workoutmaker.app.ui.screens.settings.SetupNudge
 import com.workoutmaker.app.ui.screens.home.homeLayoutFrom
 import androidx.datastore.preferences.preferencesDataStore
 import dagger.hilt.android.qualifiers.ApplicationContext
@@ -118,12 +119,53 @@ class AppPreferences @Inject constructor(
         // state: an athlete who only ever wants the week should get the week
         // on every cold start, not just until the process dies.
         val calendarWeekView = booleanPreferencesKey("calendar_week_view")
+        // Performance numbers the athlete has told us not to ask about again.
+        // CSV of the same names missingNumbers() produces, for the same reason
+        // the Home layout is a CSV: an unknown name is skipped, never a crash.
+        val hushedNumbers = stringPreferencesKey("hushed_numbers")
+        // The "Finish setup" card at the top of Settings: how many times it has
+        // been closed, and when the last one was. Three closes a week apart and
+        // it stops asking, see setupCardVisible().
+        val setupCardDismissals = intPreferencesKey("setup_card_dismissals")
+        val setupCardDismissedAt = longPreferencesKey("setup_card_dismissed_at")
+        // Superseded by the pair above. Read once so an athlete who already
+        // closed the card under the previous build is not asked again the same
+        // day, then never written.
+        val setupCardDismissed = booleanPreferencesKey("setup_card_dismissed")
+    }
+
+    /** Times the Settings "Finish setup" card has been closed, and when. */
+    val setupNudge: Flow<SetupNudge> = context.dataStore.data.map { p ->
+        val legacy = p[Keys.setupCardDismissed] == true
+        SetupNudge(
+            dismissals = p[Keys.setupCardDismissals] ?: (if (legacy) 1 else 0),
+            lastDismissedAt = p[Keys.setupCardDismissedAt] ?: (if (legacy) System.currentTimeMillis() else 0L),
+        )
+    }
+
+    suspend fun dismissSetupCard() = edit { p ->
+        p[Keys.setupCardDismissals] = (p[Keys.setupCardDismissals] ?: (if (p[Keys.setupCardDismissed] == true) 1 else 0)) + 1
+        p[Keys.setupCardDismissedAt] = System.currentTimeMillis()
     }
 
     val calendarWeekView: Flow<Boolean> =
         context.dataStore.data.map { it[Keys.calendarWeekView] ?: false }
 
     suspend fun setCalendarWeekView(on: Boolean) = edit { it[Keys.calendarWeekView] = on }
+
+    /**
+     * Missing numbers the athlete has hushed. A number they do not have is not
+     * an unfinished setup step: someone who rides once a month has no FTP and
+     * never will, and an amber row that cannot be resolved is just a scold.
+     */
+    val hushedNumbers: Flow<Set<String>> = context.dataStore.data.map { p ->
+        p[Keys.hushedNumbers].orEmpty().split(",").map { it.trim() }.filter { it.isNotEmpty() }.toSet()
+    }
+
+    suspend fun setNumberHushed(name: String, hushed: Boolean) = edit { p ->
+        val current = p[Keys.hushedNumbers].orEmpty().split(",").map { it.trim() }.filter { it.isNotEmpty() }.toSet()
+        p[Keys.hushedNumbers] = (if (hushed) current + name else current - name).joinToString(",")
+    }
 
     /** The athlete's Home layout, or the default when they have never touched it. */
     val homeLayout: Flow<HomeLayout> = context.dataStore.data.map { p ->

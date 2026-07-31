@@ -319,17 +319,9 @@ internal fun WeeklyAvailabilityEditor(
     }
 }
 
-// Multi-select equipment (only surfaced when the athlete lifts).
-@OptIn(ExperimentalLayoutApi::class)
-@Composable
-internal fun EquipmentSelector(selected: List<String>, onToggle: (String) -> Unit) {
-    Text("What equipment can you use?", style = MaterialTheme.typography.labelLarge)
-    FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-        EQUIPMENT_ITEMS.forEach { e ->
-            FilterChip(selected = selected.contains(e), onClick = { onToggle(e) }, label = { Text(e) })
-        }
-    }
-}
+// The equipment chip row lived here. It is GymKitPicker now: "Full gym" was one
+// chip among nine, so the answer that makes the other eight moot looked exactly
+// like the other eight.
 
 // Theme palette + light/dark, shared by onboarding Appearance and Settings.
 @Composable
@@ -634,19 +626,18 @@ internal fun StartingLiftRow(lift: String, profile: TrainingProfile, onUpdate: (
             Modifier.weight(1.2f),
             style = MaterialTheme.typography.bodyMedium,
         )
-        OutlinedTextField(
+        // NumberField, not a raw OutlinedTextField: bound straight to the parsed
+        // Double, "82." rendered back as "82" and the decimal point could never
+        // be typed at all.
+        NumberField(
             current?.weight_kg?.let { if (it % 1.0 == 0.0) it.toInt().toString() else it.toString() } ?: "",
             { v -> write(v.toDoubleOrNull(), null) },
-            label = { Text("kg") }, singleLine = true,
-            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
-            modifier = Modifier.weight(1f),
+            label = "kg", decimal = true, modifier = Modifier.weight(1f),
         )
-        OutlinedTextField(
+        NumberField(
             current?.reps?.toString() ?: "",
             { v -> write(null, v.toIntOrNull()) },
-            label = { Text("reps") }, singleLine = true,
-            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-            modifier = Modifier.weight(1f),
+            label = "reps", modifier = Modifier.weight(1f),
         )
     }
 }

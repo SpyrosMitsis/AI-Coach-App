@@ -225,8 +225,13 @@ object EnduranceGoals {
     /**
      * The catalog goal this distance stands for, so the parts of the app that
      * key on named goals (the goal-race step, the Settings chips, the legacy
-     * `goal` string) keep working unchanged. Ride and swim have no distance
-     * names in their catalogs, so they map to the goal a distance target IS.
+     * `goal` string) keep working unchanged.
+     *
+     * Only run has distance names in its catalog. Ride and swim used to be
+     * force-mapped here to "Go longer" / "Swim further", which silently answered
+     * a question the athlete was never asked: a cyclist chasing FTP, or riding
+     * for general fitness, was recorded as wanting to go longer. Those two are
+     * ordinary choices now, see [distanceOwnedGoals].
      */
     fun catalogGoal(sport: String, km: Double): String? = when (sport) {
         "run" -> when (postsOf("run").minByOrNull { abs(it.km - km) }?.label) {
@@ -235,9 +240,39 @@ object EnduranceGoals {
             "Half" -> "Half Marathon"
             else -> "Marathon"
         }
+        else -> null
+    }
+
+    /**
+     * Catalog goals the distance picker OWNS, so a screen showing goal chips can
+     * leave them out: picking 21.1 km on the line IS picking "Half Marathon",
+     * and a chip that contradicts the flag is a chip that will contradict it.
+     */
+    fun distanceOwnedGoals(sport: String): Set<String> =
+        if (sport == "run") setOf("5K", "10K", "Half Marathon", "Marathon") else emptySet()
+
+    /**
+     * What a sport is pre-set to want when the athlete has not said. Ride and
+     * swim open on the goal a distance target most often means, so the step
+     * still leaves a real answer behind for someone who just taps through.
+     */
+    fun defaultIntentGoal(sport: String): String? = when (sport) {
         "ride" -> "Go longer"
         "swim" -> "Swim further"
         else -> null
+    }
+
+    /**
+     * Fold a new distance target into a sport's goal list. The old distance name
+     * is replaced (you cannot be training for both a 10K and a marathon) and
+     * everything else the athlete picked is left exactly where it was, which is
+     * the whole point: dragging the flag must not quietly unpick "Racing".
+     */
+    fun withDistanceGoal(existing: List<String>, sport: String, km: Double): List<String> {
+        val owned = distanceOwnedGoals(sport)
+        val kept = existing.filterNot { it in owned }
+        val goals = (listOfNotNull(catalogGoal(sport, km)) + kept).distinct()
+        return goals.ifEmpty { listOfNotNull(defaultIntentGoal(sport)) }
     }
 
     /**

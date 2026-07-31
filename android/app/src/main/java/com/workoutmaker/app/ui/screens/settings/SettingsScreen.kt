@@ -130,6 +130,7 @@ private fun rememberSettingsSnapshot(vm: SettingsViewModel): SettingsSnapshot {
     val autoPlan by vm.autoPlan.collectAsStateSafe()
     val knowledge by vm.knowledge.collectAsStateSafe()
     val settings by vm.appSettings.collectAsStateSafe()
+    val hushed by vm.hushedNumbers.collectAsStateSafe()
     return SettingsSnapshot(
         profile = profile,
         races = races,
@@ -142,6 +143,7 @@ private fun rememberSettingsSnapshot(vm: SettingsViewModel): SettingsSnapshot {
         knowledgeLines = knowledge.lines().count { it.isNotBlank() },
         settings = settings,
         email = vm.userEmail(),
+        hushedNumbers = hushed,
     )
 }
 
@@ -176,8 +178,12 @@ internal fun SettingsIndex(vm: SettingsViewModel, onOpen: (String) -> Unit) {
             shape = RoundedCornerShape(50),
         )
 
-        if (pending.isNotEmpty() && query.isBlank()) {
-            FinishSetupCard(pending, mod, onOpen)
+        // Read the clock once per composition, not per frame: the card's window
+        // is a week wide, so nothing here needs to tick.
+        val nudge by vm.setupNudge.collectAsStateSafe()
+        val canNudge = remember(nudge) { setupCardVisible(nudge, System.currentTimeMillis()) }
+        if (pending.isNotEmpty() && query.isBlank() && canNudge) {
+            FinishSetupCard(pending, nudge, mod, onOpen) { vm.dismissSetupCard() }
         }
 
         val groups = remember(query) { filterSettings(query) }
@@ -253,9 +259,25 @@ internal fun filterSettings(query: String): List<SettingsGroup> {
  * What setup left undone, with a way straight to it. This is what turns the
  * index from a menu into a nudge, and it is the only place in the app that
  * says out loud which unset field is currently costing the athlete something.
+ *
+ * Dismissable, and cheaply so: every row here is a shortcut to a row in the
+ * list below, which carries the same fact in the same amber. Sending the card
+ * away costs the athlete no information, only the pressure, and a nudge with no
+ * way to decline it is not a nudge.
+ *
+ * Closing it snoozes a week, three times, and then it is gone for good. The
+ * footer says which of those the × is about to do, because "hide" and "never
+ * show this again" are different promises and the button should keep the one
+ * it makes.
  */
 @Composable
-private fun FinishSetupCard(pending: List<Pair<String, String>>, modifier: Modifier, onOpen: (String) -> Unit) {
+private fun FinishSetupCard(
+    pending: List<Pair<String, String>>,
+    nudge: SetupNudge,
+    modifier: Modifier,
+    onOpen: (String) -> Unit,
+    onDismiss: () -> Unit,
+) {
     val titles = remember { SETTINGS_GROUPS.flatMap { it.items }.associate { it.id to it.title } }
     val amber = amberAccent()
     Column(
@@ -279,6 +301,14 @@ private fun FinishSetupCard(pending: List<Pair<String, String>>, modifier: Modif
                 style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
+            IconButton(onClick = onDismiss, modifier = Modifier.size(28.dp)) {
+                Icon(
+                    Icons.Filled.Close,
+                    contentDescription = setupDismissLabel(nudge),
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.size(18.dp),
+                )
+            }
         }
         pending.forEach { (id, why) ->
             Row(
@@ -296,6 +326,12 @@ private fun FinishSetupCard(pending: List<Pair<String, String>>, modifier: Modif
                 Icon(Icons.AutoMirrored.Filled.KeyboardArrowRight, null, tint = amber)
             }
         }
+        Text(
+            if (nudge.dismissals >= SETUP_DISMISS_LIMIT - 1) "Close this and I won't bring it up again."
+            else "Close this and I'll leave it a week. These stay in the list below either way.",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
     }
 }
 

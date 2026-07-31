@@ -149,7 +149,9 @@ internal fun sportLabel(key: String): String = when (key) {
 }
 
 // Equipment step is only relevant when the athlete trains in the gym.
-internal fun sportNeedsEquipment(sports: List<String>): Boolean = sports.contains("strength")
+// sportNeedsEquipment() lived here to gate a standalone equipment step. The kit
+// question belongs to the gym now and is added with the gym's other three, so
+// the gate is just "did they pick the gym", asked where the steps are built.
 
 // The goal-race step appears when any activity has a race-shaped goal.
 // A named race goal, or any concrete distance target: naming a distance is a
@@ -335,6 +337,15 @@ class SettingsViewModel @Inject constructor(
     fun setThemeMode(m: ThemeMode) = viewModelScope.launch { prefs.setThemeMode(m) }
     fun setThemePalette(p: ThemePalette) = viewModelScope.launch { prefs.setThemePalette(p) }
     fun setSpendCap(usd: Double) = viewModelScope.launch { prefs.setSpendCap(usd) }
+
+    // Performance numbers the athlete has told us to stop asking about.
+    val hushedNumbers = prefs.hushedNumbers.stateIn(viewModelScope, SharingStarted.Eagerly, emptySet())
+    fun setNumberHushed(name: String, hushed: Boolean) = viewModelScope.launch {
+        prefs.setNumberHushed(name, hushed)
+    }
+
+    val setupNudge = prefs.setupNudge.stateIn(viewModelScope, SharingStarted.Eagerly, SetupNudge())
+    fun dismissSetupCard() = viewModelScope.launch { prefs.dismissSetupCard() }
 
     // Q11: build a Strong-compatible CSV of all strength history for the user to save.
     suspend fun buildExportCsv(): String = strength.exportCsv()

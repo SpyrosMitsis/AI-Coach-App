@@ -121,9 +121,43 @@ class EnduranceGoalsTest {
         assertEquals("Marathon", EnduranceGoals.catalogGoal("run", 42.2))
         // An in-between distance takes the nearest post's name, never null.
         assertNotNull(EnduranceGoals.catalogGoal("run", 17.4))
-        assertEquals("Go longer", EnduranceGoals.catalogGoal("ride", 80.0))
-        assertEquals("Swim further", EnduranceGoals.catalogGoal("swim", 1.9))
+        // Ride and swim have no distance names to derive: what a rider wants out
+        // of 80 km is a question, not a lookup, so nothing is inferred here.
+        assertNull(EnduranceGoals.catalogGoal("ride", 80.0))
+        assertNull(EnduranceGoals.catalogGoal("swim", 1.9))
         assertNull(EnduranceGoals.catalogGoal("strength", 0.0))
+    }
+
+    @Test
+    fun `only run's own distance names belong to the picker`() {
+        assertTrue("Half Marathon" in EnduranceGoals.distanceOwnedGoals("run"))
+        assertTrue("Run faster" !in EnduranceGoals.distanceOwnedGoals("run"))
+        // Every ride and swim goal stays a chip the athlete can tap.
+        assertTrue(EnduranceGoals.distanceOwnedGoals("ride").isEmpty())
+        assertTrue(EnduranceGoals.distanceOwnedGoals("swim").isEmpty())
+    }
+
+    // The regression behind bug #84: dragging the flag used to REPLACE the goal
+    // list, so a cyclist who said "Racing" had it overwritten with "Go longer"
+    // by their next touch of the distance line.
+    @Test
+    fun `changing the distance keeps the goals the athlete picked`() {
+        assertEquals(
+            listOf("Racing", "General fitness"),
+            EnduranceGoals.withDistanceGoal(listOf("Racing", "General fitness"), "ride", 80.0),
+        )
+        // Run swaps one distance name for another and leaves the rest alone.
+        assertEquals(
+            listOf("Marathon", "Run faster"),
+            EnduranceGoals.withDistanceGoal(listOf("10K", "Run faster"), "run", 42.2),
+        )
+    }
+
+    @Test
+    fun `a sport with nothing picked still ends up with a goal`() {
+        assertEquals(listOf("Go longer"), EnduranceGoals.withDistanceGoal(emptyList(), "ride", 80.0))
+        assertEquals(listOf("Swim further"), EnduranceGoals.withDistanceGoal(emptyList(), "swim", 1.9))
+        assertEquals(listOf("5K"), EnduranceGoals.withDistanceGoal(emptyList(), "run", 5.0))
     }
 
     @Test

@@ -38,6 +38,8 @@ internal data class SettingsSnapshot(
     val settings: AppSettings = AppSettings(),
     val email: String? = null,
     val today: LocalDate = LocalDate.now(),
+    // Numbers the athlete has hushed, see AppPreferences.hushedNumbers.
+    val hushedNumbers: Set<String> = emptySet(),
 )
 
 // ---------------------------------------------------------------------------
@@ -104,7 +106,7 @@ internal fun detailHeader(id: String, s: SettingsSnapshot): SettingsDetailCopy {
             )
         }
         "zones" -> {
-            val missing = missingNumbers(p)
+            val missing = missingNumbers(p, s.hushedNumbers)
             SettingsDetailCopy(
                 "NUMBERS",
                 "What you can do",
@@ -250,7 +252,7 @@ internal fun settingsRowValue(id: String, s: SettingsSnapshot): SettingsRowValue
         "zones" -> {
             // Name the FIRST missing anchor rather than counting them: "threshold
             // pace missing" is actionable, "2 of 4 set" is not.
-            val missing = missingNumbers(p)
+            val missing = missingNumbers(p, s.hushedNumbers)
             if (missing.isNotEmpty()) SettingsRowValue("${missing.first()} missing", unfinished = true)
             else SettingsRowValue(
                 listOfNotNull(
@@ -308,12 +310,24 @@ internal fun settingsRowValue(id: String, s: SettingsSnapshot): SettingsRowValue
  * The performance anchors this athlete's sports actually need, in the order
  * they matter. Only asks for a number the sport uses: an FTP means nothing to
  * someone who never rides.
+ *
+ * [hushed] drops the ones the athlete has said they do not have. Knowing your
+ * FTP is not the same as riding, and a permanent amber row for a number that is
+ * never going to arrive is a reproach, not a prompt.
  */
-internal fun missingNumbers(p: TrainingProfile): List<String> = buildList {
+internal fun missingNumbers(p: TrainingProfile, hushed: Set<String> = emptySet()): List<String> = buildList {
     if (p.sports.contains("run") && p.threshold_pace_per_km.isNullOrBlank()) add("Threshold pace")
     if (p.sports.contains("ride") && p.ftp == null) add("FTP")
     if (p.sports.contains("swim") && p.css_per_100m.isNullOrBlank()) add("Swim pace")
     if (p.sports.contains("strength") && p.starting_lifts.isEmpty()) add("Starting lifts")
+}.filterNot { it in hushed }
+
+/** Every number this athlete's sports can be asked for, hushed or not. */
+internal fun applicableNumbers(p: TrainingProfile): List<String> = buildList {
+    if (p.sports.contains("run")) add("Threshold pace")
+    if (p.sports.contains("ride")) add("FTP")
+    if (p.sports.contains("swim")) add("Swim pace")
+    if (p.sports.contains("strength")) add("Starting lifts")
 }
 
 /**
@@ -329,3 +343,47 @@ internal fun unfinishedSetup(s: SettingsSnapshot): List<Pair<String, String>> = 
     if (settingsRowValue("profile", s).unfinished) add("profile" to "Load and recovery are tuned to your body")
     if (settingsRowValue("connections", s).unfinished) add("connections" to "Link a watch and I see your real fitness")
 }
+
+// ---------------------------------------------------------------------------
+// How many times the setup card gets to ask.
+//
+// Three, a week apart. Once is not an answer (the × could be "not now", and a
+// half-set-up profile really is worth one more mention); three is: someone who
+// has closed this on three separate weeks has told us, and asking a fourth time
+// would be the app deciding it knows better.
+//
+// The rows stay in the list below with their own amber values throughout, so
+// what runs out is the interruption, never the information.
+// ---------------------------------------------------------------------------
+
+internal const val SETUP_SNOOZE_DAYS = 7L
+internal const val SETUP_DISMISS_LIMIT = 3
+
+private const val DAY_MS = 24L * 60 * 60 * 1000
+
+/**
+ * Times the card has been closed, and when the last one was. Public, not
+ * internal, because AppPreferences stores it, same as HomeLayout.
+ */
+data class SetupNudge(val dismissals: Int = 0, val lastDismissedAt: Long = 0L) {
+    /** True once the athlete has closed it [SETUP_DISMISS_LIMIT] times. */
+    val silenced: Boolean get() = dismissals >= SETUP_DISMISS_LIMIT
+}
+
+/**
+ * Whether the setup card may show right now. Pure so the week can be tested
+ * without waiting one.
+ */
+internal fun setupCardVisible(nudge: SetupNudge, nowMs: Long): Boolean {
+    if (nudge.silenced) return false
+    if (nudge.dismissals == 0) return true
+    // A clock that has gone backwards (timezone move, manual change) must not
+    // strand the card off-screen, so an impossible future stamp reads as elapsed.
+    val elapsed = nowMs - nudge.lastDismissedAt
+    return elapsed !in 0 until SETUP_SNOOZE_DAYS * DAY_MS
+}
+
+/** What the close button is about to do, said plainly for the screen reader. */
+internal fun setupDismissLabel(nudge: SetupNudge): String =
+    if (nudge.dismissals >= SETUP_DISMISS_LIMIT - 1) "Hide finish setup for good"
+    else "Hide finish setup for a week"

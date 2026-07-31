@@ -24,6 +24,7 @@ private fun snap(
     autoPlan: Boolean = false,
     knowledgeLines: Int = 0,
     settings: AppSettings = AppSettings(),
+    hushedNumbers: Set<String> = emptySet(),
 ) = SettingsSnapshot(
     profile = profile,
     races = races,
@@ -36,6 +37,7 @@ private fun snap(
     knowledgeLines = knowledgeLines,
     settings = settings,
     today = TODAY,
+    hushedNumbers = hushedNumbers,
 )
 
 class SettingsRowValueTest {
@@ -85,6 +87,29 @@ class SettingsRowValueTest {
 
         // A number a sport does not use is never asked for.
         assertEquals(emptyList<String>(), missingNumbers(TrainingProfile(sports = emptyList())))
+    }
+
+    // Bug #88: an athlete who rides but has never tested cannot make "FTP
+    // missing" go away by doing anything, so the amber is a permanent reproach.
+    @Test
+    fun `a hushed number stops being flagged as missing`() {
+        val profile = TrainingProfile(sports = listOf("ride"))
+        assertTrue(settingsRowValue("zones", snap(profile = profile)).unfinished)
+
+        val quiet = snap(profile = profile, hushedNumbers = setOf("FTP"))
+        assertTrue(!settingsRowValue("zones", quiet).unfinished)
+        // And it drops out of the "finish setting up" list with it.
+        assertTrue(unfinishedSetup(quiet).none { it.first == "zones" })
+    }
+
+    @Test
+    fun `hushing one number still leaves the others asked for`() {
+        val both = TrainingProfile(sports = listOf("run", "ride"))
+        val quiet = snap(profile = both, hushedNumbers = setOf("Threshold pace"))
+        assertEquals("FTP missing", settingsRowValue("zones", quiet).text)
+        // Hushing hides the prompt, never the question: the row is still offered
+        // in the editor so the athlete can turn it back on.
+        assertTrue("Threshold pace" in applicableNumbers(both))
     }
 
     @Test
@@ -248,5 +273,59 @@ class SettingsSearchTest {
     @Test
     fun `a query nothing matches returns nothing rather than everything`() {
         assertEquals(emptyList<SettingsGroup>(), filterSettings("zzzz"))
+    }
+}
+
+/**
+ * The setup card gets three asks, a week apart, and then stops. Pure logic so
+ * the week can be tested without waiting one.
+ */
+class SetupNudgeTest {
+
+    private val day = 24L * 60 * 60 * 1000
+    private val now = 1_800_000_000_000L
+
+    @Test
+    fun `a card nobody has closed shows`() {
+        assertTrue(setupCardVisible(SetupNudge(), now))
+    }
+
+    @Test
+    fun `closing it buys a week of quiet, not a day`() {
+        val closed = SetupNudge(dismissals = 1, lastDismissedAt = now)
+        assertTrue(!setupCardVisible(closed, now))
+        assertTrue(!setupCardVisible(closed, now + 6 * day))
+        assertTrue(setupCardVisible(closed, now + 7 * day))
+    }
+
+    // The whole point: the third close is the last word. A fourth ask would be
+    // the app deciding it knows better than three separate answers.
+    @Test
+    fun `the third close silences it for good`() {
+        val third = SetupNudge(dismissals = 3, lastDismissedAt = now)
+        assertTrue(!setupCardVisible(third, now))
+        assertTrue(!setupCardVisible(third, now + 365 * day))
+        assertTrue(third.silenced)
+    }
+
+    @Test
+    fun `two closes still leave one ask`() {
+        val second = SetupNudge(dismissals = 2, lastDismissedAt = now)
+        assertTrue(!second.silenced)
+        assertTrue(setupCardVisible(second, now + 7 * day))
+    }
+
+    // A phone whose clock jumps backwards must not strand the card off-screen
+    // until the real date catches up.
+    @Test
+    fun `a stamp in the future reads as elapsed rather than trapping the card`() {
+        assertTrue(setupCardVisible(SetupNudge(dismissals = 1, lastDismissedAt = now + 30 * day), now))
+    }
+
+    @Test
+    fun `the button says which promise it is about to make`() {
+        assertEquals("Hide finish setup for a week", setupDismissLabel(SetupNudge()))
+        assertEquals("Hide finish setup for a week", setupDismissLabel(SetupNudge(dismissals = 1)))
+        assertEquals("Hide finish setup for good", setupDismissLabel(SetupNudge(dismissals = 2)))
     }
 }

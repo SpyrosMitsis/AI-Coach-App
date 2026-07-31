@@ -35,6 +35,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.hilt.navigation.compose.hiltViewModel
+import com.workoutmaker.app.data.LlmProvider
 import com.workoutmaker.app.data.Workout
 import com.workoutmaker.app.ui.collectAsStateSafe
 import com.workoutmaker.app.ui.components.GhostButton
@@ -314,6 +315,7 @@ fun HomeScreen(
         // slots into its neighbour's, and the open/closed state of a detail
         // drawer would follow the POSITION instead of the card.
         val layout by vm.homeLayout.collectAsStateSafe()
+        val plan by vm.planStatus.collectAsStateSafe()
         layout.visible.forEach { card ->
             key(card) {
                 when (card) {
@@ -455,7 +457,17 @@ fun HomeScreen(
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
 
-            SectionLabel("AI · ${s.active_llm_provider}", color = MaterialTheme.colorScheme.onSurfaceVariant)
+            // On Pro the provider column is not what wrote this: hosted AI runs on
+            // the operator's own chain, so active_llm_provider is whatever the
+            // athlete last picked for their own key, usually the "groq" default
+            // nobody chose. Say Pro, and otherwise name the provider properly
+            // ("Groq", not "groq") by going through the enum's own label.
+            val aiLabel = when {
+                plan.isPro && plan.useHostedAi -> "Pro"
+                else -> LlmProvider.entries.firstOrNull { it.key == s.active_llm_provider }
+                    ?.label ?: s.active_llm_provider
+            }
+            SectionLabel("AI · $aiLabel", color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
                     }
 

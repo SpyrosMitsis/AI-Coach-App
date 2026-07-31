@@ -8,6 +8,8 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -21,6 +23,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Remove
 import androidx.compose.material.icons.filled.Schedule
+import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Slider
@@ -30,6 +33,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
@@ -52,8 +56,15 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import com.workoutmaker.app.data.EnduranceGoals
+import com.workoutmaker.app.data.TrainingProfile
+import com.workoutmaker.app.ui.screens.settings.ChipGroup
+import com.workoutmaker.app.ui.screens.settings.EXPERIENCE_BY_SPORT
+import com.workoutmaker.app.ui.screens.settings.GOALS_BY_SPORT
+import com.workoutmaker.app.ui.screens.settings.LEVELS
+import com.workoutmaker.app.ui.screens.settings.toggleIn
 import com.workoutmaker.app.ui.components.rememberAnimationsEnabled
 import kotlin.math.abs
+import androidx.compose.ui.graphics.drawscope.translate
 import kotlin.math.cos
 import kotlin.math.hypot
 import kotlin.math.max
@@ -73,8 +84,117 @@ import kotlin.math.sqrt
 // ===========================================================================
 
 private val TRACK_HEIGHT = 172.dp
-private val TRACK_INSET = 22.dp   // room for the first and last post labels
+// Room for the first and last post labels AND for half the travelling handle,
+// which is what actually sets this: the handle is centred on the value, so at
+// 0% and 100% half of it hangs past the end of the line. Inset >= HANDLE_WIDTH/2
+// is the invariant that keeps the flag on screen at both extremes.
+private val TRACK_INSET = 48.dp
 private val BASELINE_UP = 44.dp   // baseline height above the labels
+
+/**
+ * Everything an endurance sport is asked: how far, how fast, what for, and where
+ * the athlete is starting from. Onboarding shows one of these per sport and
+ * Settings shows the same thing behind that sport's row, so changing a goal in
+ * Settings is the same act as setting it during onboarding, on the same control.
+ */
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+internal fun EnduranceSportQuestions(
+    sport: String,
+    profile: TrainingProfile,
+    seedIfUnset: Boolean = false,
+    onUpdate: ((TrainingProfile) -> TrainingProfile) -> Unit,
+) {
+    DistanceGoalEditor(sport, profile, seedIfUnset, onUpdate)
+
+    // How far and how fast is not the whole question. A cyclist doing 40 km
+    // might be chasing FTP, or racing, or just riding: the distance is the same
+    // and the training is not. Only the chips the picker does not already own
+    // are offered, so nothing here can contradict the flag.
+    val intent = remember(sport) {
+        (GOALS_BY_SPORT[sport] ?: emptyList()) - EnduranceGoals.distanceOwnedGoals(sport)
+    }
+    if (intent.isNotEmpty()) {
+        Text("What are you chasing?", style = MaterialTheme.typography.labelLarge)
+        FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+            val picked = profile.goals_by_sport[sport].orEmpty()
+            intent.forEach { g ->
+                FilterChip(
+                    selected = picked.contains(g),
+                    onClick = { onUpdate { it.copy(goals_by_sport = it.goals_by_sport.toggleIn(sport, g)) } },
+                    label = { Text(g) },
+                )
+            }
+        }
+    }
+
+    // Asked here rather than on a screen of its own: the distance says what you
+    // want, the level says what you can currently absorb, and the coach needs
+    // both to turn one into the other.
+    ChipGroup(
+        "What level are you?",
+        EXPERIENCE_BY_SPORT[sport] ?: LEVELS,
+        profile.experience_by_sport[sport],
+    ) { lvl -> onUpdate { it.copy(experience_by_sport = it.experience_by_sport + (sport to lvl)) } }
+}
+
+/**
+ * The picker plus the profile writes around it: drag state, snapping, and the
+ * goal-list merge, in one place so onboarding and Settings cannot drift apart.
+ *
+ * The state is local and the profile is written on release, because the flag
+ * has to track the thumb at frame rate and a profile round-trip per drag frame
+ * does not. [onUpdate] takes the same shape as both view models' update lambda.
+ *
+ * [seedIfUnset] is the difference between the two callers: onboarding pre-fills
+ * a target so tapping through still leaves a real answer behind, while Settings
+ * must not invent a distance goal for a sport the athlete never gave one, since
+ * that would override their hand-picked goal chips the moment they looked.
+ */
+@Composable
+internal fun DistanceGoalEditor(
+    sport: String,
+    profile: TrainingProfile,
+    seedIfUnset: Boolean = false,
+    onUpdate: ((TrainingProfile) -> TrainingProfile) -> Unit,
+) {
+    var fraction by remember(sport) {
+        mutableFloatStateOf(
+            profile.distance_goal_km[sport]?.let { EnduranceGoals.fractionForKm(sport, it) }
+                ?: EnduranceGoals.defaultFraction(),
+        )
+    }
+    var paceSec by remember(sport) {
+        mutableIntStateOf(profile.goal_pace_sec_per_km[sport] ?: EnduranceGoals.defaultPaceSec(sport))
+    }
+
+    fun commit() {
+        val km = EnduranceGoals.kmForFraction(sport, fraction)
+        onUpdate { p ->
+            if (p.distance_goal_km[sport] == km && p.goal_pace_sec_per_km[sport] == paceSec) {
+                p
+            } else {
+                p.copy(
+                    distance_goal_km = p.distance_goal_km + (sport to km),
+                    goal_pace_sec_per_km = p.goal_pace_sec_per_km + (sport to paceSec),
+                    goals_by_sport = p.goals_by_sport +
+                        (sport to EnduranceGoals.withDistanceGoal(p.goals_by_sport[sport].orEmpty(), sport, km)),
+                )
+            }
+        }
+    }
+
+    LaunchedEffect(sport) { if (seedIfUnset && profile.distance_goal_km[sport] == null) commit() }
+
+    DistanceGoalPicker(
+        sport = sport,
+        fraction = fraction,
+        paceSec = paceSec,
+        onFraction = { fraction = it },
+        onRelease = { fraction = EnduranceGoals.snapFraction(sport, fraction); commit() },
+        onPace = { paceSec = EnduranceGoals.clampPace(sport, it); commit() },
+    )
+}
 
 @Composable
 internal fun DistanceGoalPicker(
@@ -179,9 +299,6 @@ private fun DistanceTrack(
                     contentDescription = "Distance goal, ${EnduranceGoals.formatKm(EnduranceGoals.kmForFraction(sport, fraction))}"
                 },
             ) {
-                if (sport == "swim") {
-                    Waterline(paceSec, Modifier.align(Alignment.BottomStart).padding(bottom = BASELINE_UP - 14.dp))
-                }
                 // Baseline, and the part of it already covered.
                 Box(
                     Modifier.align(Alignment.BottomStart).padding(bottom = BASELINE_UP)
@@ -243,7 +360,9 @@ private fun DistanceTrack(
 }
 
 private val POST_WIDTH = 44.dp
-private val HANDLE_WIDTH = 96.dp
+// The figure plus the flag beside it. Keep TRACK_INSET at or above half of
+// this, or the handle overflows the screen at 100%.
+private val HANDLE_WIDTH = 92.dp
 
 @Composable
 private fun PacePanel(sport: String, paceSec: Int, onPace: (Int) -> Unit) {
@@ -314,24 +433,27 @@ private fun StepperButton(
 
 // --- The figures -----------------------------------------------------------
 //
-// Each figure is a jointed skeleton, not a set of rotating sticks. Limbs have
-// TWO segments (thigh + shin, upper arm + forearm) and the joint between them is
-// solved by inverse kinematics from where the hand or foot needs to be. That is
-// the whole difference between "a line pivoting at the hip" and something that
-// reads as running: a knee that bends on the swing and straightens on the drive
-// is what the eye is actually looking for.
+// Jointed stickmen, drawn procedurally: no assets, just trigonometry over one
+// 0..2π phase per stride, pedal revolution or stroke.
 //
-// So each figure is defined by the PATH ITS EXTREMITIES TRACE, which is the real
-// description of the action:
-//   run   a gait cycle, the foot swinging forward through the air and driving
-//         back along the ground, half a cycle apart per leg
-//   ride  the pedal on the chainring circle, both legs following it exactly
-//   swim  the freestyle catch/pull/exit/recovery loop, arms half a cycle apart
+// The body itself, its proportions and the primitives that draw it, lives in
+// Stickman.kt and is shared with the lifter standing in the gym scene. What is
+// here is only what each sport DOES with that body.
+//
+// Each figure is defined by the constraint its sport actually imposes:
+//   run    the knee only ever flexes backwards, and the body rises twice per
+//          stride (hence abs(sin)), which is what stops a runner looking like
+//          it is skating
+//   ride   the feet ARE the crank ends, and the knees are solved by IK to reach
+//          them, exactly as the machine forces
+//   swim   a freestyle windmill with a high elbow through the catch, a six-beat
+//          flutter kick (three per arm cycle), body roll, bubbles and a splash
+//          as the hand crosses the surface
 //
 // Cadence follows the chosen pace (EnduranceGoals.animationRate, capped at both
 // ends). The phase is integrated per frame rather than driven by a keyframe
-// animation, so changing the pace SPEEDS THE FIGURE UP rather than restarting
-// its loop, which is what made the old version stutter while you dragged.
+// animation, because an infiniteRepeatable is keyed on its duration and every
+// pace change tore the loop back to its first frame.
 
 /**
  * A 0..1 phase advanced once per frame, at one turn every [periodMs].
@@ -364,240 +486,232 @@ private fun rememberPhase(periodMs: Float): Float {
     return phase
 }
 
-/**
- * Where the joint of a two-segment limb sits, given both ends.
- *
- * Standard two-link IK: the joint lies on a circle around the midpoint of the
- * base-to-target line. [flip] picks which of the two solutions to take, which is
- * simply which way the knee or elbow bends. The reach is clamped so an
- * out-of-range target straightens the limb instead of producing NaN.
- */
-private fun joint(base: Offset, target: Offset, l1: Float, l2: Float, flip: Float): Offset {
-    val dx = target.x - base.x
-    val dy = target.y - base.y
-    val raw = hypot(dx, dy)
-    if (raw < 0.0001f) return Offset(base.x, base.y + l1)
-    val ux = dx / raw
-    val uy = dy / raw
-    val d = raw.coerceIn(abs(l1 - l2) + 0.02f, l1 + l2 - 0.02f)
-    val a = (l1 * l1 - l2 * l2 + d * d) / (2f * d)
-    val h = sqrt(max(0f, l1 * l1 - a * a))
-    return Offset(base.x + ux * a - uy * h * flip, base.y + uy * a + ux * h * flip)
-}
-
-private class Skeleton(val scope: DrawScope, val unit: Float, val originY: Float) {
-    fun bone(a: Offset, b: Offset, color: Color, width: Float) {
-        scope.drawLine(
-            color,
-            Offset(a.x * unit, (a.y + originY) * unit),
-            Offset(b.x * unit, (b.y + originY) * unit),
-            strokeWidth = width * unit,
-            cap = StrokeCap.Round,
-        )
-    }
-
-    /** A two-segment limb drawn through its solved joint, e.g. hip → knee → foot. */
-    fun limb(base: Offset, target: Offset, l1: Float, l2: Float, flip: Float, color: Color, width: Float) {
-        val j = joint(base, target, l1, l2, flip)
-        bone(base, j, color, width)
-        bone(j, target, color, width)
-    }
-
-    fun head(center: Offset, radius: Float, color: Color, width: Float) {
-        scope.drawCircle(
-            color,
-            radius = radius * unit,
-            center = Offset(center.x * unit, (center.y + originY) * unit),
-            style = Stroke(width = width * unit),
-        )
-    }
-
-    fun ring(center: Offset, radius: Float, color: Color, width: Float) = head(center, radius, color, width)
-}
-
-private fun at(x: Float, y: Float) = Offset(x, y)
-
-private const val TAU = (2.0 * Math.PI).toFloat()
+// Sized against the track, not against the drawing: at 390dp wide with a 48dp
+// inset either side there is ~294dp of line, and a handle wider than about a
+// quarter of it stops reading as a marker and starts covering the posts it is
+// meant to point at.
+private val FIGURE_W = 68.dp
+private val FIGURE_H = 62.dp
 
 @Composable
 private fun SportFigure(sport: String, paceSec: Int) {
+    // Base cycle times per sport, stretched or squeezed by the chosen pace: a
+    // pedal revolution is slower than a running stride, and a stroke slower still.
     val rate = EnduranceGoals.animationRate(sport, paceSec)
-    val stroke = MaterialTheme.colorScheme.onSurface
-    val muted = MaterialTheme.colorScheme.onSurfaceVariant
-    val accent = MaterialTheme.colorScheme.primary
+    val period = when (sport) {
+        "ride" -> 900f
+        "swim" -> 1500f
+        else -> 700f
+    } * rate
+    val phase = rememberPhase(period) * TAU
+    val accent = MaterialTheme.colorScheme.onSurface
+    val figure = Modifier.size(FIGURE_W, FIGURE_H)
     when (sport) {
-        "ride" -> {
-            // One phase drives everything: the pedals ARE the clock, and the
-            // wheels turn at a fixed ratio to them, like a real drivetrain.
-            val crank = rememberPhase(900f * rate)
-            Canvas(Modifier.size(62.dp, 58.dp)) { drawRider(crank, stroke, muted, accent) }
-        }
-        "swim" -> {
-            val strokeCycle = rememberPhase(1500f * rate)
-            val kick = rememberPhase(1500f * rate / 3f) // six-beat kick, three per arm cycle
-            Canvas(Modifier.size(66.dp, 46.dp)) { drawSwimmer(strokeCycle, kick, stroke, muted) }
-        }
-        else -> {
-            val stride = rememberPhase(700f * rate)
-            Canvas(Modifier.size(44.dp, 58.dp)) { drawRunner(stride, stroke, muted) }
+        "ride" -> CyclistStickman(phase, accent, MaterialTheme.colorScheme.primary, figure)
+        "swim" -> SwimmerStickman(phase, accent, MaterialTheme.colorScheme.primary, figure)
+        else -> RunnerStickman(phase, accent, figure)
+    }
+}
+
+@Composable
+private fun RunnerStickman(phase: Float, accent: Color, modifier: Modifier) {
+    Canvas(modifier) {
+        val h = size.height
+        val w = size.width
+        val sw = strokeFor(h)
+        val cx = w * 0.5f
+
+        // The body rises twice per stride, hence abs(sin).
+        val bob = -h * 0.025f * abs(sin(phase))
+
+        translate(top = bob) {
+            val hip = Offset(cx - h * 0.02f, h * 0.55f)
+            val neck = Offset(cx + h * 0.035f, h * 0.26f)
+            val shoulder = Offset(cx + h * 0.03f, h * 0.30f)
+            val head = Offset(cx + h * 0.08f, h * 0.165f)
+
+            val thigh = h * 0.21f
+            val shin = h * 0.20f
+            val footLen = h * 0.07f
+            val upperArm = h * 0.15f
+            val foreArm = h * 0.14f
+
+            fun leg(p: Float, alpha: Float) {
+                val thighAngle = 0.95f * sin(p)
+                // The knee only ever flexes backwards: shin angle < thigh angle.
+                val bend = 0.12f + 1.25f * (0.5f - 0.5f * cos(p))
+                val knee = hip.fromVertical(thighAngle, thigh)
+                val ankle = knee.fromVertical(thighAngle - bend, shin)
+                val toe = ankle.fromVertical(thighAngle - bend + 1.35f, footLen)
+                limb(hip, knee, accent, sw, alpha)
+                limb(knee, ankle, accent, sw, alpha)
+                limb(ankle, toe, accent, sw * 0.85f, alpha)
+            }
+
+            fun arm(p: Float, alpha: Float) {
+                val upperAngle = 0.75f * sin(p)
+                val elbowBend = 1.45f + 0.35f * cos(p)
+                val elbow = shoulder.fromVertical(upperAngle, upperArm)
+                val hand = elbow.fromVertical(upperAngle + elbowBend, foreArm)
+                limb(shoulder, elbow, accent, sw, alpha)
+                limb(elbow, hand, accent, sw, alpha)
+            }
+
+            // Far side first and dimmed, so the figure reads as three-dimensional.
+            leg(phase + Math.PI.toFloat(), FAR_SIDE_ALPHA)
+            arm(phase, FAR_SIDE_ALPHA)
+
+            limb(hip, neck, accent, sw)
+            stickHead(head, h, accent)
+
+            // Arms swing opposite the leg on the same side.
+            leg(phase, 1f)
+            arm(phase + Math.PI.toFloat(), 1f)
         }
     }
 }
 
-// --- Run -------------------------------------------------------------------
-//
-// A gait cycle per leg, half a turn apart. The foot traces the classic
-// procedural path: forward and UP through the air for half the cycle (swing),
-// then back along the ground for the other half (stance, the drive). The knee
-// falls out of the IK, so it lifts high on the swing and extends on the drive
-// without either being animated directly.
+@Composable
+private fun CyclistStickman(phase: Float, accent: Color, machine: Color, modifier: Modifier) {
+    Canvas(modifier) {
+        val h = size.height
+        val w = size.width
+        val sw = h * 0.033f
+        // The bike is the app's accent and the rider is not, so the machine
+        // reads as scenery and the body reads as the subject.
+        val bike = machine.copy(alpha = 0.55f)
 
-private fun footPath(t: Float, hipX: Float, ground: Float, stride: Float, lift: Float): Offset {
-    val a = TAU * t
-    val airborne = sin(a).coerceAtLeast(0f) // only the swing half lifts
-    return at(hipX - stride * cos(a), ground - lift * airborne)
-}
+        val wheelR = h * 0.185f
+        val hubY = h * 0.78f
+        val rearHub = Offset(w * 0.23f, hubY)
+        val frontHub = Offset(w * 0.79f, hubY)
+        val bb = Offset(w * 0.50f, hubY - h * 0.03f) // bottom bracket
+        val seat = Offset(w * 0.34f, hubY - h * 0.40f)
+        val bar = Offset(w * 0.70f, hubY - h * 0.33f)
 
-private fun DrawScope.drawRunner(t: Float, stroke: Color, muted: Color) {
-    val u = size.width / 44f
-    val a = TAU * t
-    // Two foot strikes per cycle, so the body drops twice: lowest on contact,
-    // highest at mid-swing. This is what stops a running figure looking like it
-    // is skating.
-    val bob = -1.8f * (0.5f - 0.5f * cos(2f * a))
-    val s = Skeleton(this, u, bob)
-    val w = 2.3f
-
-    val hip = at(20f, 33f)
-    val shoulder = at(22.5f, 18.5f)
-    val ground = 50.5f
-
-    // Trailing leg first so the leading one draws over it.
-    listOf(0.5f to muted, 0f to stroke).forEach { (offset, color) ->
-        val foot = footPath((t + offset) % 1f, hip.x, ground, stride = 7f, lift = 6.5f)
-        // Knee forward: the near-side leg bends the way a right-facing runner's does.
-        s.limb(hip, foot, l1 = 9.5f, l2 = 9f, flip = -1f, color = color, width = w)
-        // A short foot, angled with the swing. Small, but its absence is what
-        // made the old figure read as a pair of scissors.
-        val toe = at(foot.x + 3.2f, foot.y - if (foot.y < ground - 0.5f) 1.4f else 0f)
-        s.bone(foot, toe, color, w * 0.85f)
-    }
-
-    // Arms drive opposite the legs, elbows locked near a right angle by aiming
-    // the hand at a short, mostly fore-and-aft path.
-    listOf(0.5f to muted, 0f to stroke).forEach { (offset, color) ->
-        val ha = TAU * ((t + offset) % 1f)
-        val hand = at(shoulder.x + 6.2f * cos(ha), shoulder.y + 8.5f + 2.2f * sin(ha))
-        s.limb(shoulder, hand, l1 = 6.5f, l2 = 6.2f, flip = 1f, color = color, width = w * 0.95f)
-    }
-
-    // Torso leans into the run; the head sits forward of the hips, not above them.
-    s.bone(shoulder, hip, stroke, w)
-    s.head(at(24f, 11f), radius = 5f, color = stroke, width = w)
-    s.bone(at(23.4f, 15.8f), shoulder, stroke, w * 0.9f)
-}
-
-// --- Ride ------------------------------------------------------------------
-//
-// The pedal is the only thing animated: it goes round the chainring, and both
-// legs are solved to reach it. That single constraint is what makes a cycling
-// figure look right, and it is exactly what the real machine does.
-
-private fun DrawScope.drawRider(t: Float, stroke: Color, muted: Color, accent: Color) {
-    val u = size.width / 62f
-    val s = Skeleton(this, u, 0f)
-    val w = 2.1f
-
-    val rearHub = at(11f, 44f)
-    val frontHub = at(50f, 44f)
-    val bb = at(30f, 44f)          // bottom bracket, where the cranks turn
-    val saddle = at(23f, 24f)
-    val bars = at(47f, 26f)
-    val hip = at(24.5f, 25f)
-    val shoulder = at(35f, 19f)
-    val crankR = 5.2f
-    val wheelR = 9.6f
-
-    // Wheels. The spokes turn at the wheel's own rate, geared off the cranks,
-    // so cadence and road speed stay visibly related.
-    val wheelAngle = TAU * ((t * 2.6f) % 1f)
-    listOf(rearHub, frontHub).forEach { hub ->
-        s.ring(hub, wheelR, muted, 1.5f)
-        repeat(3) { k ->
-            val ang = wheelAngle + k * TAU / 3f
-            val dx = (wheelR - 1f) * cos(ang)
-            val dy = (wheelR - 1f) * sin(ang)
-            s.bone(at(hub.x - dx, hub.y - dy), at(hub.x + dx, hub.y + dy), muted.copy(alpha = 0.4f), 1f)
+        // Wheels, with spokes turning at roughly gear ratio to the cranks.
+        listOf(rearHub, frontHub).forEach { hub ->
+            drawCircle(bike, wheelR, hub, style = Stroke(sw * 0.8f))
+            repeat(3) { i ->
+                val a = -phase * 2.2f + i * (TAU / 3f)
+                limb(hub, hub.polar(a, wheelR), bike, sw * 0.45f, 0.6f)
+            }
         }
+
+        // Frame: chainstay, seatstay, seat tube, top tube, down tube, fork.
+        listOf(
+            bb to rearHub, seat to rearHub, bb to seat,
+            seat to bar, bb to bar, bar to frontHub,
+        ).forEach { (a, b) -> limb(a, b, bike, sw * 0.9f) }
+
+        // Cranks and pedals. The feet are the crank ends.
+        val crankR = h * 0.095f
+        val pedalNear = bb.polar(phase, crankR)
+        val pedalFar = bb.polar(phase + Math.PI.toFloat(), crankR)
+        limb(bb, pedalNear, bike, sw * 0.7f)
+        limb(bb, pedalFar, bike, sw * 0.7f)
+
+        val hip = Offset(seat.x + h * 0.015f, seat.y - h * 0.02f)
+        val shoulder = Offset(hip.x + h * 0.30f, hip.y - h * 0.20f) // hunched forward
+        val head = Offset(shoulder.x + h * 0.125f, shoulder.y - h * 0.05f)
+        val thigh = h * 0.24f
+        val shin = h * 0.26f
+
+        fun leg(pedal: Offset, alpha: Float) {
+            val knee = solveKnee(hip, pedal, thigh, shin)
+            limb(hip, knee, accent, sw, alpha)
+            limb(knee, pedal, accent, sw, alpha)
+            limb(pedal, Offset(pedal.x + h * 0.055f, pedal.y - h * 0.005f), accent, sw * 0.8f, alpha)
+        }
+
+        leg(pedalFar, 0.32f)
+
+        limb(hip, shoulder, accent, sw)
+        drawCircle(accent, h * 0.075f, head, style = Stroke(sw))
+
+        // Arm reaching for the bar, elbow slightly dropped.
+        val elbow = Offset(
+            (shoulder.x + bar.x) / 2f + h * 0.015f,
+            (shoulder.y + bar.y) / 2f + h * 0.035f,
+        )
+        limb(shoulder, elbow, accent, sw)
+        limb(elbow, bar, accent, sw)
+
+        leg(pedalNear, 1f)
     }
-
-    // Frame: a real diamond, so it reads as a bike rather than a scribble.
-    listOf(
-        bb to rearHub,          // chainstay
-        rearHub to saddle,      // seat stay
-        bb to saddle,           // seat tube
-        bb to at(45f, 28f),     // down tube
-        saddle to at(45f, 28f), // top tube
-        at(45f, 28f) to frontHub, // fork
-        at(45f, 28f) to bars,   // stem and bars
-    ).forEach { (a, b) -> s.bone(a, b, stroke, w) }
-
-    // Both legs chase the pedals, half a turn apart on the same crank.
-    listOf(0.5f to muted, 0f to stroke).forEach { (offset, color) ->
-        val ang = TAU * ((t + offset) % 1f)
-        val pedal = at(bb.x + crankR * cos(ang), bb.y + crankR * sin(ang))
-        s.bone(bb, pedal, if (offset == 0f) accent else muted, 1.6f)
-        s.limb(hip, pedal, l1 = 9.2f, l2 = 10.4f, flip = -1f, color = color, width = w)
-        s.bone(at(pedal.x - 2f, pedal.y), at(pedal.x + 2f, pedal.y), color, w * 0.8f)
-    }
-    s.ring(bb, 2.4f, accent, 1.2f)
-
-    // Rider: hips back over the saddle, shoulders forward, arms out to the bars.
-    s.bone(hip, shoulder, stroke, w)
-    s.limb(shoulder, bars, l1 = 6.5f, l2 = 6.5f, flip = -1f, color = stroke, width = w * 0.9f)
-    s.bone(shoulder, at(39f, 15.5f), stroke, w * 0.9f)
-    s.head(at(42.5f, 12.5f), radius = 4.6f, color = stroke, width = w)
 }
 
-// --- Swim ------------------------------------------------------------------
-//
-// Freestyle from the side. Each hand runs the real stroke loop: it enters ahead
-// of the head, pulls back UNDER the body, exits at the hip and recovers back
-// over the top. Half a cycle apart, so one arm is always pulling. The elbow
-// bends out of the IK, which gives the high-elbow catch for free.
+@Composable
+private fun SwimmerStickman(phase: Float, accent: Color, water: Color, modifier: Modifier) {
+    Canvas(modifier) {
+        val h = size.height
+        val w = size.width
+        val sw = h * 0.034f
+        val waterY = h * 0.60f
 
-private fun DrawScope.drawSwimmer(t: Float, kickT: Float, stroke: Color, muted: Color) {
-    val u = size.width / 66f
-    // The body rolls with the stroke, exactly as a real swimmer's does.
-    val roll = 1.6f * sin(TAU * t)
-    val s = Skeleton(this, u, roll)
-    val w = 2.3f
+        // Rippling surface line.
+        val ripple = Path().apply {
+            moveTo(0f, waterY)
+            var x = 0f
+            while (x <= w) {
+                lineTo(x, waterY + sin(x / w * 9f + phase * 1.4f) * h * 0.012f)
+                x += w / 26f
+            }
+        }
+        drawPath(ripple, water.copy(alpha = 0.35f), style = Stroke(sw * 0.6f))
 
-    val shoulder = at(44f, 27.5f)
-    val hip = at(20f, 30f)
-    // Centre of the stroke loop, slightly ahead of and below the shoulder.
-    val loop = at(45.5f, 28f)
+        val roll = sin(phase) * h * 0.022f
+        val shoulder = Offset(w * 0.62f, h * 0.54f + roll)
+        val hip = Offset(w * 0.32f, h * 0.57f - roll * 0.4f)
+        val head = Offset(w * 0.73f, h * 0.52f + roll * 0.7f)
 
-    s.bone(shoulder, hip, stroke, w)
+        // Exhaled bubbles trailing off the head.
+        repeat(3) { i ->
+            val t = (phase / TAU + i * 0.33f) % 1f
+            drawCircle(
+                water.copy(alpha = 0.30f * (1f - t)),
+                h * 0.014f * (1f - t * 0.4f),
+                Offset(head.x + h * 0.06f + t * h * 0.14f, head.y - t * h * 0.10f),
+            )
+        }
 
-    listOf(0.5f to muted, 0f to stroke).forEach { (offset, color) ->
-        val a = TAU * ((t + offset) % 1f)
-        val hand = at(loop.x + 11.5f * cos(a), loop.y + 8f * sin(a))
-        // Elbow above the hand through the pull, which is the shape coaches
-        // spend years asking for.
-        s.limb(shoulder, hand, l1 = 7.2f, l2 = 7f, flip = -1f, color = color, width = w * 0.95f)
+        limb(hip, shoulder, accent, sw)
+        drawCircle(accent, h * 0.075f, head, style = Stroke(sw))
+
+        // Six-beat flutter kick: three kicks per arm cycle.
+        fun leg(p: Float, alpha: Float) {
+            val amp = h * 0.085f
+            val knee = Offset(hip.x - h * 0.16f, hip.y + amp * sin(p))
+            val foot = Offset(knee.x - h * 0.15f, knee.y + amp * 1.7f * sin(p - 0.9f))
+            limb(hip, knee, accent, sw, alpha)
+            limb(knee, foot, accent, sw * 0.85f, alpha)
+        }
+        leg(3f * phase + Math.PI.toFloat(), 0.32f)
+        leg(3f * phase, 1f)
+
+        // Freestyle windmill: 0 reaching forward, π/2 catch, π push back,
+        // 3π/2 recovery over the top.
+        fun arm(a: Float, alpha: Float) {
+            val bend = 0.55f * sin(a) // high elbow through the catch
+            val elbow = shoulder.polar(a, h * 0.19f)
+            val hand = elbow.polar(a + bend, h * 0.18f)
+            limb(shoulder, elbow, accent, sw, alpha)
+            limb(elbow, hand, accent, sw, alpha)
+
+            // Splash as the hand crosses the surface, entering or exiting.
+            if (abs(hand.y - waterY) < h * 0.05f) {
+                repeat(2) { i ->
+                    drawCircle(
+                        water.copy(alpha = 0.40f * alpha),
+                        h * 0.011f,
+                        Offset(hand.x + (i - 0.5f) * h * 0.05f, waterY - h * 0.035f),
+                    )
+                }
+            }
+        }
+        arm(phase + Math.PI.toFloat(), 0.32f)
+        arm(phase, 1f)
     }
-
-    // Six-beat flutter: small, fast, from the hip, with the knee barely bending.
-    listOf(0.5f to muted, 0f to stroke).forEach { (offset, color) ->
-        val k = TAU * ((kickT + offset) % 1f)
-        val foot = at(hip.x - 11.5f, hip.y + 3.6f * sin(k))
-        s.limb(hip, foot, l1 = 6.2f, l2 = 6f, flip = -1f, color = color, width = w * 0.95f)
-        s.bone(foot, at(foot.x - 2.6f, foot.y + 0.9f * sin(k)), color, w * 0.8f)
-    }
-
-    s.head(at(50.5f, 26f), radius = 5f, color = stroke, width = w)
-    s.bone(at(46.5f, 27f), shoulder, stroke, w * 0.9f)
 }
 
 /**
@@ -608,7 +722,7 @@ private fun DrawScope.drawSwimmer(t: Float, kickT: Float, stroke: Color, muted: 
 private fun GoalFlag() {
     val phase = rememberPhase(1100f)
     val accent = MaterialTheme.colorScheme.primary
-    Canvas(Modifier.size(26.dp, 60.dp)) {
+    Canvas(Modifier.size(22.dp, 54.dp)) {
         val u = size.width / 26f
         val flutter = 2f * cos(2.0 * Math.PI * phase).toFloat()
         drawLine(accent, Offset(4f * u, 58f * u), Offset(4f * u, 4f * u), strokeWidth = 2.4f * u, cap = StrokeCap.Round)
@@ -622,25 +736,3 @@ private fun GoalFlag() {
     }
 }
 
-/** Water for the swimmer to be in, drifting past under the line. */
-@Composable
-private fun Waterline(paceSec: Int, modifier: Modifier = Modifier) {
-    val phase = rememberPhase(1600f * EnduranceGoals.animationRate("swim", paceSec))
-    val water = MaterialTheme.colorScheme.outline
-    Canvas(modifier.fillMaxWidth().height(14.dp)) {
-        val u = size.height / 14f
-        val wavelength = 24f * u
-        // Sampled rather than drawn with beziers: one loop, no curve API, and the
-        // shift is exactly one wavelength per cycle so the seam never shows.
-        val path = Path()
-        val step = wavelength / 8f
-        var x = -wavelength - phase * wavelength
-        path.moveTo(x, 7f * u)
-        while (x < size.width + wavelength) {
-            x += step
-            val y = (7f + 3.5f * sin(2.0 * Math.PI * x / wavelength).toFloat()) * u
-            path.lineTo(x, y)
-        }
-        drawPath(path, water.copy(alpha = 0.5f), style = Stroke(width = 1.6f * u, cap = StrokeCap.Round))
-    }
-}

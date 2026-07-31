@@ -5,7 +5,9 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -21,6 +23,7 @@ import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.FitnessCenter
 import androidx.compose.material.icons.filled.Pool
 import androidx.compose.material.icons.filled.Psychology
+import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
@@ -55,7 +58,7 @@ import com.workoutmaker.app.ui.screens.settings.AddRaceDialog
 import com.workoutmaker.app.ui.screens.settings.AppearancePicker
 import com.workoutmaker.app.ui.screens.settings.ChipGroup
 import com.workoutmaker.app.ui.screens.settings.EXPERIENCE_BY_SPORT
-import com.workoutmaker.app.ui.screens.settings.EquipmentSelector
+import com.workoutmaker.app.ui.screens.settings.GOALS_BY_SPORT
 import com.workoutmaker.app.ui.screens.settings.LEVELS
 import com.workoutmaker.app.ui.screens.settings.PerformanceEditor
 import com.workoutmaker.app.ui.screens.settings.PeriodizationControl
@@ -266,58 +269,11 @@ internal fun StepActivity(sport: String, profile: TrainingProfile, vm: Onboardin
 
 @Composable
 private fun StepDistanceGoal(sport: String, profile: TrainingProfile, vm: OnboardingViewModel) {
-    // The control drives local state so the flag tracks the thumb at frame rate;
-    // the profile is written only when a value actually settles on something new.
-    var fraction by remember(sport) {
-        mutableFloatStateOf(
-            profile.distance_goal_km[sport]?.let { EnduranceGoals.fractionForKm(sport, it) }
-                ?: EnduranceGoals.defaultFraction(),
-        )
-    }
-    var paceSec by remember(sport) {
-        mutableIntStateOf(profile.goal_pace_sec_per_km[sport] ?: EnduranceGoals.defaultPaceSec(sport))
-    }
-
-    fun commit() {
-        val km = EnduranceGoals.kmForFraction(sport, fraction)
-        vm.update { p ->
-            if (p.distance_goal_km[sport] == km && p.goal_pace_sec_per_km[sport] == paceSec) {
-                p
-            } else {
-                p.copy(
-                    distance_goal_km = p.distance_goal_km + (sport to km),
-                    goal_pace_sec_per_km = p.goal_pace_sec_per_km + (sport to paceSec),
-                    // The named goal is DERIVED, so the goal-race step, the
-                    // Settings chips and the legacy goal string all still see
-                    // the catalog value they key on.
-                    goals_by_sport = p.goals_by_sport +
-                        (sport to listOfNotNull(EnduranceGoals.catalogGoal(sport, km))),
-                )
-            }
-        }
-    }
-
-    // The picker opens on a real, pre-selected target. Same lesson as the week
-    // step: a pre-selection the athlete agrees with has to leave something behind.
-    LaunchedEffect(sport) { if (profile.distance_goal_km[sport] == null) commit() }
-
     StepColumn {
-        DistanceGoalPicker(
-            sport = sport,
-            fraction = fraction,
-            paceSec = paceSec,
-            onFraction = { fraction = it },
-            onRelease = { fraction = EnduranceGoals.snapFraction(sport, fraction); commit() },
-            onPace = { paceSec = EnduranceGoals.clampPace(sport, it); commit() },
-        )
-        // Asked here rather than on a screen of its own: the distance says what
-        // you want, the level says what you can currently absorb, and the coach
-        // needs both to turn one into the other.
-        ChipGroup(
-            "What level are you?",
-            EXPERIENCE_BY_SPORT[sport] ?: LEVELS,
-            profile.experience_by_sport[sport],
-        ) { lvl -> vm.update { it.copy(experience_by_sport = it.experience_by_sport + (sport to lvl)) } }
+        // seedIfUnset: the picker opens on a real, pre-selected target. Same
+        // lesson as the week step, a pre-selection the athlete agrees with has
+        // to leave something behind.
+        EnduranceSportQuestions(sport, profile, seedIfUnset = true) { f -> vm.update(f) }
     }
 }
 
@@ -493,8 +449,62 @@ private fun EffortRow(label: String, note: String, tss: String, selected: Boolea
 
 @Composable
 internal fun StepEquipment(profile: TrainingProfile, vm: OnboardingViewModel) {
+    StepGymScene(profile) {
+        GymKitPicker(profile) { item ->
+            vm.update { it.copy(equipment_list = toggledGymKit(it.equipment_list, item)) }
+        }
+    }
+}
+
+// --- The gym's four questions ----------------------------------------------
+//
+// Each one is the scene, then the question. The scene is the same composable on
+// all four screens and keeps whatever the athlete has built so far, so it reads
+// as one room being furnished rather than four unrelated forms: by the kit step
+// the figure is standing in the gym the earlier answers described.
+
+@Composable
+private fun StepGymScene(profile: TrainingProfile, content: @Composable ColumnScope.() -> Unit) {
     StepColumn {
-        EquipmentSelector(profile.equipment_list) { e -> vm.update { it.copy(equipment_list = it.equipment_list.toggled(e)) } }
+        GymSceneCard(profile.equipment_list, caption = gymSummary(profile).ifBlank { null })
+        content()
+    }
+}
+
+@Composable
+internal fun StepGymGoals(profile: TrainingProfile, vm: OnboardingViewModel) {
+    StepGymScene(profile) {
+        GymGoalPicker(profile) { g ->
+            vm.update { it.copy(goals_by_sport = it.goals_by_sport.toggleIn(GYM, g)) }
+        }
+    }
+}
+
+@Composable
+internal fun StepGymLevel(profile: TrainingProfile, vm: OnboardingViewModel) {
+    // The level step pre-selects rather than opening on nothing: a slider with
+    // no value has to guess anyway, so it may as well show its guess and let the
+    // athlete disagree with it. Same reasoning as the distance picker's seed.
+    LaunchedEffect(Unit) {
+        if (profile.experience_by_sport[GYM] == null) {
+            gymLevels().firstOrNull()?.let { first ->
+                vm.update { it.copy(experience_by_sport = it.experience_by_sport + (GYM to first)) }
+            }
+        }
+    }
+    StepGymScene(profile) {
+        GymLevelPicker(profile) { lvl ->
+            vm.update { it.copy(experience_by_sport = it.experience_by_sport + (GYM to lvl)) }
+        }
+    }
+}
+
+@Composable
+internal fun StepGymSplit(profile: TrainingProfile, vm: OnboardingViewModel) {
+    StepGymScene(profile) {
+        GymSplitPicker(profile) { s ->
+            vm.update { it.copy(split_style = if (s == "Auto") null else s) }
+        }
     }
 }
 

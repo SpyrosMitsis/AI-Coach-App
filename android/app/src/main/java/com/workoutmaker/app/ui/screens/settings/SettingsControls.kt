@@ -18,17 +18,23 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material3.AssistChip
 import androidx.compose.material3.AssistChipDefaults
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.focus.onFocusChanged
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
@@ -45,6 +51,62 @@ internal fun ToggleRow(title: String, subtitle: String, checked: Boolean, onChan
         }
         Switch(checked = checked, onCheckedChange = onChange)
     }
+}
+
+/**
+ * A number field that lets you finish typing.
+ *
+ * Binding an `OutlinedTextField` straight to a parsed-and-range-checked model
+ * value looks tidy and is unusable: every keystroke is re-parsed, so any prefix
+ * of a legal number that is itself illegal is swallowed. Body fat rejected
+ * "1", which made every value from 10 to 29 impossible to enter, and the
+ * decimal point disappeared the moment you typed it because "12." parses to
+ * 12.0 and renders back as "12".
+ *
+ * So the text is local while the field is being edited, and the parsed value is
+ * pushed up on every edit that parses in range (out of range is held, not
+ * discarded, until the athlete adds another digit or leaves). External writes
+ * still win: when the model changes to something the text does not already
+ * describe, the text follows it, which is how the Intervals.icu and Health
+ * Connect syncs keep showing up here.
+ */
+@Composable
+internal fun NumberField(
+    value: String,
+    onValue: (String) -> Unit,
+    label: String,
+    modifier: Modifier = Modifier,
+    decimal: Boolean = false,
+) {
+    var text by remember { mutableStateOf(value) }
+    var editing by remember { mutableStateOf(false) }
+    if (!editing && text != value) text = value
+
+    OutlinedTextField(
+        value = text,
+        onValueChange = { raw ->
+            // One leading sign-free number: digits, and at most one separator.
+            val cleaned = raw.filter { it.isDigit() || (decimal && (it == '.' || it == ',')) }
+                .replace(',', '.')
+                .let { s ->
+                    val dot = s.indexOf('.')
+                    if (dot < 0) s else s.substring(0, dot + 1) + s.substring(dot + 1).replace(".", "")
+                }
+            text = cleaned
+            onValue(cleaned)
+        },
+        label = { Text(label) },
+        singleLine = true,
+        keyboardOptions = KeyboardOptions(
+            keyboardType = if (decimal) KeyboardType.Decimal else KeyboardType.Number,
+        ),
+        modifier = modifier.onFocusChanged { f ->
+            editing = f.isFocused
+            // On the way out, show what was actually stored. A half-typed or
+            // out-of-range entry then visibly snaps back instead of looking saved.
+            if (!f.isFocused) text = value
+        },
+    )
 }
 
 internal fun restLabel(sec: Int): String =

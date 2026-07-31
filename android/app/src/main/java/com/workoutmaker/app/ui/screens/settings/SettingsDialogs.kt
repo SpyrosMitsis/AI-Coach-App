@@ -400,6 +400,32 @@ internal fun ZonesSection(vm: SettingsViewModel) {
         }
     }
 
+    // A number you do not have is not an unfinished job. Someone who rides but
+    // has never tested has no FTP and may never get one, and the amber "FTP
+    // missing" that follows them around the index cannot be resolved by any
+    // action except hiding it. So: hide it, per number, reversibly, and say
+    // plainly what the coach does instead. The number itself stays editable
+    // above, and hushing one never changes what is planned, only what is asked.
+    val hushed by vm.hushedNumbers.collectAsStateSafe()
+    val applicable = applicableNumbers(profile)
+    if (applicable.isNotEmpty()) {
+        SectionCard(title = "Numbers I ask for") {
+            Text(
+                "Turn one off if you don't have it. I'll estimate from your age and your " +
+                    "logged sessions instead, and stop flagging it as missing.",
+                style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            applicable.forEach { name ->
+                ToggleRow(
+                    title = name,
+                    subtitle = if (name in hushed) "Not asking, estimated instead" else "Flagged while it's empty",
+                    checked = name !in hushed,
+                    onChange = { on -> vm.setNumberHushed(name, !on) },
+                )
+            }
+        }
+    }
+
     // Derived reference tables last — outputs of the inputs above, not settings.
     ZoneTables(profile.lthr, profile.threshold_pace_per_km, profile.ftp)
 }

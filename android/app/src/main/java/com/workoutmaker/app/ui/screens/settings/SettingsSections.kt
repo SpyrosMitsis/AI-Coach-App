@@ -14,6 +14,16 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import com.workoutmaker.app.data.EnduranceGoals
+import com.workoutmaker.app.ui.screens.onboarding.EnduranceSportQuestions
+import com.workoutmaker.app.ui.screens.onboarding.GYM
+import com.workoutmaker.app.ui.screens.onboarding.GymGoalPicker
+import com.workoutmaker.app.ui.screens.onboarding.GymKitPicker
+import com.workoutmaker.app.ui.screens.onboarding.GymLevelPicker
+import com.workoutmaker.app.ui.screens.onboarding.GymSceneCard
+import com.workoutmaker.app.ui.screens.onboarding.GymSplitPicker
+import com.workoutmaker.app.ui.screens.onboarding.gymSummary
+import com.workoutmaker.app.ui.screens.onboarding.toggledGymKit
+import com.workoutmaker.app.ui.screens.onboarding.WeekPreviewBars
 import com.workoutmaker.app.ui.theme.palette
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Delete
@@ -144,28 +154,27 @@ internal fun AboutYouSection(vm: SettingsViewModel, onOpenBodyHistory: () -> Uni
             vm.updateProfile { it.copy(sex = if (it.sex == s.lowercase()) null else s.lowercase()) }
         }
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            OutlinedTextField(
-                (profile.birth_year?.toString() ?: ""), { v -> vm.updateProfile { it.copy(birth_year = v.toIntOrNull()) } },
-                label = { Text("Born") }, singleLine = true,
-                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number), modifier = Modifier.weight(1f),
+            NumberField(
+                profile.birth_year?.toString() ?: "",
+                { v -> vm.updateProfile { it.copy(birth_year = v.toIntOrNull()?.takeIf { y -> y in 1900..LocalDate.now().year }) } },
+                label = "Born", modifier = Modifier.weight(1f),
             )
-            OutlinedTextField(
-                (profile.height_cm?.toString() ?: ""), { v -> vm.updateProfile { it.copy(height_cm = v.toIntOrNull()) } },
-                label = { Text("Height cm") }, singleLine = true,
-                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number), modifier = Modifier.weight(1f),
+            NumberField(
+                profile.height_cm?.toString() ?: "",
+                { v -> vm.updateProfile { it.copy(height_cm = v.toIntOrNull()?.takeIf { h -> h in 100..250 }) } },
+                label = "Height cm", modifier = Modifier.weight(1f),
             )
         }
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            OutlinedTextField(
-                (profile.weight_kg?.toString() ?: ""), { v -> vm.updateProfile { it.copy(weight_kg = v.toIntOrNull()) } },
-                label = { Text("Weight kg") }, singleLine = true,
-                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number), modifier = Modifier.weight(1f),
+            NumberField(
+                profile.weight_kg?.toString() ?: "",
+                { v -> vm.updateProfile { it.copy(weight_kg = v.toIntOrNull()?.takeIf { w -> w in 30..250 }) } },
+                label = "Weight kg", modifier = Modifier.weight(1f),
             )
-            OutlinedTextField(
-                (profile.body_fat_pct?.let { bf -> if (bf % 1.0 == 0.0) bf.toInt().toString() else bf.toString() } ?: ""),
+            NumberField(
+                profile.body_fat_pct?.let { bf -> if (bf % 1.0 == 0.0) bf.toInt().toString() else bf.toString() } ?: "",
                 { v -> vm.updateProfile { it.copy(body_fat_pct = v.toDoubleOrNull()?.takeIf { bf -> bf in 3.0..60.0 }) } },
-                label = { Text("Body fat %") }, singleLine = true,
-                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal), modifier = Modifier.weight(1f),
+                label = "Body fat %", decimal = true, modifier = Modifier.weight(1f),
             )
         }
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -290,61 +299,81 @@ private fun sportIcon(sport: String) = when (sport) {
 @Composable
 private fun SportDetail(sport: String, profile: TrainingProfile, vm: SettingsViewModel) {
     Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-            // Onboarding's picker records a precise target ("Run 21.1 km at
-            // 5:22 /km"), which OVERRIDES the catalog goal when the profile is
-            // saved. Show it, or a goal edited here would silently do nothing.
-            profile.distance_goal_km[sport]?.takeIf { it > 0 }?.let { km ->
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Text(
-                        EnduranceGoals.goalPhrase(sport, km, profile.goal_pace_sec_per_km[sport]),
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.primary,
-                        modifier = Modifier.weight(1f),
-                    )
-                    TextButton(
-                        onClick = {
-                            vm.updateProfile {
-                                it.copy(
-                                    distance_goal_km = it.distance_goal_km - sport,
-                                    goal_pace_sec_per_km = it.goal_pace_sec_per_km - sport,
-                                )
-                            }
-                        },
-                    ) { Text("Clear") }
-                }
+            // The endurance sports get onboarding's own control, the line and the
+            // flag, not a description of what it once recorded. This screen used
+            // to print the picker's target as read-only text next to a Clear
+            // button, because a goal chip tapped here would silently lose to the
+            // distance target on save. There is nothing to lose to now: it is the
+            // same control writing the same fields.
+            when {
+                EnduranceGoals.isEndurance(sport) ->
+                    EnduranceSportQuestions(sport, profile) { f -> vm.updateProfile(f) }
+                // The gym gets onboarding's own four controls, boxed one
+                // question per card so the screen is scannable, with the scene
+                // on top answering "what does my gym currently look like".
+                sport == GYM -> GymSettings(profile, vm)
+                else -> SportGoalsLevel(
+                    sport = sport,
+                    goals = profile.goals_by_sport[sport].orEmpty(),
+                    level = profile.experience_by_sport[sport],
+                    splitStyle = profile.split_style,
+                    onGoalToggle = { g -> vm.updateProfile { it.copy(goals_by_sport = it.goals_by_sport.toggleIn(sport, g)) } },
+                    onLevel = { lvl -> vm.updateProfile { it.copy(experience_by_sport = it.experience_by_sport + (sport to lvl)) } },
+                    onSplit = { s -> vm.updateProfile { it.copy(split_style = if (s == "Auto") null else s) } },
+                )
             }
-            SportGoalsLevel(
-                sport = sport,
-                goals = profile.goals_by_sport[sport].orEmpty(),
-                level = profile.experience_by_sport[sport],
-                splitStyle = profile.split_style,
-                // Picking a goal by hand is an override: drop the distance target
-                // so the chip the athlete just tapped is the one that survives.
-                onGoalToggle = { g ->
-                    vm.updateProfile {
-                        it.copy(
-                            goals_by_sport = it.goals_by_sport.toggleIn(sport, g),
-                            distance_goal_km = it.distance_goal_km - sport,
-                            goal_pace_sec_per_km = it.goal_pace_sec_per_km - sport,
-                        )
-                    }
-                },
-                onLevel = { lvl -> vm.updateProfile { it.copy(experience_by_sport = it.experience_by_sport + (sport to lvl)) } },
-                onSplit = { s -> vm.updateProfile { it.copy(split_style = if (s == "Auto") null else s) } },
-            )
-            // The gym's kit belongs with the gym, not in a card of its own at
-            // the bottom that only applies to one of the four sports.
-            if (sport == "strength") {
-                EquipmentSelector(profile.equipment_list) { e ->
-                    vm.updateProfile { it.copy(equipment_list = it.equipment_list.toggled(e)) }
-                }
-            }
+    }
+}
+
+/**
+ * The gym in Settings: the same four controls onboarding uses, each in its own
+ * labelled box. Onboarding gets one question per screen because it is a guided
+ * first pass; Settings gets one question per card because the athlete arrived
+ * knowing which of the four they came to change.
+ */
+@Composable
+private fun GymSettings(profile: TrainingProfile, vm: SettingsViewModel) {
+    SectionCard {
+        SectionLabel("Your gym")
+        GymSceneCard(profile.equipment_list, caption = gymSummary(profile).ifBlank { null })
+    }
+    SectionCard {
+        SectionLabel("What you're chasing")
+        GymGoalPicker(profile) { g ->
+            vm.updateProfile { it.copy(goals_by_sport = it.goals_by_sport.toggleIn(GYM, g)) }
+        }
+    }
+    SectionCard {
+        SectionLabel("Level")
+        GymLevelPicker(profile) { lvl ->
+            vm.updateProfile { it.copy(experience_by_sport = it.experience_by_sport + (GYM to lvl)) }
+        }
+    }
+    SectionCard {
+        SectionLabel("Preferred split")
+        GymSplitPicker(profile) { s ->
+            vm.updateProfile { it.copy(split_style = if (s == "Auto") null else s) }
+        }
+    }
+    SectionCard {
+        SectionLabel("Your kit")
+        GymKitPicker(profile) { item ->
+            vm.updateProfile { it.copy(equipment_list = toggledGymKit(it.equipment_list, item)) }
+        }
     }
 }
 
 @Composable
 internal fun TrainingWeekSection(vm: SettingsViewModel) {
     val profile by vm.profile.collectAsStateSafe()
+    // Answer first, questions underneath, exactly as the onboarding step does it.
+    // Chip rows can say "4 days, 60 minutes" but not which weekdays those are or
+    // how the long day compares, and that shape is the thing worth checking when
+    // you come back to this screen months later.
+    SectionCard {
+        SectionLabel("Your week")
+        WeekPreviewBars(profile.day_availability)
+    }
     // WeeklyAvailabilityEditor renders its own Schedule + Session length cards.
     WeeklyAvailabilityEditor(profile.day_availability) { list -> vm.updateProfile { it.copy(day_availability = list) } }
     SectionCard {
