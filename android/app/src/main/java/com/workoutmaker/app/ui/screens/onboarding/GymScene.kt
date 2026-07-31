@@ -51,6 +51,10 @@ import com.workoutmaker.app.ui.components.rememberAnimationsEnabled
 
 private const val GRID_W = 360f
 private const val GRID_H = 200f
+private const val FLOOR_Y = 169.5f
+// Crown to sole. The kit was laid out around a figure of about this height, and
+// it is the one number the shared stickman needs.
+private const val FIGURE_H = 108f
 
 /** One piece of kit, and whether the room currently contains it. */
 internal enum class GymProp(val equipment: String) {
@@ -176,9 +180,18 @@ internal fun GymScene(equipment: List<String>, modifier: Modifier = Modifier) {
 
                 // The floor, drawn between the background kit and the figure, so
                 // the room has depth without any of it needing a z-index.
-                drawLine(floor, Offset(14f, 169.5f), Offset(346f, 169.5f), 3f, StrokeCap.Round)
+                drawLine(floor, Offset(14f, FLOOR_Y), Offset(346f, FLOOR_Y), 3f, StrokeCap.Round)
 
-                translate(0f, -1.5f * breath) { drawFigure(figure) }
+                // The same body the runner, cyclist and swimmer are drawn from,
+                // standing rather than travelling. Shared code, not a lookalike:
+                // a figure of its own would drift in weight the first time one of
+                // them was tuned.
+                standingStickman(
+                    feet = Offset(GRID_W / 2f, FLOOR_Y),
+                    height = FIGURE_H,
+                    color = figure,
+                    breath = breath,
+                )
 
                 prop(GymProp.KETTLEBELLS) { drawKettlebells(propBack, propFront) }
                 prop(GymProp.DUMBBELLS) { drawDumbbells(propFront) }
@@ -186,17 +199,6 @@ internal fun GymScene(equipment: List<String>, modifier: Modifier = Modifier) {
             }
         }
     }
-}
-
-// --- The figure ------------------------------------------------------------
-
-private fun DrawScope.drawFigure(c: Color) {
-    drawCircle(c, radius = 12f, center = Offset(180f, 74f))
-    drawLine(c, Offset(180f, 88f), Offset(180f, 124f), 10f, StrokeCap.Round)
-    drawLine(c, Offset(180f, 97f), Offset(160f, 119f), 8f, StrokeCap.Round)
-    drawLine(c, Offset(180f, 97f), Offset(200f, 119f), 8f, StrokeCap.Round)
-    drawLine(c, Offset(180f, 123f), Offset(167f, 166f), 9f, StrokeCap.Round)
-    drawLine(c, Offset(180f, 123f), Offset(193f, 166f), 9f, StrokeCap.Round)
 }
 
 // --- The kit ---------------------------------------------------------------

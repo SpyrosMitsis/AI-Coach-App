@@ -436,10 +436,9 @@ private fun StepperButton(
 // Jointed stickmen, drawn procedurally: no assets, just trigonometry over one
 // 0..2π phase per stride, pedal revolution or stroke.
 //
-// Two things make them read as bodies rather than as pivoting sticks. Limbs
-// have TWO bones, so a knee can flex; and the near-side limbs are drawn at full
-// strength over dimmed far-side ones, which is what gives a flat line drawing
-// its sense of depth.
+// The body itself, its proportions and the primitives that draw it, lives in
+// Stickman.kt and is shared with the lifter standing in the gym scene. What is
+// here is only what each sport DOES with that body.
 //
 // Each figure is defined by the constraint its sport actually imposes:
 //   run    the knee only ever flexes backwards, and the body rises twice per
@@ -455,11 +454,6 @@ private fun StepperButton(
 // ends). The phase is integrated per frame rather than driven by a keyframe
 // animation, because an infiniteRepeatable is keyed on its duration and every
 // pace change tore the loop back to its first frame.
-//
-// Colour comes from the theme, never from a fixed palette: these have to work
-// on all six of the app's schemes, in light and dark (CLAUDE.md).
-
-private const val TAU = (2.0 * Math.PI).toFloat()
 
 /**
  * A 0..1 phase advanced once per frame, at one turn every [periodMs].
@@ -490,39 +484,6 @@ private fun rememberPhase(periodMs: Float): Float {
         }
     }
     return phase
-}
-
-/** Angle measured from straight-down, positive = forward (+x). Natural for legs. */
-private fun Offset.fromVertical(angle: Float, len: Float) =
-    Offset(x + len * sin(angle), y + len * cos(angle))
-
-/** Standard polar: 0 = +x, π/2 = +y (down on screen). */
-private fun Offset.polar(angle: Float, len: Float) =
-    Offset(x + len * cos(angle), y + len * sin(angle))
-
-private fun DrawScope.limb(a: Offset, b: Offset, color: Color, width: Float, alpha: Float = 1f) =
-    drawLine(
-        color = if (alpha == 1f) color else color.copy(alpha = color.alpha * alpha),
-        start = a,
-        end = b,
-        strokeWidth = width,
-        cap = StrokeCap.Round,
-    )
-
-/**
- * Two-bone IK: given hip and foot, find the knee that keeps both bone lengths.
- * Used for the pedal stroke, where the foot has to follow the crank circle.
- */
-private fun solveKnee(hip: Offset, foot: Offset, thigh: Float, shin: Float): Offset {
-    val delta = foot - hip
-    val raw = delta.getDistance().coerceAtLeast(0.001f)
-    val d = raw.coerceIn(abs(thigh - shin) + 0.01f, thigh + shin - 0.01f)
-    val u = Offset(delta.x / raw, delta.y / raw)
-    val a = (thigh * thigh - shin * shin + d * d) / (2f * d)
-    val height = sqrt(max(0f, thigh * thigh - a * a))
-    val base = Offset(hip.x + u.x * a, hip.y + u.y * a)
-    val perp = Offset(u.y, -u.x) // bend the knee forward
-    return Offset(base.x + perp.x * height, base.y + perp.y * height)
 }
 
 // Sized against the track, not against the drawing: at 390dp wide with a 48dp
@@ -557,7 +518,7 @@ private fun RunnerStickman(phase: Float, accent: Color, modifier: Modifier) {
     Canvas(modifier) {
         val h = size.height
         val w = size.width
-        val sw = h * 0.035f
+        val sw = strokeFor(h)
         val cx = w * 0.5f
 
         // The body rises twice per stride, hence abs(sin).
@@ -597,11 +558,11 @@ private fun RunnerStickman(phase: Float, accent: Color, modifier: Modifier) {
             }
 
             // Far side first and dimmed, so the figure reads as three-dimensional.
-            leg(phase + Math.PI.toFloat(), 0.32f)
-            arm(phase, 0.32f)
+            leg(phase + Math.PI.toFloat(), FAR_SIDE_ALPHA)
+            arm(phase, FAR_SIDE_ALPHA)
 
             limb(hip, neck, accent, sw)
-            drawCircle(accent, h * 0.085f, head, style = Stroke(sw))
+            stickHead(head, h, accent)
 
             // Arms swing opposite the leg on the same side.
             leg(phase, 1f)
