@@ -130,6 +130,7 @@ private fun rememberSettingsSnapshot(vm: SettingsViewModel): SettingsSnapshot {
     val autoPlan by vm.autoPlan.collectAsStateSafe()
     val knowledge by vm.knowledge.collectAsStateSafe()
     val settings by vm.appSettings.collectAsStateSafe()
+    val hushed by vm.hushedNumbers.collectAsStateSafe()
     return SettingsSnapshot(
         profile = profile,
         races = races,
@@ -142,6 +143,7 @@ private fun rememberSettingsSnapshot(vm: SettingsViewModel): SettingsSnapshot {
         knowledgeLines = knowledge.lines().count { it.isNotBlank() },
         settings = settings,
         email = vm.userEmail(),
+        hushedNumbers = hushed,
     )
 }
 

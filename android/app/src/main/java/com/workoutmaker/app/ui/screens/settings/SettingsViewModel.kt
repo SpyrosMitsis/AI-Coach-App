@@ -336,6 +336,12 @@ class SettingsViewModel @Inject constructor(
     fun setThemePalette(p: ThemePalette) = viewModelScope.launch { prefs.setThemePalette(p) }
     fun setSpendCap(usd: Double) = viewModelScope.launch { prefs.setSpendCap(usd) }
 
+    // Performance numbers the athlete has told us to stop asking about.
+    val hushedNumbers = prefs.hushedNumbers.stateIn(viewModelScope, SharingStarted.Eagerly, emptySet())
+    fun setNumberHushed(name: String, hushed: Boolean) = viewModelScope.launch {
+        prefs.setNumberHushed(name, hushed)
+    }
+
     // Q11: build a Strong-compatible CSV of all strength history for the user to save.
     suspend fun buildExportCsv(): String = strength.exportCsv()
 

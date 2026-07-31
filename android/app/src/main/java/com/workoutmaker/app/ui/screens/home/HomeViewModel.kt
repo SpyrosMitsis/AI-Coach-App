@@ -20,6 +20,7 @@ import com.workoutmaker.app.data.IntervalsStats
 import com.workoutmaker.app.data.LocationProvider
 import com.workoutmaker.app.data.NotificationDeepLinks
 import com.workoutmaker.app.data.PlanChangeBus
+import com.workoutmaker.app.data.PlanStatus
 import com.workoutmaker.app.data.SessionDebrief
 import com.workoutmaker.app.data.TrainingProfile
 import com.workoutmaker.app.data.WellnessCheckin
@@ -43,6 +44,7 @@ import com.workoutmaker.app.data.hasCachedBrief
 import com.workoutmaker.app.data.intervalsStats
 import com.workoutmaker.app.data.loadProfile
 import com.workoutmaker.app.data.markPlannedComplete
+import com.workoutmaker.app.data.planStatus
 import com.workoutmaker.app.data.refreshMemory
 import com.workoutmaker.app.data.submitFeedback
 import com.workoutmaker.app.data.syncHealth
@@ -111,6 +113,10 @@ class HomeViewModel @Inject constructor(
 
     val summary = MutableStateFlow<DailySummary?>(null)
     val fitness = MutableStateFlow<IntervalsStats?>(null)
+    // Billing state, purely so the AI footer can say "Pro" instead of naming the
+    // provider column, which for a Pro user is a stale leftover: hosted AI runs
+    // on the operator's chain and ignores active_llm_provider entirely.
+    val planStatus = MutableStateFlow(PlanStatus())
     // Thresholds for turning a planned step's zone into a concrete target range.
     val profile = MutableStateFlow<TrainingProfile?>(null)
     val loading = MutableStateFlow(true)
@@ -201,6 +207,7 @@ class HomeViewModel @Inject constructor(
         runCatching { repo.wellnessCheckin(date.toString()) }
             .onSuccess { wellnessToday.value = it; wellnessLoaded.value = true }
         if (profile.value == null) runCatching { repo.loadProfile() }.onSuccess { profile.value = it }
+        runCatching { repo.planStatus() }.onSuccess { planStatus.value = it }
         refreshSetupNudge()
         runCatching { repo.intervalsStats() }.onSuccess { fitness.value = it }
         loading.value = false

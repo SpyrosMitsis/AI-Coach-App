@@ -6,6 +6,7 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -21,6 +22,7 @@ import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.FitnessCenter
 import androidx.compose.material.icons.filled.Pool
 import androidx.compose.material.icons.filled.Psychology
+import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
@@ -55,6 +57,7 @@ import com.workoutmaker.app.ui.screens.settings.AddRaceDialog
 import com.workoutmaker.app.ui.screens.settings.AppearancePicker
 import com.workoutmaker.app.ui.screens.settings.ChipGroup
 import com.workoutmaker.app.ui.screens.settings.EXPERIENCE_BY_SPORT
+import com.workoutmaker.app.ui.screens.settings.GOALS_BY_SPORT
 import com.workoutmaker.app.ui.screens.settings.EquipmentSelector
 import com.workoutmaker.app.ui.screens.settings.LEVELS
 import com.workoutmaker.app.ui.screens.settings.PerformanceEditor
@@ -266,58 +269,11 @@ internal fun StepActivity(sport: String, profile: TrainingProfile, vm: Onboardin
 
 @Composable
 private fun StepDistanceGoal(sport: String, profile: TrainingProfile, vm: OnboardingViewModel) {
-    // The control drives local state so the flag tracks the thumb at frame rate;
-    // the profile is written only when a value actually settles on something new.
-    var fraction by remember(sport) {
-        mutableFloatStateOf(
-            profile.distance_goal_km[sport]?.let { EnduranceGoals.fractionForKm(sport, it) }
-                ?: EnduranceGoals.defaultFraction(),
-        )
-    }
-    var paceSec by remember(sport) {
-        mutableIntStateOf(profile.goal_pace_sec_per_km[sport] ?: EnduranceGoals.defaultPaceSec(sport))
-    }
-
-    fun commit() {
-        val km = EnduranceGoals.kmForFraction(sport, fraction)
-        vm.update { p ->
-            if (p.distance_goal_km[sport] == km && p.goal_pace_sec_per_km[sport] == paceSec) {
-                p
-            } else {
-                p.copy(
-                    distance_goal_km = p.distance_goal_km + (sport to km),
-                    goal_pace_sec_per_km = p.goal_pace_sec_per_km + (sport to paceSec),
-                    // The named goal is DERIVED, so the goal-race step, the
-                    // Settings chips and the legacy goal string all still see
-                    // the catalog value they key on.
-                    goals_by_sport = p.goals_by_sport +
-                        (sport to listOfNotNull(EnduranceGoals.catalogGoal(sport, km))),
-                )
-            }
-        }
-    }
-
-    // The picker opens on a real, pre-selected target. Same lesson as the week
-    // step: a pre-selection the athlete agrees with has to leave something behind.
-    LaunchedEffect(sport) { if (profile.distance_goal_km[sport] == null) commit() }
-
     StepColumn {
-        DistanceGoalPicker(
-            sport = sport,
-            fraction = fraction,
-            paceSec = paceSec,
-            onFraction = { fraction = it },
-            onRelease = { fraction = EnduranceGoals.snapFraction(sport, fraction); commit() },
-            onPace = { paceSec = EnduranceGoals.clampPace(sport, it); commit() },
-        )
-        // Asked here rather than on a screen of its own: the distance says what
-        // you want, the level says what you can currently absorb, and the coach
-        // needs both to turn one into the other.
-        ChipGroup(
-            "What level are you?",
-            EXPERIENCE_BY_SPORT[sport] ?: LEVELS,
-            profile.experience_by_sport[sport],
-        ) { lvl -> vm.update { it.copy(experience_by_sport = it.experience_by_sport + (sport to lvl)) } }
+        // seedIfUnset: the picker opens on a real, pre-selected target. Same
+        // lesson as the week step, a pre-selection the athlete agrees with has
+        // to leave something behind.
+        EnduranceSportQuestions(sport, profile, seedIfUnset = true) { f -> vm.update(f) }
     }
 }
 

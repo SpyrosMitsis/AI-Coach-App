@@ -38,6 +38,8 @@ internal data class SettingsSnapshot(
     val settings: AppSettings = AppSettings(),
     val email: String? = null,
     val today: LocalDate = LocalDate.now(),
+    // Numbers the athlete has hushed, see AppPreferences.hushedNumbers.
+    val hushedNumbers: Set<String> = emptySet(),
 )
 
 // ---------------------------------------------------------------------------
@@ -104,7 +106,7 @@ internal fun detailHeader(id: String, s: SettingsSnapshot): SettingsDetailCopy {
             )
         }
         "zones" -> {
-            val missing = missingNumbers(p)
+            val missing = missingNumbers(p, s.hushedNumbers)
             SettingsDetailCopy(
                 "NUMBERS",
                 "What you can do",
@@ -250,7 +252,7 @@ internal fun settingsRowValue(id: String, s: SettingsSnapshot): SettingsRowValue
         "zones" -> {
             // Name the FIRST missing anchor rather than counting them: "threshold
             // pace missing" is actionable, "2 of 4 set" is not.
-            val missing = missingNumbers(p)
+            val missing = missingNumbers(p, s.hushedNumbers)
             if (missing.isNotEmpty()) SettingsRowValue("${missing.first()} missing", unfinished = true)
             else SettingsRowValue(
                 listOfNotNull(
@@ -308,12 +310,24 @@ internal fun settingsRowValue(id: String, s: SettingsSnapshot): SettingsRowValue
  * The performance anchors this athlete's sports actually need, in the order
  * they matter. Only asks for a number the sport uses: an FTP means nothing to
  * someone who never rides.
+ *
+ * [hushed] drops the ones the athlete has said they do not have. Knowing your
+ * FTP is not the same as riding, and a permanent amber row for a number that is
+ * never going to arrive is a reproach, not a prompt.
  */
-internal fun missingNumbers(p: TrainingProfile): List<String> = buildList {
+internal fun missingNumbers(p: TrainingProfile, hushed: Set<String> = emptySet()): List<String> = buildList {
     if (p.sports.contains("run") && p.threshold_pace_per_km.isNullOrBlank()) add("Threshold pace")
     if (p.sports.contains("ride") && p.ftp == null) add("FTP")
     if (p.sports.contains("swim") && p.css_per_100m.isNullOrBlank()) add("Swim pace")
     if (p.sports.contains("strength") && p.starting_lifts.isEmpty()) add("Starting lifts")
+}.filterNot { it in hushed }
+
+/** Every number this athlete's sports can be asked for, hushed or not. */
+internal fun applicableNumbers(p: TrainingProfile): List<String> = buildList {
+    if (p.sports.contains("run")) add("Threshold pace")
+    if (p.sports.contains("ride")) add("FTP")
+    if (p.sports.contains("swim")) add("Swim pace")
+    if (p.sports.contains("strength")) add("Starting lifts")
 }
 
 /**

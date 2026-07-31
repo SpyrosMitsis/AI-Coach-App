@@ -118,12 +118,30 @@ class AppPreferences @Inject constructor(
         // state: an athlete who only ever wants the week should get the week
         // on every cold start, not just until the process dies.
         val calendarWeekView = booleanPreferencesKey("calendar_week_view")
+        // Performance numbers the athlete has told us not to ask about again.
+        // CSV of the same names missingNumbers() produces, for the same reason
+        // the Home layout is a CSV: an unknown name is skipped, never a crash.
+        val hushedNumbers = stringPreferencesKey("hushed_numbers")
     }
 
     val calendarWeekView: Flow<Boolean> =
         context.dataStore.data.map { it[Keys.calendarWeekView] ?: false }
 
     suspend fun setCalendarWeekView(on: Boolean) = edit { it[Keys.calendarWeekView] = on }
+
+    /**
+     * Missing numbers the athlete has hushed. A number they do not have is not
+     * an unfinished setup step: someone who rides once a month has no FTP and
+     * never will, and an amber row that cannot be resolved is just a scold.
+     */
+    val hushedNumbers: Flow<Set<String>> = context.dataStore.data.map { p ->
+        p[Keys.hushedNumbers].orEmpty().split(",").map { it.trim() }.filter { it.isNotEmpty() }.toSet()
+    }
+
+    suspend fun setNumberHushed(name: String, hushed: Boolean) = edit { p ->
+        val current = p[Keys.hushedNumbers].orEmpty().split(",").map { it.trim() }.filter { it.isNotEmpty() }.toSet()
+        p[Keys.hushedNumbers] = (if (hushed) current + name else current - name).joinToString(",")
+    }
 
     /** The athlete's Home layout, or the default when they have never touched it. */
     val homeLayout: Flow<HomeLayout> = context.dataStore.data.map { p ->

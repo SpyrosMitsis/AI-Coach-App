@@ -24,6 +24,7 @@ private fun snap(
     autoPlan: Boolean = false,
     knowledgeLines: Int = 0,
     settings: AppSettings = AppSettings(),
+    hushedNumbers: Set<String> = emptySet(),
 ) = SettingsSnapshot(
     profile = profile,
     races = races,
@@ -36,6 +37,7 @@ private fun snap(
     knowledgeLines = knowledgeLines,
     settings = settings,
     today = TODAY,
+    hushedNumbers = hushedNumbers,
 )
 
 class SettingsRowValueTest {
@@ -85,6 +87,29 @@ class SettingsRowValueTest {
 
         // A number a sport does not use is never asked for.
         assertEquals(emptyList<String>(), missingNumbers(TrainingProfile(sports = emptyList())))
+    }
+
+    // Bug #88: an athlete who rides but has never tested cannot make "FTP
+    // missing" go away by doing anything, so the amber is a permanent reproach.
+    @Test
+    fun `a hushed number stops being flagged as missing`() {
+        val profile = TrainingProfile(sports = listOf("ride"))
+        assertTrue(settingsRowValue("zones", snap(profile = profile)).unfinished)
+
+        val quiet = snap(profile = profile, hushedNumbers = setOf("FTP"))
+        assertTrue(!settingsRowValue("zones", quiet).unfinished)
+        // And it drops out of the "finish setting up" list with it.
+        assertTrue(unfinishedSetup(quiet).none { it.first == "zones" })
+    }
+
+    @Test
+    fun `hushing one number still leaves the others asked for`() {
+        val both = TrainingProfile(sports = listOf("run", "ride"))
+        val quiet = snap(profile = both, hushedNumbers = setOf("Threshold pace"))
+        assertEquals("FTP missing", settingsRowValue("zones", quiet).text)
+        // Hushing hides the prompt, never the question: the row is still offered
+        // in the editor so the athlete can turn it back on.
+        assertTrue("Threshold pace" in applicableNumbers(both))
     }
 
     @Test
