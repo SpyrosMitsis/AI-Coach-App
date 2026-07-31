@@ -178,9 +178,12 @@ internal fun SettingsIndex(vm: SettingsViewModel, onOpen: (String) -> Unit) {
             shape = RoundedCornerShape(50),
         )
 
-        val setupDismissed by vm.setupCardDismissed.collectAsStateSafe()
-        if (pending.isNotEmpty() && query.isBlank() && !setupDismissed) {
-            FinishSetupCard(pending, mod, onOpen) { vm.dismissSetupCard() }
+        // Read the clock once per composition, not per frame: the card's window
+        // is a week wide, so nothing here needs to tick.
+        val nudge by vm.setupNudge.collectAsStateSafe()
+        val canNudge = remember(nudge) { setupCardVisible(nudge, System.currentTimeMillis()) }
+        if (pending.isNotEmpty() && query.isBlank() && canNudge) {
+            FinishSetupCard(pending, nudge, mod, onOpen) { vm.dismissSetupCard() }
         }
 
         val groups = remember(query) { filterSettings(query) }
@@ -261,10 +264,16 @@ internal fun filterSettings(query: String): List<SettingsGroup> {
  * list below, which carries the same fact in the same amber. Sending the card
  * away costs the athlete no information, only the pressure, and a nudge with no
  * way to decline it is not a nudge.
+ *
+ * Closing it snoozes a week, three times, and then it is gone for good. The
+ * footer says which of those the × is about to do, because "hide" and "never
+ * show this again" are different promises and the button should keep the one
+ * it makes.
  */
 @Composable
 private fun FinishSetupCard(
     pending: List<Pair<String, String>>,
+    nudge: SetupNudge,
     modifier: Modifier,
     onOpen: (String) -> Unit,
     onDismiss: () -> Unit,
@@ -295,7 +304,7 @@ private fun FinishSetupCard(
             IconButton(onClick = onDismiss, modifier = Modifier.size(28.dp)) {
                 Icon(
                     Icons.Filled.Close,
-                    contentDescription = "Hide finish setup",
+                    contentDescription = setupDismissLabel(nudge),
                     tint = MaterialTheme.colorScheme.onSurfaceVariant,
                     modifier = Modifier.size(18.dp),
                 )
@@ -317,6 +326,12 @@ private fun FinishSetupCard(
                 Icon(Icons.AutoMirrored.Filled.KeyboardArrowRight, null, tint = amber)
             }
         }
+        Text(
+            if (nudge.dismissals >= SETUP_DISMISS_LIMIT - 1) "Close this and I won't bring it up again."
+            else "Close this and I'll leave it a week. These stay in the list below either way.",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
     }
 }
 

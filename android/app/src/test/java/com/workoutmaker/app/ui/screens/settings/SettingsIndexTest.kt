@@ -275,3 +275,57 @@ class SettingsSearchTest {
         assertEquals(emptyList<SettingsGroup>(), filterSettings("zzzz"))
     }
 }
+
+/**
+ * The setup card gets three asks, a week apart, and then stops. Pure logic so
+ * the week can be tested without waiting one.
+ */
+class SetupNudgeTest {
+
+    private val day = 24L * 60 * 60 * 1000
+    private val now = 1_800_000_000_000L
+
+    @Test
+    fun `a card nobody has closed shows`() {
+        assertTrue(setupCardVisible(SetupNudge(), now))
+    }
+
+    @Test
+    fun `closing it buys a week of quiet, not a day`() {
+        val closed = SetupNudge(dismissals = 1, lastDismissedAt = now)
+        assertTrue(!setupCardVisible(closed, now))
+        assertTrue(!setupCardVisible(closed, now + 6 * day))
+        assertTrue(setupCardVisible(closed, now + 7 * day))
+    }
+
+    // The whole point: the third close is the last word. A fourth ask would be
+    // the app deciding it knows better than three separate answers.
+    @Test
+    fun `the third close silences it for good`() {
+        val third = SetupNudge(dismissals = 3, lastDismissedAt = now)
+        assertTrue(!setupCardVisible(third, now))
+        assertTrue(!setupCardVisible(third, now + 365 * day))
+        assertTrue(third.silenced)
+    }
+
+    @Test
+    fun `two closes still leave one ask`() {
+        val second = SetupNudge(dismissals = 2, lastDismissedAt = now)
+        assertTrue(!second.silenced)
+        assertTrue(setupCardVisible(second, now + 7 * day))
+    }
+
+    // A phone whose clock jumps backwards must not strand the card off-screen
+    // until the real date catches up.
+    @Test
+    fun `a stamp in the future reads as elapsed rather than trapping the card`() {
+        assertTrue(setupCardVisible(SetupNudge(dismissals = 1, lastDismissedAt = now + 30 * day), now))
+    }
+
+    @Test
+    fun `the button says which promise it is about to make`() {
+        assertEquals("Hide finish setup for a week", setupDismissLabel(SetupNudge()))
+        assertEquals("Hide finish setup for a week", setupDismissLabel(SetupNudge(dismissals = 1)))
+        assertEquals("Hide finish setup for good", setupDismissLabel(SetupNudge(dismissals = 2)))
+    }
+}

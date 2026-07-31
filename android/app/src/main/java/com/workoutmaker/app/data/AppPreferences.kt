@@ -8,6 +8,7 @@ import androidx.datastore.preferences.core.intPreferencesKey
 import androidx.datastore.preferences.core.longPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
 import com.workoutmaker.app.ui.screens.home.HomeLayout
+import com.workoutmaker.app.ui.screens.settings.SetupNudge
 import com.workoutmaker.app.ui.screens.home.homeLayoutFrom
 import androidx.datastore.preferences.preferencesDataStore
 import dagger.hilt.android.qualifiers.ApplicationContext
@@ -122,21 +123,30 @@ class AppPreferences @Inject constructor(
         // CSV of the same names missingNumbers() produces, for the same reason
         // the Home layout is a CSV: an unknown name is skipped, never a crash.
         val hushedNumbers = stringPreferencesKey("hushed_numbers")
-        // The "Finish setup" card at the top of Settings, sent away for good.
+        // The "Finish setup" card at the top of Settings: how many times it has
+        // been closed, and when the last one was. Three closes a week apart and
+        // it stops asking, see setupCardVisible().
+        val setupCardDismissals = intPreferencesKey("setup_card_dismissals")
+        val setupCardDismissedAt = longPreferencesKey("setup_card_dismissed_at")
+        // Superseded by the pair above. Read once so an athlete who already
+        // closed the card under the previous build is not asked again the same
+        // day, then never written.
         val setupCardDismissed = booleanPreferencesKey("setup_card_dismissed")
     }
 
-    /**
-     * Whether the athlete has sent the Settings "Finish setup" card away. Once,
-     * permanently: every row in it is a shortcut to a row already in the list
-     * below, which keeps its own amber value, so dismissing hides the nagging
-     * and none of the information. A card that came back would just be the same
-     * nag again, which is the thing being dismissed.
-     */
-    val setupCardDismissed: Flow<Boolean> =
-        context.dataStore.data.map { it[Keys.setupCardDismissed] ?: false }
+    /** Times the Settings "Finish setup" card has been closed, and when. */
+    val setupNudge: Flow<SetupNudge> = context.dataStore.data.map { p ->
+        val legacy = p[Keys.setupCardDismissed] == true
+        SetupNudge(
+            dismissals = p[Keys.setupCardDismissals] ?: (if (legacy) 1 else 0),
+            lastDismissedAt = p[Keys.setupCardDismissedAt] ?: (if (legacy) System.currentTimeMillis() else 0L),
+        )
+    }
 
-    suspend fun dismissSetupCard() = edit { it[Keys.setupCardDismissed] = true }
+    suspend fun dismissSetupCard() = edit { p ->
+        p[Keys.setupCardDismissals] = (p[Keys.setupCardDismissals] ?: (if (p[Keys.setupCardDismissed] == true) 1 else 0)) + 1
+        p[Keys.setupCardDismissedAt] = System.currentTimeMillis()
+    }
 
     val calendarWeekView: Flow<Boolean> =
         context.dataStore.data.map { it[Keys.calendarWeekView] ?: false }

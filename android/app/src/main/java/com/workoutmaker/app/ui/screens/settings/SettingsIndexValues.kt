@@ -343,3 +343,47 @@ internal fun unfinishedSetup(s: SettingsSnapshot): List<Pair<String, String>> = 
     if (settingsRowValue("profile", s).unfinished) add("profile" to "Load and recovery are tuned to your body")
     if (settingsRowValue("connections", s).unfinished) add("connections" to "Link a watch and I see your real fitness")
 }
+
+// ---------------------------------------------------------------------------
+// How many times the setup card gets to ask.
+//
+// Three, a week apart. Once is not an answer (the × could be "not now", and a
+// half-set-up profile really is worth one more mention); three is: someone who
+// has closed this on three separate weeks has told us, and asking a fourth time
+// would be the app deciding it knows better.
+//
+// The rows stay in the list below with their own amber values throughout, so
+// what runs out is the interruption, never the information.
+// ---------------------------------------------------------------------------
+
+internal const val SETUP_SNOOZE_DAYS = 7L
+internal const val SETUP_DISMISS_LIMIT = 3
+
+private const val DAY_MS = 24L * 60 * 60 * 1000
+
+/**
+ * Times the card has been closed, and when the last one was. Public, not
+ * internal, because AppPreferences stores it, same as HomeLayout.
+ */
+data class SetupNudge(val dismissals: Int = 0, val lastDismissedAt: Long = 0L) {
+    /** True once the athlete has closed it [SETUP_DISMISS_LIMIT] times. */
+    val silenced: Boolean get() = dismissals >= SETUP_DISMISS_LIMIT
+}
+
+/**
+ * Whether the setup card may show right now. Pure so the week can be tested
+ * without waiting one.
+ */
+internal fun setupCardVisible(nudge: SetupNudge, nowMs: Long): Boolean {
+    if (nudge.silenced) return false
+    if (nudge.dismissals == 0) return true
+    // A clock that has gone backwards (timezone move, manual change) must not
+    // strand the card off-screen, so an impossible future stamp reads as elapsed.
+    val elapsed = nowMs - nudge.lastDismissedAt
+    return elapsed !in 0 until SETUP_SNOOZE_DAYS * DAY_MS
+}
+
+/** What the close button is about to do, said plainly for the screen reader. */
+internal fun setupDismissLabel(nudge: SetupNudge): String =
+    if (nudge.dismissals >= SETUP_DISMISS_LIMIT - 1) "Hide finish setup for good"
+    else "Hide finish setup for a week"

@@ -342,7 +342,7 @@ class SettingsViewModel @Inject constructor(
         prefs.setNumberHushed(name, hushed)
     }
 
-    val setupCardDismissed = prefs.setupCardDismissed.stateIn(viewModelScope, SharingStarted.Eagerly, false)
+    val setupNudge = prefs.setupNudge.stateIn(viewModelScope, SharingStarted.Eagerly, SetupNudge())
     fun dismissSetupCard() = viewModelScope.launch { prefs.dismissSetupCard() }
 
     // Q11: build a Strong-compatible CSV of all strength history for the user to save.
