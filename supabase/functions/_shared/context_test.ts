@@ -1,5 +1,13 @@
 import { assert, assertEquals, assertStringIncludes } from "jsr:@std/assert@1";
-import { calendarBlock, clipText, executionLine, recoveryBlock } from "./context.ts";
+import {
+  calendarBlock,
+  clipText,
+  executionLine,
+  raceLine,
+  recoveryBlock,
+  testAgeNote,
+  weeksBetween,
+} from "./context.ts";
 
 Deno.test("recoveryBlock: amber gives a concrete graded cap, not vague advice", () => {
   const b = recoveryBlock({ score: 48, band: "amber", summary: "Moderately recovered." });
@@ -97,4 +105,68 @@ Deno.test("clipText: collapses whitespace and clips long notes with an ellipsis"
   const long = clipText("x".repeat(400));
   assertEquals(long.length, 320);
   assert(long.endsWith("…"));
+});
+
+// --- Goals on the calendar -------------------------------------------------
+//
+// The `races` table was collected by the app and read by nothing that plans.
+// These pin the two halves of the fix: every goal renders, and each priority
+// carries the instruction that makes it mean something.
+
+Deno.test("raceLine: an A goal says the plan is built around it", () => {
+  const line = raceLine(
+    { name: "Athens Marathon", date: "2026-11-08", priority: "A", sport: "run", distance: "Marathon", target: "5:22 /km" },
+    "2026-08-09",
+  );
+  assert(line !== null);
+  assertStringIncludes(line!, "Athens Marathon (2026-11-08)");
+  assertStringIncludes(line!, "in 13 weeks");
+  assertStringIncludes(line!, "run Marathon");
+  assertStringIncludes(line!, "target 5:22 /km");
+  assertStringIncludes(line!, "MAIN GOAL");
+});
+
+Deno.test("raceLine: a tune-up is trained through, not tapered for", () => {
+  const b = raceLine({ name: "Club 10K", date: "2026-09-06", priority: "B", sport: "run" }, "2026-08-09");
+  assertStringIncludes(b!, "TUNE-UP");
+  assertStringIncludes(b!, "no taper");
+  const c = raceLine({ name: "Parkrun", date: "2026-08-15", priority: "C", sport: "run" }, "2026-08-09");
+  assertStringIncludes(c!, "FOR FUN");
+});
+
+// A gym goal's target is the ONLY thing the coach learns about what the day is
+// for, since there is no distance to carry the meaning.
+Deno.test("raceLine: a strength goal carries its own words", () => {
+  const line = raceLine(
+    { name: "County meet", date: "2026-10-03", priority: "A", sport: "strength", distance: "Powerlifting meet", target: "Total 400 kg", notes: "3 lifts" },
+    "2026-08-09",
+  );
+  assertStringIncludes(line!, "gym Powerlifting meet");
+  assertStringIncludes(line!, "target Total 400 kg");
+  assertStringIncludes(line!, "Note: 3 lifts");
+});
+
+Deno.test("raceLine: past races and half-filled rows render nothing", () => {
+  assertEquals(raceLine({ name: "Old race", date: "2026-01-01", priority: "A" }, "2026-08-09"), null);
+  assertEquals(raceLine({ date: "2026-12-01" }, "2026-08-09"), null);
+  assertEquals(raceLine({ name: "No date" }, "2026-08-09"), null);
+});
+
+Deno.test("weeksBetween: whole weeks, negative once it is past", () => {
+  assertEquals(weeksBetween("2026-08-09", "2026-08-09"), 0);
+  assertEquals(weeksBetween("2026-08-09", "2026-08-16"), 1);
+  assertEquals(weeksBetween("2026-08-09", "2026-11-08"), 13);
+  assert(weeksBetween("2026-08-09", "2026-08-01") < 0);
+});
+
+// A threshold is perishable. The app has always recorded when a test was
+// logged; the prompt used to get the number with no idea how old it was.
+Deno.test("testAgeNote: says how much to trust the number", () => {
+  assertEquals(testAgeNote(undefined, "2026-08-09"), "");
+  assertEquals(testAgeNote("2026-07-20", "2026-08-09"), ", tested recently");
+  assertStringIncludes(testAgeNote("2026-02-09", "2026-08-09"), "6 months ago");
+  assertStringIncludes(testAgeNote("2024-08-09", "2026-08-09"), "over a year ago");
+  assertStringIncludes(testAgeNote("2024-08-09", "2026-08-09"), "worth retesting");
+  // A date in the future is a clock problem, not a fresh test.
+  assertEquals(testAgeNote("2027-01-01", "2026-08-09"), "");
 });

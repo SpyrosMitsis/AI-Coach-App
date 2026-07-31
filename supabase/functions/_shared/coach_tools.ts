@@ -623,6 +623,15 @@ export async function executeTool(
         const o = (p?.onboarding ?? {}) as Record<string, unknown>;
         const { data: races } = await admin.from("races")
           .select("name, date, priority, sport, distance, target").eq("user_id", userId).order("date");
+        // Mobility work the athlete logged (log_stretch_session). It was
+        // write-only until now: the coach could record a session and then had
+        // no way to know it had ever happened, so it asked again.
+        const { data: stretches } = await admin.from("stretch_logs")
+          .select("date, duration_min, notes")
+          .eq("user_id", userId)
+          .gte("date", iso(Date.now() - 28 * DAY))
+          .order("date", { ascending: false })
+          .limit(8);
         const pausedUntil = p?.training_paused_until as string | null;
         return JSON.stringify({
           goal: o.goal, goal_date: o.goal_date, experience: o.experience,
@@ -632,6 +641,7 @@ export async function executeTool(
           // Richer onboarding: per-activity goals + experience, per-day availability.
           training_goals: o.goals, goals_by_sport: o.goals_by_sport,
           experience_by_sport: o.experience_by_sport, availability: o.day_availability,
+          mobility_28d: stretches ?? [],
           // Active training pause (set_training_pause), null when there isn't one.
           training_paused_until: pausedUntil && pausedUntil >= iso(Date.now()) ? pausedUntil : null,
           training_pause_reason: p?.training_pause_reason ?? null,

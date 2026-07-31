@@ -63,9 +63,19 @@ export function injuriesOf(o: Onboarding): InjuryEntry[] {
 
 // Prose rendering of injuriesOf() for prompt/tool contexts that need a
 // human-readable line rather than the structured array.
+//
+// The note is part of it. The InjuryEditor asks "anything else about it?" and
+// the answer ("only on descents", "fine once warm") is the half that decides
+// what to prescribe, and it used to be dropped here: the coach saw "Knee
+// (moderate)" and never learned the one thing the athlete bothered to type.
+// Capped, because it is free text going into a prompt.
 export function injuriesText(o: Onboarding): string {
   return injuriesOf(o)
-    .map((i) => (i.severity ? `${i.area} (${i.severity})` : i.area))
+    .map((i) => {
+      const head = i.severity ? `${i.area} (${i.severity})` : i.area;
+      const note = typeof i.note === "string" ? i.note.trim().slice(0, 120) : "";
+      return note ? `${head}: ${note}` : head;
+    })
     .join("; ");
 }
 

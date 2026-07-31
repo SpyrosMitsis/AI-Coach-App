@@ -115,6 +115,24 @@ Deno.test("injuriesText: renders severity only when set", () => {
   assertEquals(injuriesText({}), "");
 });
 
+// The note is the half that decides what to prescribe ("only on descents"), and
+// it used to be dropped on the floor between the editor and the prompt.
+Deno.test("injuriesText: carries the athlete's own note through", () => {
+  assertEquals(
+    injuriesText({
+      injuries: [
+        { area: "Knee", severity: "mild", note: "only on descents" },
+        { area: "Wrist", severity: "" },
+      ],
+    }),
+    "Knee (mild): only on descents; Wrist",
+  );
+  // Free text into a prompt is capped, and a blank note changes nothing.
+  const long = injuriesText({ injuries: [{ area: "Back", severity: "", note: "x".repeat(300) }] });
+  assertEquals(long.length, "Back: ".length + 120);
+  assertEquals(injuriesText({ injuries: [{ area: "Hip", severity: "", note: "   " }] }), "Hip");
+});
+
 // The "no em/en dashes" house rule applies to prompt-facing strings too.
 Deno.test("profile blocks carry no em or en dashes", () => {
   const o = {
