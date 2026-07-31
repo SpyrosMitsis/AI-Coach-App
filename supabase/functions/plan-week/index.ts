@@ -25,7 +25,7 @@ import {
 import { createEvent, deleteEvent, latestFitness } from "../_shared/intervals.ts";
 import { applyFallbackFitness } from "../_shared/load.ts";
 import { renderIntervalsWorkout } from "../_shared/intervals_workout.ts";
-import { adherenceBlock, calendarBlock, executionBlock, goalBlock, intervalsPhysiology } from "../_shared/context.ts";
+import { adherenceBlock, calendarBlock, executionBlock, goalBlock, intervalsPhysiology, racesBlock } from "../_shared/context.ts";
 import {
   availabilityBlock,
   challengeBlock,
@@ -120,7 +120,7 @@ async function planForUser(admin: SupabaseClient, userId: string, start: string,
   const weeklyTssTarget = (onboarding as { weekly_tss_target?: number }).weekly_tss_target ?? 350;
   const availableDays: string[] = Array.isArray(onboarding.days) ? onboarding.days : [];
 
-  const phys = await intervalsPhysiology(admin, profile, onboarding);
+  const phys = await intervalsPhysiology(admin, profile, onboarding, { userId, today: start });
   // Measured zones win; otherwise per-athlete defaults from LTHR/age (zones.ts).
   const hrZones = phys.hrZones ?? onboarding.hr_zones ?? defaultHrZones(onboarding);
 
@@ -180,7 +180,10 @@ async function planForUser(admin: SupabaseClient, userId: string, start: string,
     memoryDocsBlock(memoryFromProfile(profile)) + phys.block +
     await adherenceBlock(admin, userId, since14, start, acts28) +
     await executionBlock(admin, userId, since14) +
-    goalBlock(onboarding, weeksToGoal, phase, acts28) + lockedBlock +
+    goalBlock(onboarding, weeksToGoal, phase, acts28) +
+    // The week is where a B/C tune-up actually lands, so the planner has to
+    // know it exists: it gets easy days in front of it and no taper.
+    await racesBlock(admin, userId, start) + lockedBlock +
     calendarBlock(calendarBusy) +
     sportsBlock(sportsList) + splitBlock(splitStyle) + periodizationBlock +
     availabilityBlock(onboarding) + experienceBlock(onboarding) + challengeBlock(onboarding) +

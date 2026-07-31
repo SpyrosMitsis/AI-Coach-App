@@ -20,8 +20,6 @@ import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.FitnessCenter
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.Slider
-import androidx.compose.material3.SliderDefaults
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -188,61 +186,13 @@ internal fun GymGoalPicker(profile: TrainingProfile, onToggle: (String) -> Unit)
 }
 
 /**
- * "How long have you been lifting?" A slider, not four chips: experience is one
- * ordered thing, and four equal chips said nothing about the fact that Novice
- * sits between Beginner and Intermediate. The description below is the answer
- * to "which one am I", which chips could never show for all four at once.
+ * "How long have you been lifting?" The slider lives in SportLevelPicker now,
+ * because the question is the same one every sport asks and the gym was only
+ * the first to get a control worth sharing.
  */
 @Composable
 internal fun GymLevelPicker(profile: TrainingProfile, onLevel: (String) -> Unit) {
-    val levels = gymLevels()
-    if (levels.isEmpty()) return
-    val idx = levels.indexOf(profile.experience_by_sport[GYM]).takeIf { it >= 0 } ?: 0
-
-    Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-        Slider(
-            value = idx.toFloat(),
-            onValueChange = { v -> levels.getOrNull(v.toInt())?.let(onLevel) },
-            valueRange = 0f..(levels.size - 1).toFloat(),
-            steps = levels.size - 2,
-            colors = SliderDefaults.colors(
-                activeTrackColor = MaterialTheme.colorScheme.primary,
-                inactiveTrackColor = MaterialTheme.colorScheme.surfaceContainerHighest,
-            ),
-        )
-        // The rungs, under the track they belong to. Hidden from the screen
-        // reader: the slider already announces the level it is on, and having
-        // four loose words after it just repeats the scale.
-        Row(
-            Modifier.fillMaxWidth().clearAndSetSemantics {},
-            horizontalArrangement = Arrangement.SpaceBetween,
-        ) {
-            levels.forEach { l ->
-                Text(
-                    l,
-                    style = MaterialTheme.typography.labelSmall,
-                    fontWeight = if (l == levels[idx]) FontWeight.Bold else FontWeight.Normal,
-                    color = if (l == levels[idx]) MaterialTheme.colorScheme.primary
-                    else MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-            }
-        }
-        Column(
-            Modifier
-                .fillMaxWidth()
-                .clip(RoundedCornerShape(16.dp))
-                .background(MaterialTheme.colorScheme.surfaceContainerHigh)
-                .padding(16.dp),
-            verticalArrangement = Arrangement.spacedBy(4.dp),
-        ) {
-            Text(levels[idx], style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
-            Text(
-                gymLevelBlurb(levels[idx]),
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-        }
-    }
+    SportLevelPicker(GYM, profile.experience_by_sport[GYM], onLevel)
 }
 
 /** "How should the week break up?" One of four, Auto first because it is the default. */
@@ -320,7 +270,13 @@ internal fun GymKitPicker(profile: TrainingProfile, onToggle: (String) -> Unit) 
                 fontWeight = FontWeight.Bold,
                 color = MaterialTheme.colorScheme.primary,
             )
-            FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            // Both arrangements, not just the horizontal one: nine chips always
+            // wrap onto three or four lines, and a FlowRow with no vertical
+            // spacing stacks those lines edge to edge, so the chips touched.
+            FlowRow(
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
                 gymKitItems().forEach { item ->
                     GymKitChip(item, kit.contains(item)) { onToggle(item) }
                 }

@@ -54,7 +54,7 @@ import com.workoutmaker.app.data.Periodization
 import com.workoutmaker.app.ui.components.SectionLabel
 import java.time.LocalDate
 import java.time.format.DateTimeFormatter
-import com.workoutmaker.app.ui.screens.settings.AddRaceDialog
+import com.workoutmaker.app.ui.screens.settings.AddGoalSheet
 import com.workoutmaker.app.ui.screens.settings.AppearancePicker
 import com.workoutmaker.app.ui.screens.settings.ChipGroup
 import com.workoutmaker.app.ui.screens.settings.EXPERIENCE_BY_SPORT
@@ -292,8 +292,8 @@ internal fun StepPerformance(profile: TrainingProfile, vm: OnboardingViewModel) 
 @Composable
 internal fun StepRace(profile: TrainingProfile, vm: OnboardingViewModel) {
     var showAdd by remember { mutableStateOf(false) }
-    if (showAdd) AddRaceDialog(onClose = { showAdd = false }) { race, setGoal ->
-        vm.addGoalRace(race, setGoal); showAdd = false
+    if (showAdd) AddGoalSheet(onClose = { showAdd = false }) { draft ->
+        vm.addGoalRace(draft); showAdd = false
     }
     StepColumn {
         val goalDate = profile.goal_date?.let { runCatching { LocalDate.parse(it) }.getOrNull() }

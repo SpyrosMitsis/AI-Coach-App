@@ -186,11 +186,17 @@ export interface Demographics { sex?: string; age?: number; weightKg?: number; h
 
 /** Manual overrides from the app's Settings → About you (onboarding JSON).
  *  Any value set there wins over the Intervals.icu profile. */
+// The athlete's own numbers from Settings. Demographics temper recovery and
+// load; the two thresholds are anchors Intervals may not have (it only knows
+// what it measured), and every one of them is set by hand precisely because
+// something upstream did not know it.
 export interface ManualDemographics {
   sex?: string | null;
   birth_year?: number | null;
   weight_kg?: number | null;
   height_cm?: number | null;
+  threshold_pace_per_km?: string | null;
+  ftp?: number | null;
 }
 
 export function mergeDemographics(

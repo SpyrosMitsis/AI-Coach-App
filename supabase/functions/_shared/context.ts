@@ -16,6 +16,7 @@ import {
   runPaceZones,
 } from "./intervals.ts";
 import { getWeather } from "./weather.ts";
+import { paceToSec, paceZonesFromThreshold } from "./zones.ts";
 
 export type HrZone = { zone: string; min: number; max: number };
 
@@ -32,10 +33,54 @@ export interface ActivityRow {
 // subjective flags. `manual` carries the app's Settings → About you overrides
 // (stored in onboarding) — set values beat Intervals, and the demographics line
 // still renders when Intervals is disconnected or down.
+/**
+ * How old a hand-measured number is, in the words a coach would use.
+ *
+ * A threshold is a perishable fact: the app has always recorded the date a test
+ * was logged and shown it in Settings, while the prompt got the bare number, so
+ * a two-year-old FTP arrived looking exactly as trustworthy as one from
+ * Tuesday. "" when there is no test row, because most numbers are typed in
+ * rather than tested and a missing date is not a stale one.
+ */
+export function testAgeNote(testDate: string | undefined, today: string): string {
+  if (!testDate) return "";
+  const days = Math.floor(
+    (new Date(today + "T12:00:00Z").getTime() - new Date(testDate + "T12:00:00Z").getTime()) / 86_400_000,
+  );
+  if (days < 0) return "";
+  if (days <= 45) return ", tested recently";
+  const months = Math.round(days / 30.4);
+  if (months < 12) return `, tested ${months} months ago`;
+  return `, tested over a year ago, treat it as approximate and worth retesting`;
+}
+
+/** Newest test date per kind (lthr / ftp / threshold_pace). Best-effort. */
+export async function latestTestDates(
+  admin: SupabaseClient,
+  userId: string,
+): Promise<Record<string, string>> {
+  const out: Record<string, string> = {};
+  try {
+    const { data } = await admin
+      .from("threshold_tests")
+      .select("kind, date")
+      .eq("user_id", userId)
+      .order("date", { ascending: false })
+      .limit(30);
+    for (const r of data ?? []) {
+      const kind = String((r as { kind?: unknown }).kind ?? "");
+      const date = String((r as { date?: unknown }).date ?? "");
+      if (kind && date && !out[kind]) out[kind] = date;
+    }
+  } catch (_e) { /* best-effort */ }
+  return out;
+}
+
 export async function intervalsPhysiology(
   admin: SupabaseClient,
   profile: { intervals_athlete_id?: string | null; intervals_api_key_encrypted?: string | null },
   manual?: ManualDemographics | null,
+  self?: { userId: string; today: string } | null,
 ): Promise<{ apiKey: string | null; hrZones: HrZone[] | null; block: string }> {
   let apiKey: string | null = null;
   let hrZones: HrZone[] | null = null;
@@ -71,6 +116,23 @@ export async function intervalsPhysiology(
       // best-effort — manual demographics below still apply
     }
   }
+  // The athlete's own numbers, when Intervals did not supply the same thing.
+  // Someone who logged a threshold test in the app has a real anchor sitting in
+  // the profile; without this it never left the phone, and the prompt asked for
+  // "Z2" with no pace to put on it.
+  const tested = self ? await latestTestDates(admin, self.userId) : {};
+  const age = (kind: string) => (self ? testAgeNote(tested[kind], self.today) : "");
+  const typedPace = paceZonesFromThreshold(paceToSec(manual?.threshold_pace_per_km));
+  if (typedPace.length && !lines.some((l) => l.startsWith("- Pace zones:"))) {
+    lines.push(`- Threshold pace: ${manual?.threshold_pace_per_km} /km (athlete's own${age("threshold_pace")})`);
+    lines.push(
+      `- Pace zones: ${typedPace.map((z) => `${z.zone} ${z.range}`).join(", ")} ` +
+        `(prescribe exact paces, not just zone labels)`,
+    );
+  }
+  if (typeof manual?.ftp === "number" && manual.ftp > 0) {
+    lines.push(`- FTP: ${manual.ftp} W (athlete's own${age("ftp")})`);
+  }
   // Demographics first: age/sex temper recovery expectations, weight grounds
   // relative-strength and load context. Manual settings win per-field.
   demo = mergeDemographics(demo, manual);
@@ -82,7 +144,7 @@ export async function intervalsPhysiology(
   ].filter(Boolean);
   if (demoBits.length) lines.unshift(`- Athlete: ${demoBits.join(", ")}`);
   const block = lines.length
-    ? `\n\nMEASURED PHYSIOLOGY (Intervals.icu, use these exact numbers):\n${lines.join("\n")}`
+    ? `\n\nMEASURED PHYSIOLOGY (use these exact numbers):\n${lines.join("\n")}`
     : "";
   return { apiKey, hrZones, block };
 }
@@ -264,6 +326,121 @@ export async function adherenceBlock(
     (missedList.length ? `- Missed: ${missedList.slice(0, 5).join("; ")}. If key sessions were missed, don't cram, rebuild gradually.\n` : "") +
     (volPct != null && volPct < 70 ? "- Under-trained vs plan: hold or modestly reduce; rebuild consistency before progressing.\n" : "") +
     (volPct != null && volPct > 120 ? "- Over-trained vs plan: bias easier to manage fatigue/injury risk.\n" : "");
+}
+
+// --- The athlete's dated goals -------------------------------------------
+//
+// `races` used to be invisible to both generators: the app collected the sport,
+// the distance, the target and the A/B/C priority, and the only thing that ever
+// reached a prompt was the anchor's DATE (via onboarding.goal_date). So a
+// strength athlete could enter "Powerlifting meet, total 400 kg" and be planned
+// for as if the date were empty, and every B/C tune-up was planned over as if
+// it did not exist.
+//
+// Best-effort like every other block: a failed read costs a line, not a plan.
+
+export interface RaceRow {
+  name?: string | null;
+  date?: string | null;
+  priority?: string | null;
+  sport?: string | null;
+  distance?: string | null;
+  target?: string | null;
+  notes?: string | null;
+}
+
+const SPORT_WORD: Record<string, string> = {
+  run: "run",
+  ride: "ride",
+  swim: "swim",
+  strength: "gym",
+};
+
+/** Whole weeks from [today] to [date], negative once it is past. */
+export function weeksBetween(today: string, date: string): number {
+  const ms = new Date(date + "T12:00:00Z").getTime() - new Date(today + "T12:00:00Z").getTime();
+  return Math.round(ms / (7 * 86_400_000));
+}
+
+/**
+ * One race as the coach needs to read it: what it is, when, and what the plan
+ * owes it. The A goal earns a taper; a B/C is trained through, which is a
+ * different instruction, so it is spelled out rather than implied by a letter.
+ */
+export function raceLine(r: RaceRow, today: string): string | null {
+  if (!r?.date || !r?.name) return null;
+  const w = weeksBetween(today, r.date);
+  if (w < 0) return null;
+  const priority = (r.priority ?? "A").toUpperCase();
+  const what = [
+    SPORT_WORD[String(r.sport ?? "")] ?? null,
+    r.distance?.trim() || null,
+  ].filter(Boolean).join(" ");
+  const when = w === 0 ? "this week" : w === 1 ? "in 1 week" : `in ${w} weeks`;
+  const bits = [
+    `- ${r.name.trim()} (${r.date}), ${when}`,
+    what ? `, ${what}` : "",
+    r.target?.trim() ? `, target ${r.target.trim()}` : "",
+    r.notes?.trim() ? `. Note: ${r.notes.trim().slice(0, 160)}` : "",
+  ].join("");
+  const rule = priority === "A"
+    ? " [MAIN GOAL: the plan's phases and taper are built around this date]"
+    : priority === "B"
+    ? " [TUNE-UP: train through it, two easy days before, no taper and no phase change]"
+    : " [FOR FUN: a hard session with a number on it, do not reshape the week for it]";
+  return bits + rule;
+}
+
+/**
+ * Which goal the countdown counts down to.
+ *
+ * THE BUG THIS FIXES: Home's Goal card was built from onboarding.goal, which is
+ * ALSO where deriveLegacyFields writes the athlete's combined training goals
+ * ("Ride 40 km + Run 42.2 km + Swim 1.9 km"). One field, two meanings: Home
+ * showed a goal per sport while Goals and races showed one race, and neither
+ * could be edited into agreeing with the other. So the `races` rows decide, and
+ * onboarding.goal_date only picks between them.
+ *
+ * Preference order: the row the anchor date points at, then the soonest A goal,
+ * then the soonest goal of any priority. Past dates never win: a countdown to
+ * last month is not a goal. Returns null when the athlete has no upcoming race,
+ * which is the honest answer, and the same one Goals and races gives.
+ */
+export function pickGoalRace<T extends RaceRow>(
+  races: readonly T[],
+  today: string,
+  anchorDate?: string | null,
+): T | null {
+  const upcoming = races
+    .filter((r) => !!r?.name && !!r?.date && String(r.date) >= today)
+    .sort((a, b) => String(a.date).localeCompare(String(b.date)));
+  if (!upcoming.length) return null;
+  return upcoming.find((r) => !!anchorDate && r.date === anchorDate) ??
+    upcoming.find((r) => (r.priority ?? "A").toUpperCase() === "A") ??
+    upcoming[0];
+}
+
+/**
+ * Every upcoming goal, with what each one is owed. Renders "" when the athlete
+ * has none, so the prompt never carries an empty heading.
+ */
+export async function racesBlock(
+  admin: SupabaseClient,
+  userId: string,
+  today: string,
+): Promise<string> {
+  const { data } = await admin
+    .from("races")
+    .select("name, date, priority, sport, distance, target, notes")
+    .eq("user_id", userId)
+    .gte("date", today)
+    .order("date", { ascending: true })
+    .limit(8);
+  const lines = (data ?? []).map((r) => raceLine(r as RaceRow, today)).filter((l): l is string => !!l);
+  if (!lines.length) return "";
+  return `\n\nGOALS ON THE CALENDAR:\n${lines.join("\n")}\n` +
+    `Prescribe for the nearest goal the session can serve. A target above is the athlete's own ` +
+    `words for what a good day looks like: use it to pick the work, and never contradict it.`;
 }
 
 export function goalBlock(

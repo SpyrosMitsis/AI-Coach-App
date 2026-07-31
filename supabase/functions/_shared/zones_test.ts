@@ -1,5 +1,12 @@
 import { assert, assertEquals } from "jsr:@std/assert@1";
-import { defaultHrZones, LEGACY_HR_ZONES, zonesFromAge, zonesFromLthr } from "./zones.ts";
+import {
+  defaultHrZones,
+  LEGACY_HR_ZONES,
+  paceToSec,
+  paceZonesFromThreshold,
+  zonesFromAge,
+  zonesFromLthr,
+} from "./zones.ts";
 
 Deno.test("lthr beats age beats the legacy table", () => {
   const both = defaultHrZones({ lthr: 165, birth_year: 1990 });
@@ -37,4 +44,27 @@ Deno.test("lthr bands put the threshold at the Z4/Z5 boundary", () => {
   const z = zonesFromLthr(170);
   assertEquals(z[4].min, 170);
   assertEquals(z[3].max, Math.round(170 * 0.99));
+});
+
+// Pace zones from a typed threshold: the number an athlete logs in "Test me"
+// used to reach their own screen and stop there.
+Deno.test("paceZonesFromThreshold: mirrors the client's bands", () => {
+  const z = paceZonesFromThreshold(300); // 5:00 /km
+  assertEquals(z.length, 5);
+  assertEquals(z[0].zone, "Z1 Easy");
+  assertEquals(z[0].range, "5:45-6:30/km");
+  assertEquals(z[3].zone, "Z4 Threshold");
+  assertEquals(z[3].range, "4:51-5:03/km");
+  assertEquals(paceZonesFromThreshold(null), []);
+  assertEquals(paceZonesFromThreshold(0), []);
+});
+
+Deno.test("paceToSec: accepts m:ss in a runnable range, rejects the rest", () => {
+  assertEquals(paceToSec("4:45"), 285);
+  assertEquals(paceToSec("12:00"), 720);
+  assertEquals(paceToSec("1:00"), null);   // faster than any human threshold
+  assertEquals(paceToSec("20:00"), null);  // slower than the picker allows
+  assertEquals(paceToSec("445"), null);
+  assertEquals(paceToSec(285), null);
+  assertEquals(paceToSec(undefined), null);
 });

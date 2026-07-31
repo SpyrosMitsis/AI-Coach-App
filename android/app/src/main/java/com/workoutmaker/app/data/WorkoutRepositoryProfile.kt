@@ -148,12 +148,25 @@ suspend fun WorkoutRepository.deleteRace(race: Race) {
     race.id?.let { id ->
         supabase.postgrest.from("races").delete { filter { eq("id", id) } }
     }
-    // Deleting the active goal also clears it from the profile (and Home).
-    val p = loadProfile()
-    if (p != null && p.goal == race.name && p.goal_date == race.date) {
-        val pace = if (race.target != null && p.target_pace == race.target) null else p.target_pace
-        saveProfile(p.copy(goal = null, goal_date = null, target_pace = pace))
-    }
+    // Deleting the active goal also clears the anchor from the profile, which is
+    // what periodization, phase and taper read. Matched on the DATE alone: the
+    // rest of the app identifies the goal race that way too, and `goal` is a
+    // field deriveLegacyFields rewrites from the training goals, so a name
+    // comparison silently stopped matching and left the anchor pointing at a
+    // race that no longer exists.
+    val p = loadProfile() ?: return
+    if (p.goal_date != race.date) return
+    // Promote the soonest remaining A goal rather than leaving no anchor at all,
+    // the same way the coach's remove_goal_race does.
+    val today = java.time.LocalDate.now().toString()
+    val next = runCatching { races() }.getOrDefault(emptyList())
+        .filter { it.priority.uppercase() == "A" && it.date >= today }
+        .minByOrNull { it.date }
+    val pace = if (race.target != null && p.target_pace == race.target) null else p.target_pace
+    val reanchored = p.copy(goal = next?.name, goal_date = next?.date, target_pace = pace)
+    // No race left to anchor to: hand `goal` back to the training goals it also
+    // stores, rather than leaving the prompts with a null where a goal was.
+    saveProfile(if (next == null) reanchored.deriveLegacyFields() else reanchored)
 }
 
 // Make a goal the periodization anchor: drives weeks-to-goal / phase / taper.

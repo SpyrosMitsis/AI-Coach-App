@@ -43,6 +43,8 @@ import com.workoutmaker.app.data.planWeek
 import com.workoutmaker.app.data.races
 import com.workoutmaker.app.data.saveProfile
 import com.workoutmaker.app.data.setActiveProvider
+import com.workoutmaker.app.data.EnduranceGoals
+import com.workoutmaker.app.ui.screens.settings.GoalDraft
 import com.workoutmaker.app.data.setGoalRace
 import com.workoutmaker.app.data.syncIntervals
 import com.workoutmaker.app.data.testLlmKey
@@ -178,11 +180,29 @@ class OnboardingViewModel @Inject constructor(
     // goal date/pace is set LOCALLY on the in-progress profile — NOT saved yet.
     // Calling repo.setGoalRace here would flip onboarding_complete early and wipe
     // the in-progress answers, so finish() is the single persist point.
-    fun addGoalRace(race: Race, setGoal: Boolean) = viewModelScope.launch {
+    internal fun addGoalRace(draft: GoalDraft) = viewModelScope.launch {
+        val race = draft.race
         runCatching { repo.addRace(race) }
-        if (setGoal) {
+        if (draft.setAsGoal) {
             val pace = race.target?.takeIf { race.sport == "run" && it.isNotBlank() }
-            update { it.copy(goal_date = race.date, target_pace = pace ?: it.target_pace) }
+            update { p ->
+                // The distance goal alongside the date: the race row is not what
+                // the planner reads, the profile's per-sport target is.
+                val withTarget = if (draft.km != null) {
+                    p.copy(
+                        distance_goal_km = p.distance_goal_km + (race.sport to draft.km),
+                        goal_pace_sec_per_km = draft.paceSec
+                            ?.let { p.goal_pace_sec_per_km + (race.sport to it) }
+                            ?: p.goal_pace_sec_per_km,
+                        goals_by_sport = p.goals_by_sport + (race.sport to EnduranceGoals.withDistanceGoal(
+                            p.goals_by_sport[race.sport].orEmpty(), race.sport, draft.km,
+                        )),
+                    )
+                } else {
+                    p
+                }
+                withTarget.copy(goal_date = race.date, target_pace = pace ?: withTarget.target_pace)
+            }
         }
     }
 

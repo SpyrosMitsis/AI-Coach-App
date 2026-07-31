@@ -1,5 +1,16 @@
 import { assert, assertEquals, assertStringIncludes } from "jsr:@std/assert@1";
-import { calendarBlock, clipText, executionLine, recoveryBlock } from "./context.ts";
+import type { SupabaseClient } from "jsr:@supabase/supabase-js@2";
+import {
+  calendarBlock,
+  clipText,
+  executionLine,
+  pickGoalRace,
+  raceLine,
+  racesBlock,
+  recoveryBlock,
+  testAgeNote,
+  weeksBetween,
+} from "./context.ts";
 
 Deno.test("recoveryBlock: amber gives a concrete graded cap, not vague advice", () => {
   const b = recoveryBlock({ score: 48, band: "amber", summary: "Moderately recovered." });
@@ -97,4 +108,176 @@ Deno.test("clipText: collapses whitespace and clips long notes with an ellipsis"
   const long = clipText("x".repeat(400));
   assertEquals(long.length, 320);
   assert(long.endsWith("…"));
+});
+
+// --- Goals on the calendar -------------------------------------------------
+//
+// The `races` table was collected by the app and read by nothing that plans.
+// These pin the two halves of the fix: every goal renders, and each priority
+// carries the instruction that makes it mean something.
+
+Deno.test("raceLine: an A goal says the plan is built around it", () => {
+  const line = raceLine(
+    { name: "Athens Marathon", date: "2026-11-08", priority: "A", sport: "run", distance: "Marathon", target: "5:22 /km" },
+    "2026-08-09",
+  );
+  assert(line !== null);
+  assertStringIncludes(line!, "Athens Marathon (2026-11-08)");
+  assertStringIncludes(line!, "in 13 weeks");
+  assertStringIncludes(line!, "run Marathon");
+  assertStringIncludes(line!, "target 5:22 /km");
+  assertStringIncludes(line!, "MAIN GOAL");
+});
+
+Deno.test("raceLine: a tune-up is trained through, not tapered for", () => {
+  const b = raceLine({ name: "Club 10K", date: "2026-09-06", priority: "B", sport: "run" }, "2026-08-09");
+  assertStringIncludes(b!, "TUNE-UP");
+  assertStringIncludes(b!, "no taper");
+  const c = raceLine({ name: "Parkrun", date: "2026-08-15", priority: "C", sport: "run" }, "2026-08-09");
+  assertStringIncludes(c!, "FOR FUN");
+});
+
+// A gym goal's target is the ONLY thing the coach learns about what the day is
+// for, since there is no distance to carry the meaning.
+Deno.test("raceLine: a strength goal carries its own words", () => {
+  const line = raceLine(
+    { name: "County meet", date: "2026-10-03", priority: "A", sport: "strength", distance: "Powerlifting meet", target: "Total 400 kg", notes: "3 lifts" },
+    "2026-08-09",
+  );
+  assertStringIncludes(line!, "gym Powerlifting meet");
+  assertStringIncludes(line!, "target Total 400 kg");
+  assertStringIncludes(line!, "Note: 3 lifts");
+});
+
+Deno.test("raceLine: past races and half-filled rows render nothing", () => {
+  assertEquals(raceLine({ name: "Old race", date: "2026-01-01", priority: "A" }, "2026-08-09"), null);
+  assertEquals(raceLine({ date: "2026-12-01" }, "2026-08-09"), null);
+  assertEquals(raceLine({ name: "No date" }, "2026-08-09"), null);
+});
+
+// Home's Goal card and the Goals and races page disagreed because they read
+// different fields. These pin the one rule they now share.
+Deno.test("pickGoalRace: the anchor date decides which race the card counts to", () => {
+  const races = [
+    { name: "Club 10K", date: "2026-09-06", priority: "B" },
+    { name: "Athens Marathon", date: "2026-11-08", priority: "A" },
+  ];
+  assertEquals(pickGoalRace(races, "2026-08-09", "2026-09-06")?.name, "Club 10K");
+  // An anchor pointing at a race that was deleted falls back to the soonest A.
+  assertEquals(pickGoalRace(races, "2026-08-09", "2026-05-01")?.name, "Athens Marathon");
+  assertEquals(pickGoalRace(races, "2026-08-09", null)?.name, "Athens Marathon");
+});
+
+Deno.test("pickGoalRace: with no A goal the soonest race stands in", () => {
+  const races = [
+    { name: "Parkrun", date: "2026-10-03", priority: "C" },
+    { name: "Club 10K", date: "2026-09-06", priority: "B" },
+  ];
+  assertEquals(pickGoalRace(races, "2026-08-09", null)?.name, "Club 10K");
+});
+
+Deno.test("pickGoalRace: no upcoming race means no goal, whatever the profile says", () => {
+  // The empty Goals and races page is the answer, not a reason to fall back to
+  // onboarding.goal — that fallback is what showed three goals against one race.
+  assertEquals(pickGoalRace([], "2026-08-09", "2026-11-08"), null);
+  assertEquals(
+    pickGoalRace([{ name: "Last year's marathon", date: "2025-11-09", priority: "A" }], "2026-08-09", "2025-11-09"),
+    null,
+  );
+  // Race day itself still counts.
+  assertEquals(
+    pickGoalRace([{ name: "Athens Marathon", date: "2026-08-09", priority: "A" }], "2026-08-09", null)?.name,
+    "Athens Marathon",
+  );
+  // Half-filled rows are not goals.
+  assertEquals(pickGoalRace([{ date: "2026-11-08", priority: "A" }], "2026-08-09", null), null);
+});
+
+Deno.test("weeksBetween: whole weeks, negative once it is past", () => {
+  assertEquals(weeksBetween("2026-08-09", "2026-08-09"), 0);
+  assertEquals(weeksBetween("2026-08-09", "2026-08-16"), 1);
+  assertEquals(weeksBetween("2026-08-09", "2026-11-08"), 13);
+  assert(weeksBetween("2026-08-09", "2026-08-01") < 0);
+});
+
+// A threshold is perishable. The app has always recorded when a test was
+// logged; the prompt used to get the number with no idea how old it was.
+Deno.test("testAgeNote: says how much to trust the number", () => {
+  assertEquals(testAgeNote(undefined, "2026-08-09"), "");
+  assertEquals(testAgeNote("2026-07-20", "2026-08-09"), ", tested recently");
+  assertStringIncludes(testAgeNote("2026-02-09", "2026-08-09"), "6 months ago");
+  assertStringIncludes(testAgeNote("2024-08-09", "2026-08-09"), "over a year ago");
+  assertStringIncludes(testAgeNote("2024-08-09", "2026-08-09"), "worth retesting");
+  // A date in the future is a clock problem, not a fresh test.
+  assertEquals(testAgeNote("2027-01-01", "2026-08-09"), "");
+});
+
+// --- racesBlock, against a stubbed table -----------------------------------
+//
+// The query chain is half the behaviour (which rows, which order, which
+// window), so the stub records it rather than just handing back data.
+
+type Recorded = { table: string; select: string; filters: string[]; limit: number | null };
+
+function adminWithRaces(rows: unknown[], rec: Recorded) {
+  const builder = {
+    select(cols: string) {
+      rec.select = cols;
+      return builder;
+    },
+    eq(col: string, v: unknown) {
+      rec.filters.push(`eq:${col}=${v}`);
+      return builder;
+    },
+    gte(col: string, v: unknown) {
+      rec.filters.push(`gte:${col}=${v}`);
+      return builder;
+    },
+    order(col: string, _o: unknown) {
+      rec.filters.push(`order:${col}`);
+      return builder;
+    },
+    limit(n: number) {
+      rec.limit = n;
+      return Promise.resolve({ data: rows, error: null });
+    },
+  };
+  return {
+    from(table: string) {
+      rec.table = table;
+      return builder;
+    },
+  } as unknown as SupabaseClient;
+}
+
+Deno.test("racesBlock: every upcoming goal, newest window, with its rule", async () => {
+  const rec: Recorded = { table: "", select: "", filters: [], limit: null };
+  const admin = adminWithRaces([
+    { name: "Club 10K", date: "2026-09-06", priority: "B", sport: "run", distance: "10K" },
+    { name: "Athens Marathon", date: "2026-11-08", priority: "A", sport: "run", distance: "Marathon", target: "5:22 /km" },
+  ], rec);
+
+  const block = await racesBlock(admin, "u1", "2026-08-09");
+
+  // Asked the right question of the right table.
+  assertEquals(rec.table, "races");
+  assertEquals(rec.limit, 8);
+  assertEquals(rec.filters, ["eq:user_id=u1", "gte:date=2026-08-09", "order:date"]);
+
+  assertStringIncludes(block, "GOALS ON THE CALENDAR:");
+  assertStringIncludes(block, "Club 10K");
+  assertStringIncludes(block, "TUNE-UP");
+  assertStringIncludes(block, "Athens Marathon");
+  assertStringIncludes(block, "MAIN GOAL");
+  assertStringIncludes(block, "target 5:22 /km");
+});
+
+Deno.test("racesBlock: no goals means no heading at all", async () => {
+  const rec: Recorded = { table: "", select: "", filters: [], limit: null };
+  assertEquals(await racesBlock(adminWithRaces([], rec), "u1", "2026-08-09"), "");
+  // A row that cannot be rendered is not a heading either.
+  assertEquals(
+    await racesBlock(adminWithRaces([{ date: "2026-09-01" }], rec), "u1", "2026-08-09"),
+    "",
+  );
 });

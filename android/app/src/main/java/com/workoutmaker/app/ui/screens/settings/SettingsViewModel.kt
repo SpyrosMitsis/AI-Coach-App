@@ -14,6 +14,7 @@ import com.workoutmaker.app.data.TestKeyResponse
 import com.workoutmaker.app.data.TrainingProfile
 import com.workoutmaker.app.data.WeightUnit
 import com.workoutmaker.app.data.WorkoutRepository
+import com.workoutmaker.app.data.EnduranceGoals
 import com.workoutmaker.app.data.deriveLegacyFields
 import com.workoutmaker.app.data.format
 import com.workoutmaker.app.data.hydrateRichFromLegacy
@@ -442,10 +443,37 @@ class SettingsViewModel @Inject constructor(
         }
     }
 
-    fun addRace(r: Race, setAsGoal: Boolean) = viewModelScope.launch {
+    /**
+     * Save a goal from the guided sheet.
+     *
+     * A main goal writes in two places on purpose. The `races` row is what the
+     * goal list and the coach's profile tool read; the PROFILE's distance goal
+     * and pace are what reach workout generation, via the flat goals string
+     * `deriveLegacyFields` builds ("Run 42.2 km at 5:22 /km"). Writing only the
+     * row would leave a goal the planner has never heard of.
+     */
+    internal fun addRace(draft: GoalDraft) = viewModelScope.launch {
         runCatching {
-            repo.addRace(r)
-            if (setAsGoal) repo.setGoalRace(r)
+            repo.addRace(draft.race)
+            if (draft.setAsGoal) {
+                repo.setGoalRace(draft.race)
+                if (draft.km != null) {
+                    val sport = draft.race.sport
+                    repo.loadProfile()?.let { p ->
+                        repo.saveProfile(
+                            p.copy(
+                                distance_goal_km = p.distance_goal_km + (sport to draft.km),
+                                goal_pace_sec_per_km = draft.paceSec
+                                    ?.let { p.goal_pace_sec_per_km + (sport to it) }
+                                    ?: p.goal_pace_sec_per_km,
+                                goals_by_sport = p.goals_by_sport + (sport to EnduranceGoals.withDistanceGoal(
+                                    p.goals_by_sport[sport].orEmpty(), sport, draft.km,
+                                )),
+                            ).deriveLegacyFields(),
+                        )
+                    }
+                }
+            }
             races.value = repo.races()
             repo.loadProfile()?.let { profile.value = it }
         }.onSuccess { saveStatus.value = "✓ Goal added" }.onFailure { saveStatus.value = "Couldn't add: ${it.message}" }

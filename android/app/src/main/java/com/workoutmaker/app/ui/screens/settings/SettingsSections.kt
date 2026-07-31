@@ -581,8 +581,11 @@ internal fun RacesSection(vm: SettingsViewModel) {
     var showAdd by remember { mutableStateOf(false) }
     val today = LocalDate.now()
 
-    if (showAdd) AddRaceDialog(onClose = { showAdd = false }) { race, setGoal ->
-        vm.addRace(race, setGoal); showAdd = false
+    // The goal that currently owns the plan, so a tune-up can be told what it is
+    // being planned around.
+    val mainGoal = races.firstOrNull { it.date == profile.goal_date }
+    if (showAdd) AddGoalSheet(onClose = { showAdd = false }, mainGoal = mainGoal) { draft ->
+        vm.addRace(draft); showAdd = false
     }
 
     // Nothing set yet is the common case here, so it gets a real screen rather

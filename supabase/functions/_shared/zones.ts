@@ -61,6 +61,50 @@ export function zonesFromAge(age: number): HrZone[] {
  * Callers apply this only when no measured zones exist:
  *   `ivHrZones ?? onboarding.hr_zones ?? defaultHrZones(onboarding)`.
  */
+// --- Pace zones from a typed threshold ------------------------------------
+//
+// Same hole the HR table had, one sport over: pace zones reached the prompt
+// ONLY from a connected Intervals.icu account, so an athlete who ran a 20
+// minute test and logged it in the app ("Test me" writes threshold_pace_per_km)
+// got zone LABELS with no paces attached, while the same number drew a full
+// zone table on their own screen.
+//
+// Bands mirror the client's Zones.kt PACE_BANDS exactly, as multipliers of
+// threshold pace, so the app and the coach cannot disagree about what Z2 is.
+
+export interface PaceZone {
+  zone: string;
+  range: string;
+}
+
+const PACE_BANDS: [string, number, number][] = [
+  ["Z1 Easy", 1.15, 1.30],
+  ["Z2 Aerobic", 1.06, 1.15],
+  ["Z3 Tempo", 1.01, 1.06],
+  ["Z4 Threshold", 0.97, 1.01],
+  ["Z5 Interval", 0.88, 0.97],
+];
+
+/** "m:ss" to seconds, or null when it is not a pace. */
+export function paceToSec(v: unknown): number | null {
+  if (typeof v !== "string") return null;
+  const m = /^(\d{1,2}):([0-5]\d)$/.exec(v.trim());
+  if (!m) return null;
+  const sec = Number(m[1]) * 60 + Number(m[2]);
+  return sec >= 120 && sec <= 900 ? sec : null;
+}
+
+const mmss = (sec: number) => `${Math.floor(sec / 60)}:${String(Math.round(sec) % 60).padStart(2, "0")}`;
+
+/** Pace zones from a threshold pace in sec/km. Empty when there is none. */
+export function paceZonesFromThreshold(thresholdSecPerKm: number | null): PaceZone[] {
+  if (!thresholdSecPerKm || thresholdSecPerKm <= 0) return [];
+  return PACE_BANDS.map(([zone, fast, slow]) => ({
+    zone,
+    range: `${mmss(thresholdSecPerKm * fast)}-${mmss(thresholdSecPerKm * slow)}/km`,
+  }));
+}
+
 export function defaultHrZones(o: { lthr?: unknown; birth_year?: unknown }): HrZone[] {
   const lthr = typeof o.lthr === "number" && o.lthr >= 120 && o.lthr <= 210 ? o.lthr : null;
   if (lthr !== null) return zonesFromLthr(lthr);

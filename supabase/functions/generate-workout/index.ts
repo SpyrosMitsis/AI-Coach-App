@@ -38,6 +38,7 @@ import {
   goalBlock,
   intervalsPhysiology,
   knowledgeBlock,
+  racesBlock,
   recoveryBlock,
   weatherBlock,
 } from "../_shared/context.ts";
@@ -245,7 +246,7 @@ Deno.serve(async (req) => {
     let physiologyBlock = "";
     let ivHrZones: { zone: string; min: number; max: number }[] | null = null;
     if (!body.adjustment) {
-      const phys = await intervalsPhysiology(admin, profile, onboarding);
+      const phys = await intervalsPhysiology(admin, profile, onboarding, { userId, today: date });
       intervalsApiKey = phys.apiKey;
       physiologyBlock = phys.block;
       ivHrZones = phys.hrZones;
@@ -480,6 +481,10 @@ Deno.serve(async (req) => {
       userPrompt += await adherenceBlock(admin, userId, since14, date, acts28);
       userPrompt += await executionBlock(admin, userId, since14);
       userPrompt += goalBlock(onboarding, weeksToGoal, phase, acts28);
+      // Every dated goal, not just the anchor's date: the sport, the distance
+      // and the athlete's own target are collected by the app and were, until
+      // now, read by nothing that plans.
+      userPrompt += await racesBlock(admin, userId, date);
       // Today's busy windows (derived on-device from the athlete's calendar) —
       // a packed day should get a shorter session, not a heroic one.
       userPrompt += calendarBlock(body.calendar_busy ?? null);
