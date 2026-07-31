@@ -2,6 +2,7 @@ package com.workoutmaker.app.ui.screens.onboarding
 
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Arrangement
@@ -57,10 +58,7 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import com.workoutmaker.app.data.EnduranceGoals
 import com.workoutmaker.app.data.TrainingProfile
-import com.workoutmaker.app.ui.screens.settings.ChipGroup
-import com.workoutmaker.app.ui.screens.settings.EXPERIENCE_BY_SPORT
 import com.workoutmaker.app.ui.screens.settings.GOALS_BY_SPORT
-import com.workoutmaker.app.ui.screens.settings.LEVELS
 import com.workoutmaker.app.ui.screens.settings.toggleIn
 import com.workoutmaker.app.ui.components.rememberAnimationsEnabled
 import kotlin.math.abs
@@ -130,12 +128,12 @@ internal fun EnduranceSportQuestions(
 
     // Asked here rather than on a screen of its own: the distance says what you
     // want, the level says what you can currently absorb, and the coach needs
-    // both to turn one into the other.
-    ChipGroup(
-        "What level are you?",
-        EXPERIENCE_BY_SPORT[sport] ?: LEVELS,
-        profile.experience_by_sport[sport],
-    ) { lvl -> onUpdate { it.copy(experience_by_sport = it.experience_by_sport + (sport to lvl)) } }
+    // both to turn one into the other. Same slider the gym asks it with, since
+    // experience is an ordered scale in every sport, not a set of equal chips.
+    Text("What level are you?", style = MaterialTheme.typography.labelLarge)
+    SportLevelPicker(sport, profile.experience_by_sport[sport]) { lvl ->
+        onUpdate { it.copy(experience_by_sport = it.experience_by_sport + (sport to lvl)) }
+    }
 }
 
 /**
@@ -423,7 +421,12 @@ private fun StepperButton(
     Box(
         Modifier.size(34.dp).clip(RoundedCornerShape(11.dp))
             .background(MaterialTheme.colorScheme.surfaceContainerLowest)
-            .pointerInput(Unit) { detectTapGestures { onClick() } }
+            // clickable, NOT a raw pointerInput: pointerInput(Unit) never
+            // restarts, so its gesture block held the first composition's
+            // onClick forever. That lambda closed over the pace as it was on
+            // first draw, so every press after the first re-applied one step
+            // from the SAME starting value and the pace never moved again.
+            .clickable(onClick = onClick)
             .semantics { contentDescription = label },
         contentAlignment = Alignment.Center,
     ) {
