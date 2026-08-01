@@ -14,6 +14,7 @@ import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import com.workoutmaker.app.data.ThemePalette
+import androidx.annotation.RequiresApi
 
 // Android 12+ only; the picker hides/falls back to Serene Vanguard below that.
 val dynamicColorSupported: Boolean = Build.VERSION.SDK_INT >= Build.VERSION_CODES.S
@@ -362,9 +363,16 @@ private fun ColorScheme.withCardSurfaces(darkTheme: Boolean): ColorScheme =
     }
 
 // The picker's swatches show the same colours the app will actually render.
-internal fun dynamicScheme(context: android.content.Context, darkTheme: Boolean): ColorScheme =
-    (if (darkTheme) dynamicDarkColorScheme(context) else dynamicLightColorScheme(context))
-        .withCardSurfaces(darkTheme)
+@RequiresApi(Build.VERSION_CODES.S)
+internal fun dynamicScheme(
+    context: android.content.Context,
+    darkTheme: Boolean,
+): ColorScheme =
+    (if (darkTheme) {
+        dynamicDarkColorScheme(context)
+    } else {
+        dynamicLightColorScheme(context)
+    }).withCardSurfaces(darkTheme)
 
 // Map the persisted palette choice (a pure-data enum in AppPreferences) → colors.
 fun ThemePalette.palette(): AppPalette = when (this) {
