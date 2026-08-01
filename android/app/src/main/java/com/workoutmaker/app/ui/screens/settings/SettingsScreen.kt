@@ -20,6 +20,7 @@ import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.outlined.Search
 import androidx.compose.material.icons.outlined.AccountCircle
 import androidx.compose.material.icons.outlined.AutoAwesome
+import androidx.compose.material.icons.outlined.BugReport
 import androidx.compose.material.icons.outlined.CalendarMonth
 import androidx.compose.material.icons.outlined.Download
 import androidx.compose.material.icons.outlined.Favorite
@@ -91,6 +92,7 @@ internal val SETTINGS_GROUPS = listOf(
     SettingsGroup("Data", listOf(
         SettingsItem("data", Icons.Outlined.Download, "Import & export", "Strong/Hevy import · CSV backup"),
         SettingsItem("diagnostics", Icons.Outlined.MonitorHeart, "Diagnostics", "AI generation log & cost"),
+        SettingsItem("debug_log", Icons.Outlined.BugReport, "Debug logs", "Kept on your phone · share only if you turn it on"),
     )),
     SettingsGroup("Account", listOf(
         SettingsItem("account", Icons.Outlined.AccountCircle, "About & account", "Version & sign out"),
@@ -131,6 +133,7 @@ private fun rememberSettingsSnapshot(vm: SettingsViewModel): SettingsSnapshot {
     val knowledge by vm.knowledge.collectAsStateSafe()
     val settings by vm.appSettings.collectAsStateSafe()
     val hushed by vm.hushedNumbers.collectAsStateSafe()
+    val healthStatus by vm.healthStatus.collectAsStateSafe()
     return SettingsSnapshot(
         profile = profile,
         races = races,
@@ -138,7 +141,7 @@ private fun rememberSettingsSnapshot(vm: SettingsViewModel): SettingsSnapshot {
         hasProviderKey = llmKeys.isNotEmpty(),
         isPro = plan.isPro,
         intervalsConnected = intervals != null,
-        healthConnected = vm.healthAvailable && vm.healthStatus.value?.startsWith("✓") == true,
+        healthConnected = vm.healthAvailable && healthStatus?.startsWith("✓") == true,
         autoPlan = autoPlan,
         knowledgeLines = knowledge.lines().count { it.isNotBlank() },
         settings = settings,
@@ -373,6 +376,7 @@ internal fun SettingsDetail(id: String, vm: SettingsViewModel, onOpenBodyHistory
                 "notifications" -> NotificationsSection(vm)
                 "data" -> DataSection(vm)
                 "diagnostics" -> DiagnosticsSection(vm)
+                "debug_log" -> DebugLogSection(vm)
                 "account" -> AccountSection(vm)
                 "support" -> SupportSection(vm)
             }

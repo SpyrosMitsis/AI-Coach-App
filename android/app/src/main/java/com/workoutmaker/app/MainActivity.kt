@@ -47,7 +47,6 @@ import com.workoutmaker.app.ui.screens.strength.StrengthScreen
 import com.workoutmaker.app.ui.screens.history.WorkoutHistoryScreen
 import com.workoutmaker.app.strength.StrengthViewModel
 import com.workoutmaker.app.ui.theme.WorkoutMakerTheme
-import com.workoutmaker.app.ui.theme.palette
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.ViewModel
@@ -73,6 +72,7 @@ import com.workoutmaker.app.billing.BillingGateway
 import com.workoutmaker.app.data.AuthDeepLinks
 import com.workoutmaker.app.data.NotificationDeepLinks
 import com.workoutmaker.app.data.ThemePalette
+import com.workoutmaker.app.data.WeatherCheckResult
 import com.workoutmaker.app.data.WorkoutRepository
 import com.workoutmaker.app.ui.components.AppSnackbar
 import com.workoutmaker.app.ui.components.LocalAppSnackbar
@@ -101,7 +101,8 @@ class ThemeViewModel @Inject constructor(prefs: AppPreferences) : ViewModel() {
         .stateIn(viewModelScope, SharingStarted.Eagerly, ThemeMode.SYSTEM)
     val themePalette = prefs.settings
         .map { it.themePalette }
-        .stateIn(viewModelScope, SharingStarted.Eagerly, ThemePalette.SERENE)
+        // Same default as AppSettings, or the first frame flashes the old palette.
+        .stateIn(viewModelScope, SharingStarted.Eagerly, ThemePalette.DYNAMIC)
 }
 
 @AndroidEntryPoint
@@ -138,12 +139,33 @@ class MainActivity : ComponentActivity() {
     // Notification taps carry "open this activity" extras (evening debrief).
     // Surface them through NotificationDeepLinks; HomeViewModel resolves them.
     private fun handleNotificationLink(intent: Intent?) {
-        val id = intent?.getStringExtra("open_activity_id") ?: return
-        val date = intent.getStringExtra("open_activity_date") ?: return
-        NotificationDeepLinks.openActivity.value = id to date
-        // Consume so a config change doesn't re-open the overlay.
-        intent.removeExtra("open_activity_id")
-        intent.removeExtra("open_activity_date")
+        val id = intent?.getStringExtra("open_activity_id")
+        if (id != null) {
+            val date = intent.getStringExtra("open_activity_date")
+            if (date != null) {
+                NotificationDeepLinks.openActivity.value = id to date
+                // Consume so a config change doesn't re-open the overlay.
+                intent.removeExtra("open_activity_id")
+                intent.removeExtra("open_activity_date")
+            }
+        }
+
+        // Morning notification's weather line, when today's outdoor session
+        // was flagged unviable. Same one-shot extras pattern as above.
+        val workoutId = intent?.getStringExtra("open_weather_workout_id")
+        if (workoutId != null) {
+            NotificationDeepLinks.openWeatherPrompt.value = WeatherCheckResult(
+                should_prompt = true,
+                sport = intent.getStringExtra("open_weather_sport"),
+                reason = intent.getStringExtra("open_weather_reason"),
+                workout_id = workoutId,
+                swap_type = intent.getStringExtra("open_weather_swap_type"),
+            )
+            intent.removeExtra("open_weather_workout_id")
+            intent.removeExtra("open_weather_sport")
+            intent.removeExtra("open_weather_reason")
+            intent.removeExtra("open_weather_swap_type")
+        }
     }
 
     override fun onNewIntent(intent: Intent) {
@@ -189,6 +211,7 @@ class MainActivity : ComponentActivity() {
                 }
                 if (restored is io.github.jan.supabase.gotrue.SessionStatus.Authenticated) {
                     repo.uploadPendingCrashes()
+                    repo.uploadDebugLogIfEnabled()
                 }
             }
         }
@@ -212,7 +235,7 @@ class MainActivity : ComponentActivity() {
                 ThemeMode.LIGHT -> false
                 ThemeMode.SYSTEM -> isSystemInDarkTheme()
             }
-            WorkoutMakerTheme(palette = palette.palette(), darkTheme = dark) {
+            WorkoutMakerTheme(themePalette = palette, darkTheme = dark) {
                 Surface {
                     AuthGate { MainScaffold() }
                     // Password-recovery deep link: ask for the new password on
@@ -242,6 +265,20 @@ private fun MainScaffold() {
     LaunchedEffect(nav) {
         NotificationDeepLinks.openActivity.collect { link ->
             if (link != null) {
+                nav.navigate("home") {
+                    popUpTo(nav.graph.findStartDestination().id) { saveState = true }
+                    launchSingleTop = true
+                    restoreState = true
+                }
+            }
+        }
+    }
+
+    // Same for a tapped weather-swap line — lands on Home, which renders the
+    // WeatherSwapDialog from NotificationDeepLinks.openWeatherPrompt.
+    LaunchedEffect(nav) {
+        NotificationDeepLinks.openWeatherPrompt.collect { prompt ->
+            if (prompt != null) {
                 nav.navigate("home") {
                     popUpTo(nav.graph.findStartDestination().id) { saveState = true }
                     launchSingleTop = true

@@ -28,9 +28,12 @@ import kotlinx.coroutines.flow.first
 import android.app.PendingIntent
 import com.workoutmaker.app.data.AppPreferences
 import com.workoutmaker.app.data.DailySummary
+import com.workoutmaker.app.data.LocationProvider
+import com.workoutmaker.app.data.WeatherCheckResult
 import com.workoutmaker.app.data.cachedDailySummary
 import com.workoutmaker.app.data.dailySummary
 import com.workoutmaker.app.data.syncHealth
+import com.workoutmaker.app.data.weatherCheck
 import com.workoutmaker.app.data.wellnessCheckin
 
 // Daily morning readiness notification, timed to the athlete's actual WAKE-UP:
@@ -48,6 +51,7 @@ class CheckinReminderWorker @AssistedInject constructor(
     private val repo: WorkoutRepository,
     private val health: HealthConnectManager,
     private val prefs: AppPreferences,
+    private val location: LocationProvider,
 ) : CoroutineWorker(appContext, params) {
 
     override suspend fun doWork(): Result {
@@ -91,20 +95,34 @@ class CheckinReminderWorker @AssistedInject constructor(
             ?: runCatching { repo.cachedDailySummary()?.first }.getOrNull()
                 ?.takeIf { it.date == today.toString() }
 
-        showReminder(summary, checkinPending = !answered)
+        // Token-free (no LLM) weather viability check. Best-effort: a failed
+        // call just means no weather line, never a broken reminder.
+        val loc = location.lastKnown()
+        val weather = runCatching { repo.weatherCheck(today, loc?.first, loc?.second) }.getOrNull()
+
+        showReminder(summary, checkinPending = !answered, weather = weather)
         return Result.success()
     }
 
     private fun showReminder(
         summary: DailySummary?,
         checkinPending: Boolean,
+        weather: WeatherCheckResult? = null,
     ) {
         if (ActivityCompat.checkSelfPermission(applicationContext, Manifest.permission.POST_NOTIFICATIONS)
             != PackageManager.PERMISSION_GRANTED
         ) return
         val launch = applicationContext.packageManager
             .getLaunchIntentForPackage(applicationContext.packageName)
-            ?.apply { addFlags(Intent.FLAG_ACTIVITY_NEW_TASK) }
+            ?.apply {
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                if (weather?.should_prompt == true) {
+                    putExtra("open_weather_workout_id", weather.workout_id)
+                    putExtra("open_weather_sport", weather.sport)
+                    putExtra("open_weather_reason", weather.reason)
+                    putExtra("open_weather_swap_type", weather.swap_type)
+                }
+            }
         val pi = launch?.let {
             PendingIntent.getActivity(
                 applicationContext, 1, it,
@@ -119,12 +137,15 @@ class CheckinReminderWorker @AssistedInject constructor(
         } else {
             "$greeting ☀️"
         }
+        val weatherLine = if (weather?.should_prompt == true) {
+            "Today's ${weather.sport} looks unsafe: ${weather.reason}. Tap to see options."
+        } else null
         val recoveryLine = summary?.recovery?.summary?.takeIf { it.isNotBlank() }
             ?: summary?.recovery?.drivers?.firstOrNull()?.label
         val planLine = summary?.today_workout?.workout_json?.title
             ?.takeIf { it.isNotBlank() }?.let { "On the plan: $it." }
         val askLine = if (checkinPending) "Tap to log how you feel." else null
-        val text = listOfNotNull(recoveryLine, planLine, askLine)
+        val text = listOfNotNull(weatherLine, recoveryLine, planLine, askLine)
             .joinToString(" ")
             .ifBlank { "How do you feel today? Tap to log energy, soreness and sleep." }
 

@@ -1,15 +1,22 @@
 package com.workoutmaker.app.ui.theme
 
+import android.os.Build
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.material3.ColorScheme
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.darkColorScheme
+import androidx.compose.material3.dynamicDarkColorScheme
+import androidx.compose.material3.dynamicLightColorScheme
 import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
 import com.workoutmaker.app.data.ThemePalette
+
+// Android 12+ only; the picker hides/falls back to Serene Vanguard below that.
+val dynamicColorSupported: Boolean = Build.VERSION.SDK_INT >= Build.VERSION_CODES.S
 
 // ============================================================================
 // "Serene Vanguard" — grounded, restorative wellness palette.
@@ -330,6 +337,35 @@ val Solstice = AppPalette(
     lightAccents = AppAccents(amber = Color(0xFF8A5A12), moss = Color(0xFF6B6648)),
 )
 
+// Android's dynamic scheme uses a different surface convention than every palette
+// above: it makes `surface` EQUAL to `background`, and in light mode it runs the
+// container ramp downwards from white (lowest = white, highest = darkest). This
+// app reads `surface` as "the card" and `surfaceContainerLowest` as "the recessed
+// block inside the card", so a raw dynamic scheme loses the card lift entirely and
+// inverts the insets. Re-point the surface roles at the dynamic tones that already
+// carry the right relationship, so Material You gets the same depth as the rest.
+private fun ColorScheme.withCardSurfaces(darkTheme: Boolean): ColorScheme =
+    if (darkTheme) {
+        // Dark already ramps upwards (lowest < background < low < container < …);
+        // only the card itself is wrong, sitting flat on the background.
+        copy(surface = surfaceContainer)
+    } else {
+        copy(
+            // Lightest tone (white) becomes the card, lifting it off the paper.
+            surface = surfaceContainerLowest,
+            surfaceContainer = surfaceContainerLowest,
+            // …and the rest of the ramp shifts down one step so insets recess.
+            surfaceContainerHigh = surfaceContainer,
+            surfaceContainerHighest = surfaceContainerHigh,
+            surfaceContainerLowest = surfaceContainerHighest,
+        )
+    }
+
+// The picker's swatches show the same colours the app will actually render.
+internal fun dynamicScheme(context: android.content.Context, darkTheme: Boolean): ColorScheme =
+    (if (darkTheme) dynamicDarkColorScheme(context) else dynamicLightColorScheme(context))
+        .withCardSurfaces(darkTheme)
+
 // Map the persisted palette choice (a pure-data enum in AppPreferences) → colors.
 fun ThemePalette.palette(): AppPalette = when (this) {
     ThemePalette.SERENE -> SereneVanguard
@@ -338,6 +374,10 @@ fun ThemePalette.palette(): AppPalette = when (this) {
     ThemePalette.NOCTURNE -> Nocturne
     ThemePalette.BLOOM -> Bloom
     ThemePalette.SOLSTICE -> Solstice
+    // Real colours for DYNAMIC come from dynamicDark/LightColorScheme(context) in
+    // WorkoutMakerTheme, which needs a Context this pure mapping doesn't have.
+    // This is only a fallback for previews on API < 31.
+    ThemePalette.DYNAMIC -> SereneVanguard
 }
 
 // Active accents for the current palette+mode, provided by WorkoutMakerTheme.
@@ -353,15 +393,26 @@ fun mossAccent(): Color = LocalAppAccents.current.moss
 
 @Composable
 fun WorkoutMakerTheme(
-    palette: AppPalette = SereneVanguard,
+    themePalette: ThemePalette = ThemePalette.SERENE,
     darkTheme: Boolean = isSystemInDarkTheme(),
     content: @Composable () -> Unit,
 ) {
-    val accents = if (darkTheme) palette.darkAccents else palette.lightAccents
-    MaterialTheme(
-        colorScheme = if (darkTheme) palette.dark else palette.light,
-        typography = AppTypography,
-    ) {
+    val useDynamic = themePalette == ThemePalette.DYNAMIC && dynamicColorSupported
+    val context = LocalContext.current
+    val palette = themePalette.palette()
+    val colorScheme = when {
+        useDynamic -> dynamicScheme(context, darkTheme)
+        darkTheme -> palette.dark
+        else -> palette.light
+    }
+    // Amber/moss have no ColorScheme slot. Dynamic mode keeps the steady amber
+    // (still a caution colour, shouldn't shift with wallpaper) but ties moss to
+    // the device's own secondary so "subtle distinction" chips stay on-brand.
+    val accents = if (useDynamic) {
+        val base = if (darkTheme) SereneVanguard.darkAccents else SereneVanguard.lightAccents
+        base.copy(moss = colorScheme.secondary)
+    } else if (darkTheme) palette.darkAccents else palette.lightAccents
+    MaterialTheme(colorScheme = colorScheme, typography = AppTypography) {
         CompositionLocalProvider(LocalAppAccents provides accents, content = content)
     }
 }

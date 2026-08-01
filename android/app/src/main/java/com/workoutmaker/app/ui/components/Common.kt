@@ -31,6 +31,8 @@ import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.material3.pulltorefresh.PullToRefreshBox
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.selection.selectable
+import androidx.compose.ui.semantics.Role
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.outlined.Info
@@ -305,10 +307,23 @@ fun SectionLabel(text: String, modifier: Modifier = Modifier, color: Color = Mat
  */
 @Composable
 fun SegmentedToggle(leftLabel: String, rightLabel: String, right: Boolean, onChange: (Boolean) -> Unit) {
+    SegmentedChoice(
+        labels = listOf(leftLabel, rightLabel),
+        selectedIndex = if (right) 1 else 0,
+        onSelect = { onChange(it == 1) },
+    )
+}
+
+/**
+ * The same pill track for N options (Dark / Light / System). [SegmentedToggle] is
+ * the two-option case; anything wider (the appearance picker) uses this directly.
+ */
+@Composable
+fun SegmentedChoice(labels: List<String>, selectedIndex: Int, onSelect: (Int) -> Unit) {
     // The TRACK is recessed (deeper than the card behind it, same language as
-    // InsetStat/StatTile) and the selected half sits raised on top of it. With a
-    // transparent track the unselected half read as page background and the
-    // whole thing looked like one button, not a two-way switch. Low, not Lowest:
+    // InsetStat/StatTile) and the selected segment sits raised on top of it. With a
+    // transparent track the unselected halves read as page background and the
+    // whole thing looked like one button, not a switch. Low, not Lowest:
     // Lowest is ~17 steps under the card in dark mode and read as a black hole.
     Row(
         Modifier
@@ -318,14 +333,14 @@ fun SegmentedToggle(leftLabel: String, rightLabel: String, right: Boolean, onCha
             .border(1.dp, MaterialTheme.colorScheme.outlineVariant, RoundedCornerShape(50))
             .padding(4.dp),
     ) {
-        listOf(leftLabel to false, rightLabel to true).forEach { (label, value) ->
-            val selected = right == value
+        labels.forEachIndexed { i, label ->
+            val selected = selectedIndex == i
             Box(
                 Modifier
                     .weight(1f)
                     .clip(RoundedCornerShape(50))
                     .background(if (selected) MaterialTheme.colorScheme.secondaryContainer else Color.Transparent)
-                    .clickable { onChange(value) }
+                    .selectable(selected = selected, role = Role.RadioButton) { onSelect(i) }
                     .padding(vertical = 10.dp),
                 contentAlignment = Alignment.Center,
             ) {

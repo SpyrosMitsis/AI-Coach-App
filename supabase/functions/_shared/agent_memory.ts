@@ -140,7 +140,9 @@ export async function loadAgentMemory(
 // week_planning.ts's computeDayList (or the equivalent in generate-workout),
 // not just a line in coach_knowledge. Use set_training_pause/
 // training_paused_until in coach_tools.ts + plan-week/index.ts as the
-// reference example to copy.
+// reference example to copy, or _shared/injury.ts's injury_backoff for the
+// version that has to override the CONTENT of a session rather than its date
+// (it feeds reviewWorkout's strip and plan-week's sports list the same way).
 export function memoryDocsBlock(mem: AgentMemory): string {
   const parts: string[] = [];
   if (mem.soul.trim()) {

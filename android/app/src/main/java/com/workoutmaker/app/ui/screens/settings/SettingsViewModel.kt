@@ -333,6 +333,12 @@ class SettingsViewModel @Inject constructor(
     fun setRestVibrate(on: Boolean) = viewModelScope.launch { prefs.setRestVibrate(on) }
     fun setRestNotify(on: Boolean) = viewModelScope.launch { prefs.setRestNotify(on) }
     fun setMorningNotify(on: Boolean) = viewModelScope.launch { prefs.setMorningNotify(on) }
+    fun setDebugLogSharing(on: Boolean) = viewModelScope.launch {
+        prefs.setDebugLogSharing(on)
+        // Send what's already local right away, rather than waiting for the
+        // next cold start — turning it on should feel immediate.
+        if (on) repo.uploadDebugLogIfEnabled()
+    }
     fun setRestChime(c: RestChime) = viewModelScope.launch { prefs.setRestChime(c) }
     fun setKeepScreenOn(on: Boolean) = viewModelScope.launch { prefs.setKeepScreenOn(on) }
     fun setThemeMode(m: ThemeMode) = viewModelScope.launch { prefs.setThemeMode(m) }
@@ -446,11 +452,13 @@ class SettingsViewModel @Inject constructor(
     /**
      * Save a goal from the guided sheet.
      *
-     * A main goal writes in two places on purpose. The `races` row is what the
-     * goal list and the coach's profile tool read; the PROFILE's distance goal
-     * and pace are what reach workout generation, via the flat goals string
-     * `deriveLegacyFields` builds ("Run 42.2 km at 5:22 /km"). Writing only the
-     * row would leave a goal the planner has never heard of.
+     * A main goal writes in two places on purpose. The `races` row is the event
+     * itself, which the goal list, Home's countdown and the coach's profile tool
+     * read, with `goal_date` pointing at it; the PROFILE's distance goal and
+     * pace are the training goal, which reaches workout generation via the flat
+     * string `deriveLegacyFields` builds ("Run 42.2 km at 5:22 /km"). Writing
+     * only the row would leave a goal the planner has never heard of. The two
+     * never share a field: that is what made the coach forget one of them.
      */
     internal fun addRace(draft: GoalDraft) = viewModelScope.launch {
         runCatching {

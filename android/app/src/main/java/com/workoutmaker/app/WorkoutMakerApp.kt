@@ -7,6 +7,7 @@ import com.workoutmaker.app.work.CheckinReminderScheduler
 import dagger.hilt.android.HiltAndroidApp
 import javax.inject.Inject
 import com.workoutmaker.app.notify.Notifications
+import com.workoutmaker.app.util.AppLog
 import com.workoutmaker.app.util.CrashReporter
 import com.workoutmaker.app.work.FeedbackPromptScheduler
 import com.workoutmaker.app.work.StrengthSync
@@ -21,6 +22,9 @@ class WorkoutMakerApp : Application(), Configuration.Provider {
 
     override fun onCreate() {
         super.onCreate()
+        // Local debug log file, so AppLog calls have somewhere to write from the
+        // very first line (export/send-to-developer both read this file).
+        AppLog.install(this)
         // First: capture uncaught exceptions to disk (uploaded on next start).
         CrashReporter.install(this)
         Notifications.ensureChannels(this)

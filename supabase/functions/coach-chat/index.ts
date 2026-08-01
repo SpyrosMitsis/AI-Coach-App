@@ -35,6 +35,7 @@ import {
 } from "../_shared/agent_memory.ts";
 import { corsHeaders } from "../_shared/cors.ts";
 import { injuriesText, profileFactsBlock } from "../_shared/profile.ts";
+import { goalRaceLine, pickGoalRace, upcomingGoals, weeksBetween } from "../_shared/context.ts";
 import {
   COACH_SYSTEM_PROMPT,
   effortWord,
@@ -83,6 +84,8 @@ RULES:
 - DROPPING A GOAL. When the athlete says they are not doing an event any more, call remove_goal_race. Never say a goal is gone without having called it: there is no other way to remove one, and a goal you only said you deleted stays on their Home screen and comes back. Read what it returns. If removed_count is 0, tell them nothing matched instead of confirming, and check the name with get_profile.
 - Call remember when the athlete shares a durable preference, constraint, or injury.
 - Call set_training_pause when the athlete says they're stopping/pausing training for a stretch WITH a return date (travel, illness, work crunch, "I'm going to X until Y"). This is what actually stops plan_week from scheduling sessions in that window, do not rely on remember alone for this. Call resume_training if they say they're back early.
+- PAIN AND INJURIES. When the athlete says something hurt, call set_injury_backoff with the area and a level: 'ease' for a niggle they can train through, 'avoid' for real pain. That is what actually changes the sessions (it strips the movements that load the area, and 'avoid' also stops the sports that stress it being scheduled); remember only writes a note nothing enforces. Sharp or worsening pain is 'avoid', and say plainly that a week of it means seeing a physio, without diagnosing anything yourself.
+- When they volunteer how a known injury is doing, call update_injury_status so the app stops asking about it. Use 'resolved' ONLY when they say it is genuinely gone: it takes the injury off the list and sessions stop being built around it. Call clear_injury_backoff if an area is fine again before its window ends. Backoffs expire on their own, so never promise to "remember to lift it later".
 - Be efficient: a few targeted reads, then act/answer. You have at most 6 tool calls per turn.
 - Your final message follows the Voice and Shape rules already given in the system prompt.`;
 
@@ -136,6 +139,9 @@ const WRITE_TOOLS = new Set([
   "log_stretch_session",
   "set_training_pause",
   "resume_training",
+  "set_injury_backoff",
+  "clear_injury_backoff",
+  "update_injury_status",
   // Mutates the profile, not the calendar: counts as "acted" for the
   // anti-stall guard and write-dedup, but the CLIENT's write set deliberately
   // excludes it (no calendar result card for saving an FTP).
@@ -237,7 +243,7 @@ Deno.serve(async (req) => {
       d.setUTCDate(d.getUTCDate() - ((d.getUTCDay() + 6) % 7));
       return d.toISOString().slice(0, 10);
     })();
-    const [{ data: acts }, { data: todayPlanned }, { data: wellness }, { data: weekPlanned }] = await Promise.all([
+    const [{ data: acts }, { data: todayPlanned }, { data: wellness }, { data: weekPlanned }, goalRows] = await Promise.all([
       admin.from("completed_activities")
         .select("type, date, distance_m, tss, ctl, atl")
         .eq("user_id", userId).gte("date", since28).order("date", { ascending: false }),
@@ -250,6 +256,7 @@ Deno.serve(async (req) => {
       admin.from("planned_workouts")
         .select("type, completed, date")
         .eq("user_id", userId).gte("date", weekStart).lte("date", today),
+      upcomingGoals(admin, userId, today),
     ]);
     // No intervals-provided CTL in the window? Fill estimated values from
     // stored TSS so the coach still sees a fitness signal without intervals.icu.
@@ -260,11 +267,13 @@ Deno.serve(async (req) => {
     const weeklyKm = a.filter((r) => (r.type ?? "").toLowerCase().includes("run"))
       .reduce((s, r) => s + (r.distance_m ?? 0) / 1000, 0) / 4;
 
-    let weeksToGoal: number | null = null;
-    if (onboarding.goal_date) {
-      const d = (new Date(String(onboarding.goal_date)).getTime() - Date.now()) / (7 * DAY);
-      weeksToGoal = d >= 0 ? Math.round(d) : null;
-    }
+    // The anchor is a DATE pointing into `races`, so resolve it to the row and
+    // count from that. The old arithmetic compared midnight-UTC against
+    // Date.now(), half a day out for a tz-ahead athlete, and an anchor left
+    // pointing at a deleted race kept driving the phase from nothing.
+    const goalRace = pickGoalRace(goalRows, today, onboarding.goal_date as string | undefined);
+    const weeksToGoal = goalRace?.date ? weeksBetween(today, goalRace.date) : null;
+    const goalRaceClause = goalRaceLine(goalRace, today);
 
     // Today's primary session (same rule as Home/Calendar) + readiness — so the
     // coach can answer the most common first questions with zero tool calls.
@@ -314,10 +323,16 @@ Deno.serve(async (req) => {
       return `${r.date} ${r.type ?? "session"}${km}${effort ? `, ${effort}` : ""}`;
     });
 
+    // The overarching training goal is stated ONCE, by profileFactsBlock below
+    // ("Goals: ..."). This block used to state it a second time from
+    // onboarding.goal, which set_goal_race overwrote with a race NAME, so the
+    // same prompt could say the goal was "Athens Marathon" and, nine lines
+    // later, "Run 42.2 km at 5:33 /km + Build muscle". The dated goal is a
+    // different fact and gets its own clause on the phase line.
     const context =
       `ATHLETE CONTEXT (background for your reasoning only):
 - Name: ${profile?.display_name ?? "athlete"}; today is ${today}
-- Goal: ${onboarding.goal ?? "not set"}; experience: ${onboarding.experience ?? "unknown"}
+- Experience: ${onboarding.experience ?? "unknown"}
 - Available days: ${(onboarding.days as string[] | undefined)?.join(", ") ?? "unknown"}; session length: ${onboarding.session_duration ?? "?"} min
 - Equipment: ${onboarding.equipment ?? "unknown"}; injuries: ${injuriesText(onboarding) || "none noted"}
 - Form/freshness: ${freshnessWord(ctl - atl)}
@@ -325,7 +340,7 @@ Deno.serve(async (req) => {
 - This week: ${adherenceLine}
 - Today's plan: ${todayLine}
 - Last completed sessions (newest first): ${recentLines.join(" | ") || "none recorded in the last 28 days"}
-- ~${weeklyKm.toFixed(0)} km/week recently; training phase: ${trainingPhase(weeksToGoal)}` +
+- ~${weeklyKm.toFixed(0)} km/week recently; training phase: ${trainingPhase(weeksToGoal)}${goalRaceClause ? `; next goal: ${goalRaceClause}` : ""}` +
       profileFactsBlock(onboarding, profile?.display_name as string | undefined) +
       memoryDocsBlock(agentMemory) +
       summaryBlock;
@@ -368,6 +383,11 @@ Deno.serve(async (req) => {
         // JSON-protocol steps + the anti-stall retry) → logged for cost tracking.
         let promptTokens = 0;
         let completionTokens = 0;
+        // The agentic loop is where prompt caching pays off (one turn resends
+        // the same ~4,800-token system+tools prefix on every step), so its
+        // cache totals ride along to generation_logs with the rest of usage.
+        let cacheWriteTokens = 0;
+        let cacheReadTokens = 0;
         let model = "";
         // Shared by every leg of this turn, including the anti-stall replay.
         const spendGuard = callBudget(MAX_LLM_CALLS_PER_TURN);
@@ -471,6 +491,8 @@ Deno.serve(async (req) => {
               replyText = out.text;
               promptTokens += out.promptTokens;
               completionTokens += out.completionTokens;
+              cacheWriteTokens += out.cacheWriteTokens ?? 0;
+              cacheReadTokens += out.cacheReadTokens ?? 0;
               model = out.model;
             } catch (e) {
               // Native tool-calling silently degrading to the JSON protocol is a
@@ -493,6 +515,8 @@ Deno.serve(async (req) => {
             provider = step_out.provider;
             promptTokens += step_out.promptTokens;
             completionTokens += step_out.completionTokens;
+            cacheWriteTokens += step_out.cacheWriteTokens ?? 0;
+            cacheReadTokens += step_out.cacheReadTokens ?? 0;
             model = step_out.model;
             let parsed: Record<string, unknown> | null = null;
             try { parsed = extractJson<Record<string, unknown>>(step_out.text); } catch { parsed = null; }
@@ -559,6 +583,8 @@ Deno.serve(async (req) => {
             model,
             promptTokens,
             completionTokens,
+            cacheWriteTokens,
+            cacheReadTokens,
             profile,
             toolsUsed,
           }));

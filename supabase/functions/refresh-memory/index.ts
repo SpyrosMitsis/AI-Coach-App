@@ -9,6 +9,8 @@ import { handleOptions, json } from "../_shared/cors.ts";
 import { adminClient, getUserId } from "../_shared/supabase.ts";
 import { llmAccess } from "../_shared/llm_keys.ts";
 import { memoryFromProfile, updateMemoryDoc, updateSoulDoc } from "../_shared/agent_memory.ts";
+import { goalsText } from "../_shared/profile.ts";
+import { goalRaceLine, pickGoalRace, upcomingGoals } from "../_shared/context.ts";
 
 Deno.serve(async (req) => {
   const pre = handleOptions(req);
@@ -19,11 +21,13 @@ Deno.serve(async (req) => {
     if (!userId) return json({ error: "unauthorized" }, 401);
     const admin = adminClient();
 
-    const [{ data: profile }, { data: feedback }, { data: planned }, { data: strength }] = await Promise.all([
+    const today = new Date().toISOString().slice(0, 10);
+    const [{ data: profile }, { data: feedback }, { data: planned }, { data: strength }, goalRows] = await Promise.all([
       admin.from("user_profiles").select("training_memory, coach_soul, coach_soul_updated_at, active_llm_provider, llm_fallback_chain, onboarding, plan, plan_expires_at, use_hosted_ai, llm_custom_input_per_1m, llm_custom_output_per_1m").eq("id", userId).single(),
       admin.from("workout_feedback").select("date, difficulty, actual_rpe, completed, notes").eq("user_id", userId).order("date", { ascending: false }).limit(8),
       admin.from("planned_workouts").select("date, type, workout_json").eq("user_id", userId).order("date", { ascending: false }).limit(6),
       admin.from("strength_logs").select("date, exercise_name, estimated_1rm, sets").eq("user_id", userId).order("date", { ascending: false }).limit(12),
+      upcomingGoals(admin, userId, today),
     ]);
     if (!profile) return json({ error: "no profile" }, 404);
 
@@ -42,7 +46,17 @@ Deno.serve(async (req) => {
     }).join("\n") || "(none)";
 
     // Shared evidence block — feeds both the rolling memory and (rarely) the soul.
-    const evidence = `GOAL: ${(profile.onboarding as { goal?: string })?.goal ?? "general fitness"}\n\n` +
+    //
+    // These docs are DURABLE prose. A race name written into the goal line
+    // survived long after the race did ("their goal is the Athens Marathon",
+    // still on file the following spring), because onboarding.goal used to hold
+    // whichever of the two goals was written last. The training goal is the
+    // durable half; the event goes in with its date, so a later pass can see it
+    // has passed.
+    const onboarding = (profile.onboarding ?? {}) as Record<string, unknown>;
+    const goalRace = goalRaceLine(pickGoalRace(goalRows, today, onboarding.goal_date as string | undefined), today);
+    const evidence = `TRAINING GOAL: ${goalsText(onboarding)}\n` +
+      (goalRace ? `NEXT GOAL EVENT: ${goalRace}\n` : "") + `\n` +
       `RECENT FEEDBACK:\n${fbLines}\n\nRECENT SESSIONS:\n${wkLines}\n\n` +
       `RECENT STRENGTH:\n${stLines}`;
 

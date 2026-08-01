@@ -13,8 +13,9 @@
 // violations the caller can feed into the self-repair retry.
 // ============================================================================
 
-import type { InjuryEntry, Workout, WorkoutExercise } from "./types.ts";
+import type { InjuryBackoff, InjuryEntry, Workout, WorkoutExercise } from "./types.ts";
 import { allowedCategories, categoryOfExercise, EXERCISE_CATALOG } from "./exercise_catalog.ts";
+import { exerciseLoadsArea, sportsForArea } from "./injury.ts";
 import type { NextTarget } from "./progression.ts";
 
 export interface MainLift {
@@ -41,6 +42,12 @@ export interface ReviewContext {
   // it's unstructured prose covered by the prompt-level "avoid aggravating"
   // instruction, not by this deterministic backstop.
   injuries?: InjuryEntry[];
+  // Active, unexpired per-area backoffs (activeBackoffs() in injury.ts) written
+  // by the post-workout pain check. Distinct from `injuries`: an injury is a
+  // standing fact, a backoff is a DATED instruction from something that hurt
+  // this week, and it is enforced here rather than left to the prompt for the
+  // same reason training_paused_until is a column and not a sentence.
+  backoffs?: InjuryBackoff[];
   // Today's recovery/readiness score (0-100). Low readiness + a hard session →
   // the intensity ceiling caps it deterministically (not just a flag).
   readiness?: number;
@@ -274,6 +281,74 @@ export function reviewWorkout(w: Workout, ctx: ReviewContext): ReviewResult {
     }
     // Drop sections emptied by the safety strip.
     corrected.sections = corrected.sections.filter((s) => s.exercises.length > 0);
+  }
+
+  // INJURY BACKOFF — the dated instruction from a pain report, enforced HERE so
+  // it cannot be argued with by a model that skimmed the prompt. Two levels,
+  // and the difference between them is deliberate:
+  //
+  //   avoid  structural. The movements that load the area are STRIPPED, exactly
+  //          like a contraindication, and an endurance session in a sport the
+  //          area can't take is flagged unsafe (generate-workout substitutes the
+  //          sport before generating, so reaching here means the model ignored
+  //          the type it was given).
+  //   ease   intensity. The area is still trained, just not hard: hard zones
+  //          come down to Z2 and the effort target is capped. The lifts that
+  //          load it are flagged, not removed, so the repair pass lightens the
+  //          prescription instead of gutting the session.
+  const backoffs = ctx.backoffs ?? [];
+  if (backoffs.length) {
+    const avoid = backoffs.filter((b) => b.level === "avoid");
+    const ease = backoffs.filter((b) => b.level === "ease");
+
+    for (const b of avoid) {
+      if (isEndurance(corrected.type) && sportsForArea(b.area).includes(corrected.type)) {
+        const msg = `${corrected.type} loads the ${b.area}, which is on an avoid backoff until ${b.until}`;
+        violations.push(msg);
+        unsafe.push(msg);
+      }
+      for (const sec of corrected.sections) {
+        sec.exercises = sec.exercises.filter((ex) => {
+          if (!exerciseLoadsArea(b.area, ex.name, muscleOf(ex))) return true;
+          violations.push(
+            `${ex.name}: loads the ${b.area}, on an avoid backoff until ${b.until}, removed`,
+          );
+          return false;
+        });
+      }
+    }
+    corrected.sections = corrected.sections.filter((s) => s.exercises.length > 0);
+
+    // Easing is an intensity ceiling, applied the same way the readiness cap
+    // below applies one. Capped at 6 (not the readiness cap's 4/5): the athlete
+    // is training, just not driving into a sore area.
+    const EASE_RPE_CAP = 6;
+    for (const b of ease) {
+      const sportHit = isEndurance(corrected.type) && sportsForArea(b.area).includes(corrected.type);
+      if (sportHit) {
+        for (const sec of corrected.sections) {
+          for (const ex of sec.exercises) {
+            if (!zoneIsHard(zoneOf(ex))) continue;
+            if (ex.hr_zone) ex.hr_zone = "Z2";
+            if (ex.pace_zone) ex.pace_zone = "Z2";
+          }
+        }
+        if (corrected.rpe_target > EASE_RPE_CAP) corrected.rpe_target = EASE_RPE_CAP;
+        violations.push(
+          `${b.area} is on an ease backoff until ${b.until}, ${corrected.type} capped to easy aerobic (Z2, RPE <=${EASE_RPE_CAP})`,
+        );
+      }
+      const loaded = corrected.sections
+        .flatMap((s) => s.exercises)
+        .filter((ex) => exerciseLoadsArea(b.area, ex.name, muscleOf(ex)))
+        .map((ex) => ex.name);
+      if (loaded.length) {
+        violations.push(
+          `${b.area} is on an ease backoff until ${b.until}: keep ${loaded.join(", ")} light, ` +
+            `well short of failure, and drop the load rather than the reps`,
+        );
+      }
+    }
   }
 
   // EQUIPMENT — never serve a strength lift the athlete can't perform with their

@@ -59,6 +59,20 @@ data class GenerateResult(
     val estimated_cost_usd: Double = 0.0,
 )
 
+// weather-check response: a deterministic (no-LLM) verdict on whether today's
+// planned outdoor run/ride is viable, computed server-side from live weather.
+@Serializable
+data class WeatherCheckResult(
+    val should_prompt: Boolean = false,
+    val tier: String? = null,
+    val reason: String? = null,
+    val sport: String? = null,
+    val workout_id: String? = null,
+    val workout_title: String? = null,
+    val swap_type: String? = null,
+    val suppressed_reason: String? = null,
+)
+
 @Serializable
 data class PlanWeekRequest(
     val start_date: String? = null,

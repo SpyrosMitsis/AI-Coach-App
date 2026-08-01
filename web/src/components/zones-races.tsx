@@ -66,17 +66,17 @@ export function ZonesRaces() {
       const { error } = await supabase.from("races").delete().eq("id", r.id);
       if (error) throw error;
       // Deleting the active goal also moves the anchor, which periodization and
-      // taper read. Matched on the DATE alone: `goal` is rewritten from the
-      // athlete's training goals elsewhere, so a name comparison quietly stops
-      // matching and leaves the anchor on a race that no longer exists. The
-      // soonest remaining A goal takes over rather than leaving no anchor.
+      // taper read. Matched on the DATE alone, because that is what the anchor
+      // is: `goal` holds the athlete's overarching training goals, never this
+      // race's name. The soonest remaining A goal takes over rather than
+      // leaving no anchor at all.
       if (o && o.goal_date === r.date) {
         const today = new Date().toISOString().slice(0, 10);
         const nextGoal = (races.data ?? [])
           .filter((x) => x.id !== r.id && (x.priority ?? "A").toUpperCase() === "A" && x.date >= today)
           .sort((a, b) => a.date.localeCompare(b.date))[0];
         const next = {
-          ...o, goal: nextGoal?.name, goal_date: nextGoal?.date,
+          ...o, goal_date: nextGoal?.date,
           ...(r.target && o.target_pace === r.target ? { target_pace: undefined } : {}),
         };
         const { error: e2 } = await supabase.from("user_profiles").update({ onboarding: next })
@@ -99,9 +99,11 @@ export function ZonesRaces() {
         goalDate={o?.goal_date}
         onAdd={(r) => addRace.mutate(r)}
         onDelete={(r) => deleteRace.mutate(r)}
+        // Only the date anchors. The race's name belongs to its row in `races`;
+        // onboarding.goal is the overarching training goal, and writing the
+        // event name over it erased that goal from every coach prompt.
         onSetGoal={(r) =>
           patchProfile.mutate({
-            goal: r.name,
             goal_date: r.date,
             ...(r.sport === "run" && r.target ? { target_pace: r.target } : {}),
           })}

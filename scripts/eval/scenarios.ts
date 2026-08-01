@@ -21,6 +21,7 @@ import {
   WEEK_SYSTEM_PROMPT,
 } from "../../supabase/functions/_shared/prompt.ts";
 import type { ReviewContext } from "../../supabase/functions/_shared/workout_review.ts";
+import { backoffBlock } from "../../supabase/functions/_shared/injury.ts";
 import {
   availabilityTssCeiling,
   plannedWeeklyTarget,
@@ -352,6 +353,63 @@ function workoutScenarios(): Scenario[] {
       // a hard scenario, and that is the finding.
       ctx: baseReviewCtx({ equipment: "Full gym", injuries: "left knee pain, patellar tendinopathy" }),
       meta: { sport: "strength", experience: "Intermediate", injuries: "knee", tsb: 2, readiness: 75 },
+    },
+    {
+      // The backoff scenarios differ from the injury ones ABOVE in the thing
+      // that matters for measurement: here the constraint IS in the prompt.
+      // The injury scenarios ask "does the model infer a contraindication it
+      // was never told about"; these ask "does the model honor a dated
+      // instruction it was told about, in plain words, right before the ask".
+      // A model that fails these is not making an inference error, it is
+      // ignoring its instructions, and that is a different (worse) finding.
+      name: "strength/int/backoff-avoid-knee",
+      kind: "workout",
+      catches: "injury backoff (avoid): a knee under an active backoff rules out squats, lunges, leg press",
+      tier: "full",
+      systemPrompt: SYSTEM_PROMPT,
+      userPrompt: buildStrengthPrompt({
+        muscleGroupsLast48h: [],
+        weeklySetsByMuscle: { Quads: 6, Chest: 6 },
+        equipment: "Full gym",
+        experience: "Intermediate",
+        goal: "Build muscle",
+        soreness: 2,
+        phase: "Base (aerobic volume, strides, general strength)",
+        mainLifts: MAIN_LIFTS,
+        durationNote: DURATION_NOTE,
+        splitStyle: "Full body",
+      }) + backoffBlock([{
+        area: "Knee",
+        level: "avoid",
+        until: "2099-01-01",
+        reason: "pain 4 of 5 during Tuesday's session",
+      }]),
+      ctx: baseReviewCtx({
+        equipment: "Full gym",
+        backoffs: [{ area: "Knee", level: "avoid", until: "2099-01-01" }],
+      }),
+      meta: { sport: "strength", experience: "Intermediate", injuries: "knee backoff", tsb: 2, readiness: 75 },
+    },
+    {
+      name: "endurance/int/backoff-ease-achilles",
+      kind: "workout",
+      catches: "injury backoff (ease): an eased Achilles means no Z4/Z5 running, not a threshold session",
+      tier: "full",
+      systemPrompt: SYSTEM_PROMPT,
+      userPrompt: buildRunPrompt({
+        ...RUN_CTX,
+        goal: "10K",
+        phase: "Build (threshold + VO2max, race specificity)",
+      }) + backoffBlock([{
+        area: "Achilles",
+        level: "ease",
+        until: "2099-01-01",
+        reason: "pain 3 of 5 after Sunday's long run",
+      }]),
+      ctx: baseReviewCtx({
+        backoffs: [{ area: "Achilles", level: "ease", until: "2099-01-01" }],
+      }),
+      meta: { sport: "run", experience: "Intermediate", injuries: "achilles backoff", tsb: 2, readiness: 75 },
     },
     {
       name: "strength/int/lower-back-injury",

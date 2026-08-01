@@ -10,4 +10,9 @@ object NotificationDeepLinks {
     // set when the evening debrief notification is tapped. HomeViewModel
     // resolves it and opens the detail overlay.
     val openActivity = MutableStateFlow<Pair<String, String>?>(null)
+
+    // "Show the weather-swap dialog" — set when the morning notification's
+    // weather line is tapped. Carries everything the dialog needs; Home
+    // clears it after consuming (same one-shot pattern as openActivity).
+    val openWeatherPrompt = MutableStateFlow<WeatherCheckResult?>(null)
 }

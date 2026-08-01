@@ -56,6 +56,12 @@ export interface EvalScore {
 export type ViolationKind =
   // --- session-level, from workout_review.ts -------------------------------
   | "injury_contraindicated"
+  // Distinct from injury_contraindicated on purpose. That one is the standing
+  // "never load this" rule; these two are the DATED backoff written by a pain
+  // report (_shared/injury.ts), and they are the measurement that says whether
+  // a model honors a backoff it was told about in the prompt.
+  | "injury_backoff_avoid"
+  | "injury_backoff_ease"
   | "equipment_not_owned"
   | "progression_target_missed"
   | "below_last_top_set"
@@ -86,6 +92,9 @@ export type ViolationKind =
 const VIOLATION_PATTERNS: { kind: ViolationKind; test: RegExp }[] = [
   // Session-level (workout_review.ts:199-345).
   { kind: "injury_contraindicated", test: /contraindicated,.*\(injury on file\)/i },
+  // Before intensity_ceiling: the ease-level sport cap ends in similar wording.
+  { kind: "injury_backoff_avoid", test: /on an avoid backoff until|is on an avoid backoff/i },
+  { kind: "injury_backoff_ease", test: /is on an ease backoff until/i },
   { kind: "equipment_not_owned", test: /not in the athlete's equipment/i },
   { kind: "progression_target_missed", test: /progression target .*snapped to the engine target/i },
   { kind: "below_last_top_set", test: /is below last top set/i },
@@ -129,6 +138,15 @@ export const VIOLATION_TEMPLATES: { kind: ViolationKind; sample: string }[] = [
   {
     kind: "injury_contraindicated",
     sample: "Barbell Deadlift: contraindicated, loads the lumbar spine under flexion (injury on file)",
+  },
+  {
+    kind: "injury_backoff_avoid",
+    sample: "Back Squat: loads the Knee, on an avoid backoff until 2026-08-08, removed",
+  },
+  {
+    kind: "injury_backoff_ease",
+    sample:
+      "Knee is on an ease backoff until 2026-08-08: keep Back Squat light, well short of failure, and drop the load rather than the reps",
   },
   {
     kind: "equipment_not_owned",

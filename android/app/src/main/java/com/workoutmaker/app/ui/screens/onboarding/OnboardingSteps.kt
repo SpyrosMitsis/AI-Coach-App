@@ -128,6 +128,8 @@ internal fun StepAppearance(vm: OnboardingViewModel) {
             palette = s.themePalette,
             onMode = { vm.setThemeMode(it) },
             onPalette = { vm.setThemePalette(it) },
+            // This step's own header is "Make it yours" already.
+            label = null,
         )
     }
 }

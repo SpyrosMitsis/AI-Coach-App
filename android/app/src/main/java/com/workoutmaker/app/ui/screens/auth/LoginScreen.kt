@@ -125,7 +125,7 @@ internal fun LoginScreen(vm: AuthViewModel) {
                 LogoMark(Modifier.entrance(tier(0)).padding(bottom = 20.dp))
 
                 Text(
-                    "Workout Maker",
+                    "Metis",
                     style = MaterialTheme.typography.headlineMedium,
                     fontWeight = FontWeight.SemiBold,
                     modifier = Modifier.entrance(tier(1)),

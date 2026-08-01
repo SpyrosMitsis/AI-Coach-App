@@ -92,6 +92,53 @@ internal fun ManualRecoveryDialog(onDismiss: () -> Unit, onSave: (Double?, Int?,
     )
 }
 
+// Today's outdoor run/ride was flagged unviable by the token-free weather
+// check. Three actions don't fit AlertDialog's two named button slots, so
+// this uses the same Dialog+Surface+Column shell as DayPickerDialog below.
+@Composable
+internal fun WeatherSwapDialog(
+    sport: String,
+    reason: String,
+    onKeep: () -> Unit,
+    onSwap: () -> Unit,
+    onDontAskAgain: () -> Unit,
+) {
+    Dialog(onDismissRequest = onKeep) {
+        Surface(
+            shape = RoundedCornerShape(22.dp),
+            color = MaterialTheme.colorScheme.surfaceContainer,
+        ) {
+            Column(Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                Text(
+                    "Weather may make today's $sport tricky",
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.SemiBold,
+                )
+                Text(
+                    reason.replaceFirstChar { it.uppercase() } + ".",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                    TextButton(onClick = onSwap, modifier = Modifier.fillMaxWidth()) {
+                        Text("Swap for an indoor session", modifier = Modifier.fillMaxWidth())
+                    }
+                    TextButton(onClick = onKeep, modifier = Modifier.fillMaxWidth()) {
+                        Text("Keep as planned", modifier = Modifier.fillMaxWidth())
+                    }
+                    TextButton(onClick = onDontAskAgain, modifier = Modifier.fillMaxWidth()) {
+                        Text(
+                            "Don't ask again",
+                            modifier = Modifier.fillMaxWidth(),
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
 // Month calendar picker: jump to any past day. Future days are disabled; days
 // with a completed activity get a dot; today and the selected day are marked.
 @Composable

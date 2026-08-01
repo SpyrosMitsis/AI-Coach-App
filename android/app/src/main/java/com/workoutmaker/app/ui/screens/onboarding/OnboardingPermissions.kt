@@ -222,7 +222,7 @@ internal fun StepPermissions(vm: OnboardingViewModel) {
 
         Text(
             "Denied something by mistake? Android stops asking after two refusals, but you can " +
-                "always grant it from your phone's Settings under Apps → Workout Maker → Permissions.",
+                "always grant it from your phone's Settings under Apps → Metis → Permissions.",
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )

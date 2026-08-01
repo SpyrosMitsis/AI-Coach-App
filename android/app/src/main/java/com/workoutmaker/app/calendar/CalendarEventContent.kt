@@ -61,6 +61,6 @@ fun calendarEventDetail(w: Workout, type: String, maxExercisesPerSection: Int = 
     }
 
     if (w.coach_note.isNotBlank()) out.append("\n\nCoach: ").append(w.coach_note.take(200))
-    out.append("\n\nPlanned by Workout Maker. Open the app to start the session.")
+    out.append("\n\nPlanned by Metis. Open the app to start the session.")
     return out.toString()
 }

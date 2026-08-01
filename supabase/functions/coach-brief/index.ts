@@ -18,9 +18,17 @@ import { computeRecovery } from "../_shared/recovery.ts";
 import { BRIEF_SYSTEM, buildBriefPrompt, trainingPhase } from "../_shared/prompt.ts";
 import { computeBodyTrend } from "../_shared/body_trend.ts";
 import { memoryDocsBlock, memoryFromProfile } from "../_shared/agent_memory.ts";
-import { profileFactsBlock } from "../_shared/profile.ts";
+import { goalsText, profileFactsBlock } from "../_shared/profile.ts";
 import { applyFallbackFitness } from "../_shared/load.ts";
-import { clipText, type DebriefEntry, fetchRecentDebriefs } from "../_shared/context.ts";
+import {
+  clipText,
+  type DebriefEntry,
+  fetchRecentDebriefs,
+  goalRaceLine,
+  pickGoalRace,
+  upcomingGoals,
+  weeksBetween,
+} from "../_shared/context.ts";
 
 const DAY = 86_400_000;
 const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
@@ -59,7 +67,7 @@ Deno.serve(async (req) => {
     // Opt-out: the briefing toggle defaults ON; only `briefing === false` disables.
     if (onboarding.briefing === false) return json({ brief: null, date: today, disabled: true });
 
-    const [{ data: wellness }, { data: activities }, { data: plannedRows }, debriefs] = await Promise.all([
+    const [{ data: wellness }, { data: activities }, { data: plannedRows }, debriefs, goalRows] = await Promise.all([
       admin.from("wellness_checkins").select("date, energy, soreness, sleep_score, hrv_rmssd, resting_hr, zepp_sleep_minutes")
         .eq("user_id", userId).gte("date", since14).order("date", { ascending: false }),
       admin.from("completed_activities").select("date, type, tss, ctl, atl")
@@ -67,6 +75,7 @@ Deno.serve(async (req) => {
       admin.from("planned_workouts").select("date, type, completed, skipped, workout_json, created_at")
         .eq("user_id", userId).gte("date", yesterday).lte("date", today),
       fetchRecentDebriefs(admin, userId, yesterday, 4),
+      upcomingGoals(admin, userId, today),
     ]);
     const planned = (plannedRows ?? []).filter((p) => p.date === today);
     const plannedYesterday = (plannedRows ?? []).filter((p) => p.date === yesterday && p.type !== "rest");
@@ -110,11 +119,11 @@ Deno.serve(async (req) => {
     const targetTss = (onboarding as { weekly_tss_target?: number }).weekly_tss_target ?? 350;
     const weeklyLoadPct = targetTss > 0 ? Math.round((weeklyTss / targetTss) * 100) : null;
 
-    let weeksToGoal: number | null = null;
-    if (onboarding.goal_date) {
-      const d = (new Date(String(onboarding.goal_date)).getTime() - new Date(today + "T12:00:00").getTime()) / (7 * DAY);
-      weeksToGoal = d >= 0 ? Math.round(d) : null;
-    }
+    // goal_date is a pointer into `races`: resolve it to the row, so a stale
+    // anchor cannot drive the phase and the countdown counts from a goal that
+    // actually exists.
+    const goalRace = pickGoalRace(goalRows, today, onboarding.goal_date as string | undefined);
+    const weeksToGoal = goalRace?.date ? weeksBetween(today, goalRace.date) : null;
 
     // NOTHING MEASURED, NOTHING SAID. No check-in and no synced watch data means
     // the brief would be a paragraph of coach voice built on the placeholder
@@ -185,7 +194,9 @@ Deno.serve(async (req) => {
       todayPlan,
       todayDone: !!primary?.completed,
       phase: trainingPhase(weeksToGoal),
-      goal: (onboarding.goal as string) ?? "general fitness",
+      // The training goal and the dated goal are two facts, from two places.
+      goal: goalsText(onboarding),
+      goalRace: goalRaceLine(goalRace, today),
       weeklyLoadPct,
       objectiveData,
       readinessBasis: recovery.basis,

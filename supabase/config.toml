@@ -52,6 +52,8 @@ verify_jwt = true
 verify_jwt = true
 [functions.daily-summary]
 verify_jwt = true
+[functions.weather-check]
+verify_jwt = true
 [functions.connect-intervals]
 verify_jwt = true
 [functions.coach-chat]
@@ -67,6 +69,8 @@ verify_jwt = true
 [functions.plan-week]
 verify_jwt = true
 [functions.delete-workout]
+verify_jwt = true
+[functions.injury-checkin]
 verify_jwt = true
 [functions.delete-account]
 verify_jwt = true

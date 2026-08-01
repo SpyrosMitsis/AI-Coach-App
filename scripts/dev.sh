@@ -412,6 +412,7 @@ cmd_llm_cost() {
              case when hosted then 'hosted' else 'byo' end as key,
              coalesce(model, provider, '?') as model,
              prompt_tokens as in_tok, completion_tokens as out_tok,
+             coalesce(cache_read_tokens, 0) as cache_rd,
              to_char(coalesce(estimated_cost_usd, 0), 'FM\$990.000000') as usd,
              case when parsed_ok then '' else 'FAIL' end as note
       from generation_logs
@@ -429,6 +430,16 @@ cmd_llm_cost() {
            count(*) filter (where not parsed_ok) as failed,
            sum(prompt_tokens) as in_tok,
            sum(completion_tokens) as out_tok,
+           -- Prompt-cache health. cache_hit% is the share of the billed prompt
+           -- served from cache; on 'chat' it should be high and STAY high. A
+           -- feature that was caching and drops to 0 has had its prefix
+           -- invalidated (a timestamp in a system prompt, a reordered tool
+           -- list): same behavior, silently bigger bill. See _shared/llm_cache.ts.
+           sum(coalesce(cache_read_tokens, 0)) as cache_rd,
+           case when sum(prompt_tokens + coalesce(cache_write_tokens,0) + coalesce(cache_read_tokens,0)) > 0
+                then round(100.0 * sum(coalesce(cache_read_tokens,0))
+                     / sum(prompt_tokens + coalesce(cache_write_tokens,0) + coalesce(cache_read_tokens,0)))
+                else 0 end as cache_hit_pct,
            to_char(sum(coalesce(estimated_cost_usd, 0)), 'FM\$990.000000') as usd
     from generation_logs
     where created_at > now() - interval '$days days'

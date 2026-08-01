@@ -148,12 +148,10 @@ suspend fun WorkoutRepository.deleteRace(race: Race) {
     race.id?.let { id ->
         supabase.postgrest.from("races").delete { filter { eq("id", id) } }
     }
-    // Deleting the active goal also clears the anchor from the profile, which is
-    // what periodization, phase and taper read. Matched on the DATE alone: the
-    // rest of the app identifies the goal race that way too, and `goal` is a
-    // field deriveLegacyFields rewrites from the training goals, so a name
-    // comparison silently stopped matching and left the anchor pointing at a
-    // race that no longer exists.
+    // Deleting the active goal also moves the anchor, which is what
+    // periodization, phase and taper read. Matched on the DATE alone: that is
+    // how the whole app identifies the goal race, and `goal` holds the
+    // athlete's training goals, not this race's name.
     val p = loadProfile() ?: return
     if (p.goal_date != race.date) return
     // Promote the soonest remaining A goal rather than leaving no anchor at all,
@@ -163,18 +161,22 @@ suspend fun WorkoutRepository.deleteRace(race: Race) {
         .filter { it.priority.uppercase() == "A" && it.date >= today }
         .minByOrNull { it.date }
     val pace = if (race.target != null && p.target_pace == race.target) null else p.target_pace
-    val reanchored = p.copy(goal = next?.name, goal_date = next?.date, target_pace = pace)
-    // No race left to anchor to: hand `goal` back to the training goals it also
-    // stores, rather than leaving the prompts with a null where a goal was.
-    saveProfile(if (next == null) reanchored.deriveLegacyFields() else reanchored)
+    saveProfile(p.copy(goal_date = next?.date, target_pace = pace))
 }
 
 // Make a goal the periodization anchor: drives weeks-to-goal / phase / taper.
 // Run goals with a pace-shaped target also become the profile's target pace.
+//
+// Only the DATE anchors. `goal` is the OVERARCHING training goal that
+// deriveLegacyFields builds from goals_by_sport ("Run 42.2 km at 5:33 /km +
+// Build muscle"); copying the race name over it erased the athlete's real goals
+// from every coach prompt, and from the per-sport goal editors in Settings,
+// which read `goal` back by splitting it on " + ". OnboardingViewModel's
+// addGoalRace has always done it this way.
 suspend fun WorkoutRepository.setGoalRace(race: Race) {
     val p = loadProfile() ?: TrainingProfile()
     val pace = race.target?.takeIf { race.sport == "run" && it.isNotBlank() }
-    saveProfile(p.copy(goal = race.name, goal_date = race.date, target_pace = pace ?: p.target_pace))
+    saveProfile(p.copy(goal_date = race.date, target_pace = pace ?: p.target_pace))
 }
 
 // --- E1 + E4: thresholds & tests ----------------------------------------

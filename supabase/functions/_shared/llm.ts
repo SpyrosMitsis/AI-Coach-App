@@ -13,6 +13,13 @@
 import type { LlmProvider, LlmResult } from "./types.ts";
 import { stripDashes } from "./dashes.ts";
 import { logger } from "./log.ts";
+import {
+  anthropicCacheUsage,
+  anthropicSystemField,
+  estimateTokens,
+  openAiCacheUsage,
+  shouldCachePrefix,
+} from "./llm_cache.ts";
 
 const log = logger("llm");
 
@@ -197,12 +204,23 @@ function priceForModel(model: string | undefined): PriceOverride | undefined {
   return hit ? { inputPer1M: hit.inputPer1M, outputPer1M: hit.outputPer1M } : undefined;
 }
 
+// Cache multipliers on the INPUT rate. A cached prefix is billed once at a
+// premium to write it, then at a large discount every time it is read.
+export const CACHE_WRITE_MULTIPLIER = 1.25;
+export const CACHE_READ_MULTIPLIER = 0.1;
+
 export function estimateCostUsd(
   provider: LlmProvider,
   promptTokens: number,
   completionTokens: number,
   override?: PriceOverride,
   model?: string,
+  // Cache-billed tokens, ADDITIONAL to promptTokens rather than part of it.
+  // This is the trap: Anthropic's `input_tokens` reports only the UNCACHED
+  // remainder of the prompt, so once caching is on, pricing promptTokens alone
+  // silently under-reports every cached call and the cost table would show a
+  // saving far larger than the real one.
+  cache?: { writeTokens?: number; readTokens?: number },
 ): number {
   const p = PROVIDERS[provider];
   // Precedence: explicit user override (custom/openrouter BYO pricing) →
@@ -211,8 +229,12 @@ export function estimateCostUsd(
   const priced = override ?? priceForModel(model);
   const inputPer1M = priced?.inputPer1M ?? p.inputPer1M;
   const outputPer1M = priced?.outputPer1M ?? p.outputPer1M;
+  const write = cache?.writeTokens ?? 0;
+  const read = cache?.readTokens ?? 0;
   return (
     (promptTokens / 1_000_000) * inputPer1M +
+    (write / 1_000_000) * inputPer1M * CACHE_WRITE_MULTIPLIER +
+    (read / 1_000_000) * inputPer1M * CACHE_READ_MULTIPLIER +
     (completionTokens / 1_000_000) * outputPer1M
   );
 }
@@ -380,6 +402,9 @@ async function openAiCompatible(
     completionTokens: data.usage?.completion_tokens ?? estTokens(text),
     provider,
     model,
+    // These providers cache long prefixes on their own; nothing was sent to
+    // ask for it, this just reads back what they already did.
+    ...openAiCacheUsage(data.usage),
   };
 }
 
@@ -395,23 +420,32 @@ export function anthropicAcceptsTemperature(model: string): boolean {
 
 async function anthropic(args: GenArgs): Promise<LlmResult> {
   const model = args.model ?? PROVIDERS.anthropic.model;
+  // Tools render BEFORE system, so the breakpoint on the system block covers
+  // both and the prefix size has to count both (llm_cache.ts).
+  const schemaTool = args.jsonSchema
+    ? [{
+      name: args.jsonSchema.name,
+      description: args.jsonSchema.description ?? "Emit the result.",
+      input_schema: args.jsonSchema.schema,
+    }]
+    : null;
+  const prefixTokens = estimateTokens(args.systemPrompt) +
+    (schemaTool ? estimateTokens(JSON.stringify(schemaTool)) : 0);
+  const { cache } = shouldCachePrefix("anthropic", model, args.feature, prefixTokens);
+
   const body: Record<string, unknown> = {
     model,
     max_tokens: maxTokensOf(args),
-    system: args.systemPrompt,
+    system: anthropicSystemField(args.systemPrompt, cache),
     messages: turns(args),
   };
   if (anthropicAcceptsTemperature(model)) body.temperature = tempOf(args);
   // No json_object-style mode exists on this API, so schema-shaped output is
   // forced via a single tool the model must call (same mechanism
   // llm_native_tools.ts uses for agentic tool calls).
-  if (args.jsonSchema) {
-    body.tools = [{
-      name: args.jsonSchema.name,
-      description: args.jsonSchema.description ?? "Emit the result.",
-      input_schema: args.jsonSchema.schema,
-    }];
-    body.tool_choice = { type: "tool", name: args.jsonSchema.name };
+  if (schemaTool) {
+    body.tools = schemaTool;
+    body.tool_choice = { type: "tool", name: args.jsonSchema!.name };
   }
   const res = await fetch("https://api.anthropic.com/v1/messages", {
     method: "POST",
@@ -438,6 +472,7 @@ async function anthropic(args: GenArgs): Promise<LlmResult> {
     completionTokens: data.usage?.output_tokens ?? estTokens(text),
     provider: "anthropic",
     model,
+    ...anthropicCacheUsage(data.usage),
   };
 }
 

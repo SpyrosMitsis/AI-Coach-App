@@ -495,3 +495,99 @@ Deno.test("a run past the 40-min quality ceiling flags; a ride does not", () => 
   const ride = reviewWorkout(session("ride"), EMPTY_CTX);
   assert(!ride.violations.some((v) => /quality ceiling/.test(v)), ride.violations.join("; "));
 });
+
+// --- injury backoff (structural, dated) --------------------------------------
+// The distinction these pin: `injuries` is a standing fact, a backoff is a
+// DATED instruction from a session that hurt. Both are enforced here rather
+// than left to the prompt, for the reason training_paused_until is a column.
+
+const backoff = (area: string, level: "ease" | "avoid", until = "2099-01-01") =>
+  ({ area, level, until });
+
+Deno.test("avoid backoff strips the lifts that load the area", () => {
+  const w = mk({
+    sections: [strengthSection([
+      { name: "Back Squat", sets: 4, reps: "5", weight_kg: 100, muscle: "Quads", notes: "" },
+      { name: "Bench Press", sets: 3, reps: "8", weight_kg: 70, muscle: "Chest", notes: "" },
+    ])],
+  });
+  const r = reviewWorkout(w, { ...EMPTY_CTX, backoffs: [backoff("Knee", "avoid")] });
+  assertEquals(r.corrected.sections[0].exercises.map((e) => e.name), ["Bench Press"]);
+  assert(r.violations.some((v) => v.includes("Back Squat") && v.includes("avoid backoff")));
+});
+
+Deno.test("avoid backoff strips a lift the SAFETY rules would have allowed", () => {
+  // A back squat is not contraindicated for a knee (the safety engine forbids
+  // pistols and depth jumps, not squats), so this is the case the backoff layer
+  // exists for: the athlete's knee hurt on Tuesday, so today's squat comes out.
+  const w = mk({
+    sections: [strengthSection([
+      { name: "Back Squat", sets: 4, reps: "5", weight_kg: 100, muscle: "Quads", notes: "" },
+    ])],
+  });
+  const injuries: InjuryEntry[] = [{ area: "Knee", severity: "moderate" }];
+  const withoutBackoff = reviewWorkout(w, { ...EMPTY_CTX, injuries });
+  assertEquals(withoutBackoff.corrected.sections[0].exercises.length, 1);
+
+  const withBackoff = reviewWorkout(w, { ...EMPTY_CTX, injuries, backoffs: [backoff("Knee", "avoid")] });
+  assertEquals(withBackoff.corrected.sections.length, 0);
+});
+
+Deno.test("avoid backoff marks an endurance session in the affected sport unsafe", () => {
+  const w = validateWorkout({
+    type: "run", title: "Easy run", duration_minutes: 40, tss_estimate: 35, rpe_target: 4,
+    coach_note: "", sections: [
+      { name: "Main", duration_minutes: 40, exercises: [{ name: "Steady", sets: 1, reps: "40min", pace_zone: "Z2" }] },
+    ],
+  }).workout!;
+  const r = reviewWorkout(w, { ...EMPTY_CTX, backoffs: [backoff("Achilles", "avoid")] });
+  assert(r.unsafe.some((v) => v.includes("Achilles")), r.unsafe.join("; "));
+});
+
+Deno.test("avoid backoff on an unrelated area leaves the session alone", () => {
+  const w = validateWorkout({
+    type: "run", title: "Easy run", duration_minutes: 40, tss_estimate: 35, rpe_target: 4,
+    coach_note: "", sections: [
+      { name: "Main", duration_minutes: 40, exercises: [{ name: "Steady", sets: 1, reps: "40min", pace_zone: "Z2" }] },
+    ],
+  }).workout!;
+  const r = reviewWorkout(w, { ...EMPTY_CTX, backoffs: [backoff("Shoulder", "avoid")] });
+  assertEquals(r.unsafe.length, 0);
+  assertEquals(r.corrected.sections[0].exercises.length, 1);
+});
+
+Deno.test("ease backoff caps intensity instead of removing the session", () => {
+  const w = validateWorkout({
+    type: "run", title: "Threshold", duration_minutes: 50, tss_estimate: 70, rpe_target: 8,
+    coach_note: "", sections: [
+      { name: "Main", duration_minutes: 30, exercises: [{ name: "3x10min", sets: 3, reps: "10min", pace_zone: "Z4" }] },
+    ],
+  }).workout!;
+  const r = reviewWorkout(w, { ...EMPTY_CTX, backoffs: [backoff("Knee", "ease")] });
+  assertEquals(r.corrected.sections[0].exercises[0].pace_zone, "Z2");
+  assert(r.corrected.rpe_target <= 6);
+  assertEquals(r.unsafe.length, 0, "easing is not a safety block, the athlete still trains");
+});
+
+Deno.test("ease backoff keeps the loading lifts but flags them for the repair pass", () => {
+  const w = mk({
+    sections: [strengthSection([
+      { name: "Back Squat", sets: 4, reps: "5", weight_kg: 100, muscle: "Quads", notes: "" },
+    ])],
+  });
+  const r = reviewWorkout(w, { ...EMPTY_CTX, backoffs: [backoff("Knee", "ease")] });
+  assertEquals(r.corrected.sections[0].exercises.length, 1, "ease means lighter, not gone");
+  assert(r.violations.some((v) => v.includes("Back Squat") && v.includes("ease backoff")));
+});
+
+Deno.test("no backoffs means byte-identical behavior to before", () => {
+  const w = mk({
+    sections: [strengthSection([
+      { name: "Back Squat", sets: 4, reps: "5", weight_kg: 100, muscle: "Quads", notes: "" },
+    ])],
+  });
+  const without = reviewWorkout(w, EMPTY_CTX);
+  const empty = reviewWorkout(w, { ...EMPTY_CTX, backoffs: [] });
+  assertEquals(empty.violations, without.violations);
+  assertEquals(empty.corrected, without.corrected);
+});

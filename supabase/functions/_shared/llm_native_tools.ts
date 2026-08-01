@@ -20,6 +20,13 @@ import {
   streamAbort,
 } from "./llm.ts";
 import type { ChatMessage } from "./llm.ts";
+import {
+  anthropicCacheUsage,
+  anthropicSystemField,
+  estimateTokens,
+  openAiCacheUsage,
+  shouldCachePrefix,
+} from "./llm_cache.ts";
 
 // Per-step deadline — one hung tool-call step shouldn't run to the platform
 // wall-clock and stall the whole agentic loop.
@@ -68,6 +75,10 @@ export interface NativeLoopResult {
   // How many provider calls this loop actually made. The caller spends these
   // against a per-turn budget, so a turn's total LLM calls stays bounded.
   steps: number;
+  // Prompt-cache totals across the loop's calls, a subset of promptTokens.
+  // The loop is where caching pays off, so this is where it gets measured.
+  cacheWriteTokens?: number;
+  cacheReadTokens?: number;
 }
 
 export function supportsNativeTools(p: LlmProvider): boolean {
@@ -88,6 +99,8 @@ interface AnthropicStep {
   stopReason: string;
   inputTokens: number;
   outputTokens: number;
+  cacheWriteTokens: number;
+  cacheReadTokens: number;
 }
 
 /**
@@ -108,6 +121,8 @@ async function anthropicStreamStep(
   const partials = new Map<number, string>();
   let stopReason = "end_turn";
   let inputTokens = 0;
+  let cacheWriteTokens = 0;
+  let cacheReadTokens = 0;
   let outputTokens = 0;
   let toolAnnounced = false;
 
@@ -122,10 +137,15 @@ async function anthropicStreamStep(
     // deno-lint-ignore no-explicit-any
     const e = ev as any;
     switch (e.type) {
-      case "message_start":
+      case "message_start": {
         inputTokens = e.message?.usage?.input_tokens ?? 0;
         outputTokens = e.message?.usage?.output_tokens ?? 0;
+        // Cache counters arrive with the opening usage block, not the delta.
+        const cu = anthropicCacheUsage(e.message?.usage);
+        cacheWriteTokens = cu.cacheWriteTokens;
+        cacheReadTokens = cu.cacheReadTokens;
         break;
+      }
       case "content_block_start": {
         const b = e.content_block ?? {};
         blocks[e.index] = b.type === "tool_use"
@@ -171,7 +191,10 @@ async function anthropicStreamStep(
         break;
     }
   }
-  return { content: blocks.filter(Boolean), stopReason, inputTokens, outputTokens };
+  return {
+    content: blocks.filter(Boolean), stopReason, inputTokens, outputTokens,
+    cacheWriteTokens, cacheReadTokens,
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -182,8 +205,26 @@ async function anthropicLoop(args: NativeLoopArgs): Promise<NativeLoopResult> {
   const toolsUsed: string[] = [];
   let promptTokens = 0;
   let completionTokens = 0;
+  let cacheWriteTokens = 0;
+  let cacheReadTokens = 0;
   // deno-lint-ignore no-explicit-any
   const msgs: any[] = args.messages.map((m) => ({ role: m.role, content: m.content }));
+
+  // THE REASON PROMPT CACHING EXISTS IN THIS REPO. Every iteration of the loop
+  // below resends `system` and `tools` unchanged, and there can be up to
+  // maxSteps of them for ONE athlete message. On this app's coach that prefix
+  // measures ~4,800 tokens (tools ~3,300 + system ~1,500), so an uncached turn
+  // pays full input price for it six to twelve times over.
+  //
+  // The prefix is computed ONCE, out here, precisely because it must be
+  // byte-identical on every request in the turn: a cache read is a prefix
+  // match, and rebuilding the string per step would risk a difference that
+  // silently costs the hit. Tools render before system, so the single
+  // breakpoint on the system block covers both.
+  const prefixTokens = estimateTokens(args.systemPrompt) +
+    estimateTokens(JSON.stringify(args.tools));
+  const { cache } = shouldCachePrefix("anthropic", model, args.feature, prefixTokens);
+  const systemField = anthropicSystemField(args.systemPrompt, cache);
 
   let steps = 0;
   for (let step = 0; step < (args.maxSteps ?? 6); step++) {
@@ -202,7 +243,7 @@ async function anthropicLoop(args: NativeLoopArgs): Promise<NativeLoopResult> {
         model,
         max_tokens: maxTokensOf(args),
         ...(anthropicAcceptsTemperature(model) ? { temperature: 0.6 } : {}),
-        system: args.systemPrompt,
+        system: systemField,
         messages: msgs,
         tools: args.tools,
         ...(args.stream ? { stream: true } : {}),
@@ -224,6 +265,8 @@ async function anthropicLoop(args: NativeLoopArgs): Promise<NativeLoopResult> {
         stopReason = s.stopReason;
         promptTokens += s.inputTokens;
         completionTokens += s.outputTokens;
+        cacheWriteTokens += s.cacheWriteTokens;
+        cacheReadTokens += s.cacheReadTokens;
       } finally {
         abort.done();
       }
@@ -231,6 +274,9 @@ async function anthropicLoop(args: NativeLoopArgs): Promise<NativeLoopResult> {
       const data = await res.json();
       promptTokens += data.usage?.input_tokens ?? 0;
       completionTokens += data.usage?.output_tokens ?? 0;
+      const cu = anthropicCacheUsage(data.usage);
+      cacheWriteTokens += cu.cacheWriteTokens;
+      cacheReadTokens += cu.cacheReadTokens;
       content = data.content ?? [];
       stopReason = data.stop_reason;
     }
@@ -239,7 +285,10 @@ async function anthropicLoop(args: NativeLoopArgs): Promise<NativeLoopResult> {
 
     if (stopReason !== "tool_use" || toolUses.length === 0) {
       const text = content.filter((b) => b.type === "text").map((b) => b.text).join("");
-      return { text, toolsUsed, promptTokens, completionTokens, model, steps };
+      return {
+        text, toolsUsed, promptTokens, completionTokens, model, steps,
+        cacheWriteTokens, cacheReadTokens,
+      };
     }
 
     msgs.push({ role: "assistant", content });
@@ -251,7 +300,10 @@ async function anthropicLoop(args: NativeLoopArgs): Promise<NativeLoopResult> {
     }
     msgs.push({ role: "user", content: results });
   }
-  return { text: "", toolsUsed, promptTokens, completionTokens, model, steps };
+  return {
+    text: "", toolsUsed, promptTokens, completionTokens, model, steps,
+    cacheWriteTokens: 0, cacheReadTokens,
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -348,6 +400,9 @@ async function openAiCompatibleLoop(args: NativeLoopArgs): Promise<NativeLoopRes
   const toolsUsed: string[] = [];
   let promptTokens = 0;
   let completionTokens = 0;
+  // These providers cache long prefixes themselves; nothing is sent to ask for
+  // it, this only reads back what they report so llm:cost can show it.
+  let cacheReadTokens = 0;
 
   // deno-lint-ignore no-explicit-any
   const msgs: any[] = [
@@ -405,13 +460,19 @@ async function openAiCompatibleLoop(args: NativeLoopArgs): Promise<NativeLoopRes
     } else {
       const data = await res.json();
       promptTokens += data.usage?.prompt_tokens ?? 0;
+      cacheReadTokens += openAiCacheUsage(data.usage).cacheReadTokens;
       completionTokens += data.usage?.completion_tokens ?? 0;
       msg = data.choices?.[0]?.message;
     }
     if (!msg) throw new Error(`${args.provider}: empty completion`);
 
     const calls = msg.tool_calls ?? [];
-    if (!calls.length) return { text: msg.content ?? "", toolsUsed, promptTokens, completionTokens, model, steps };
+    if (!calls.length) {
+      return {
+        text: msg.content ?? "", toolsUsed, promptTokens, completionTokens, model, steps,
+        cacheWriteTokens: 0, cacheReadTokens,
+      };
+    }
 
     msgs.push(msg);
     for (const call of calls) {

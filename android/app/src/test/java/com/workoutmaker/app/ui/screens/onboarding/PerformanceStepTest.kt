@@ -60,12 +60,38 @@ class PerformanceStepTest {
 }
 
 class InjuryCycleTest {
+    private val TODAY = "2026-08-01"
+
     @Test
     fun `area chip adds unqualified and removes regardless of severity`() {
         var s = emptyList<InjuryEntry>()
-        s = toggleInjury(s, "Knee");      assertEquals(listOf(InjuryEntry(area = "Knee")), s)
-        s = toggleInjury(s, "Knee");      assertEquals(emptyList<InjuryEntry>(), s)
-        assertEquals(emptyList<InjuryEntry>(), toggleInjury(listOf(InjuryEntry("Knee", "serious")), "Knee"))
+        s = toggleInjury(s, "Knee", TODAY)
+        assertEquals(listOf(InjuryEntry(area = "Knee", raised_at = TODAY)), s)
+        s = toggleInjury(s, "Knee", TODAY); assertEquals(emptyList<InjuryEntry>(), s)
+        assertEquals(emptyList<InjuryEntry>(), toggleInjury(listOf(InjuryEntry("Knee", "serious")), "Knee", TODAY))
+    }
+
+    // The stamp is what makes the follow-up loop possible at all: without a
+    // raised_at the server has no "a couple of days later" to count from, and
+    // adding the injury is the only moment the app knows the date. Every path
+    // that creates an entry has to carry it, hence the second case here.
+    @Test
+    fun `every path that creates an injury stamps the day it was raised`() {
+        assertEquals(TODAY, toggleInjury(emptyList(), "Knee", TODAY).single().raised_at)
+        assertEquals(TODAY, newInjury("Left ankle", today = TODAY).raised_at)
+        // Setting a severity on an area that was not listed yet also creates one.
+        val created = setInjurySeverity(emptyList(), "Shoulder", "mild", TODAY).single()
+        assertEquals(TODAY, created.raised_at)
+        assertEquals("mild", created.severity)
+    }
+
+    @Test
+    fun `editing an existing injury never rewrites when it was raised`() {
+        // Otherwise every severity tweak resets the follow-up clock and the
+        // question is never asked.
+        val base = listOf(InjuryEntry("Knee", "mild", raised_at = "2026-07-01"))
+        assertEquals("2026-07-01", setInjurySeverity(base, "Knee", "serious", TODAY).single().raised_at)
+        assertEquals("2026-07-01", setInjuryNote(base, "Knee", "only on descents").single().raised_at)
     }
 
     @Test
