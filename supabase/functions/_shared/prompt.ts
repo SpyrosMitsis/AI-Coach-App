@@ -173,7 +173,15 @@ pace_zone/hr_zone.
 
 Concurrent (hybrid) training: separate hard runs and heavy leg days by ≥24h to
 limit the interference effect; prioritize the modality tied to the primary goal.
-Only program modalities the athlete actually does (their listed sports).`;
+Only program modalities the athlete actually does (their listed sports).
+
+Pain vs soreness: soreness is diffuse, symmetrical, eases as you warm up, and is
+trained through. PAIN is sharp, local, one-sided, or gets worse as the session
+goes on, and it is trained AROUND. When an ACTIVE INJURY BACKOFF block appears
+below, the athlete has reported pain in that area recently: it outranks the
+week's target load, the plan, and the progression targets. Work around it and
+say so in one plain sentence. Do not compensate by adding volume elsewhere, and
+never diagnose: recurring pain is a physio's job, not yours.`;
 
 // Chat needs the coach to REASON with the science and talk about it, not to
 // write prescriptions: the generator does that. COACHING_PRINCIPLES is ~4,600
@@ -680,7 +688,13 @@ export interface BriefContext {
   todayPlan: string; // human title + type, or "nothing planned"
   todayDone: boolean;
   phase: string;
+  // The OVERARCHING training goal (profile.ts goalsText), never a race name.
   goal: string;
+  // The dated goal, already rendered by context.ts goalRaceLine. "" when none.
+  // Two facts, two lines: the same field used to carry both, so the coach was
+  // told the athlete's goal was "Athens Marathon" and forgot they also wanted
+  // to build muscle.
+  goalRace?: string;
   weeklyLoadPct: number | null; // completed vs target this week, %
   // false → today's objective recovery (HRV/RHR/sleep) hasn't synced from the
   // watch; the readiness number leans on subjective wellness. Default true.
@@ -771,7 +785,7 @@ SIGNALS (for YOUR reasoning, interpret them, don't read them back):
 ${readLine}
 - Form/freshness: ${freshness} (TSB ${c.tsb.toFixed(0)}, ${c.tsbTrend}).
 - Today's plan: ${c.todayPlan}${c.todayDone ? ", already done" : ""}.
-- Training phase: ${c.phase}; goal: ${c.goal}.${c.weeklyLoadPct != null ? `\n- Weekly load so far: ~${c.weeklyLoadPct}% of target.` : ""}${extras.length ? `\n${extras.join("\n")}` : ""}
+- Training phase: ${c.phase}; training goal: ${c.goal}.${c.goalRace?.trim() ? `\n- Next goal event: ${c.goalRace.trim()}. Mention it only if today's session speaks to it.` : ""}${c.weeklyLoadPct != null ? `\n- Weekly load so far: ~${c.weeklyLoadPct}% of target.` : ""}${extras.length ? `\n${extras.join("\n")}` : ""}
 
 Write the 1-2 sentence note now.`;
 }
@@ -806,7 +820,10 @@ export interface WeekReviewContext {
   bySport: { sport: string; tss: number }[];
   standout: { sport: string; date: string; tss: number } | null;
   phase: string;
+  // The OVERARCHING training goal (goalsText), and the dated goal separately
+  // (context.ts goalRaceLine, "" when there is none). See BriefContext.
   goal: string;
+  goalRace?: string;
 }
 
 export function buildWeekReviewPrompt(c: WeekReviewContext): string {
@@ -822,7 +839,7 @@ SIGNALS (for YOUR reasoning, interpret them, don't read them back):
 - Load: ${loadLine}
 - Where the work went: ${sports}.
 - Standout session: ${standout}.
-- Training phase: ${c.phase}; goal: ${c.goal}.
+- Training phase: ${c.phase}; training goal: ${c.goal}.${c.goalRace?.trim() ? `\n- Next goal event: ${c.goalRace.trim()}.` : ""}
 
 Write the 2-4 sentence recap now.`;
 }

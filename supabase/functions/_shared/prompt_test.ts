@@ -164,6 +164,33 @@ Deno.test("buildBriefPrompt weaves in debrief and missed-session signals only wh
   assert(!/\d+\/100/.test(rich.split("SIGNALS")[1].split("Form\/freshness")[1] ?? ""));
 });
 
+// The training goal and the goal RACE are two facts. They shared one field, so
+// the coach was told the athlete's goal was "Athens Marathon" and never heard
+// about the muscle they also wanted to build. Both now, on separate lines.
+Deno.test("buildBriefPrompt names the training goal and the goal race separately", () => {
+  const p = buildBriefPrompt({
+    name: "Sam", readiness: 62, band: "amber", tsb: -6, tsbTrend: "flat",
+    todayPlan: "Easy run (run)", todayDone: false, phase: "Peak",
+    goal: "Marathon pace + Build muscle",
+    goalRace: "Athens Marathon on 2026-11-08, in 13 weeks",
+    weeklyLoadPct: 70,
+  });
+  assertStringIncludes(p, "training goal: Marathon pace + Build muscle");
+  assertStringIncludes(p, "Next goal event: Athens Marathon on 2026-11-08, in 13 weeks");
+  // The brief is two sentences: the race is context, not its subject.
+  assertStringIncludes(p, "Mention it only if today's session speaks to it");
+});
+
+Deno.test("buildBriefPrompt says nothing about an event the athlete does not have", () => {
+  const p = buildBriefPrompt({
+    name: "Sam", readiness: 62, band: "amber", tsb: -6, tsbTrend: "flat",
+    todayPlan: "Easy run (run)", todayDone: false, phase: "Base",
+    goal: "Build muscle", weeklyLoadPct: 70,
+  });
+  assertStringIncludes(p, "training goal: Build muscle");
+  assert(!p.includes("Next goal event"));
+});
+
 Deno.test("brief system tells the coach to use recent execution when given", () => {
   assert(/how a recent session actually went/i.test(BRIEF_SYSTEM));
 });
@@ -186,6 +213,29 @@ Deno.test("buildWeekReviewPrompt surfaces adherence, load trend, and the standou
   assertStringIncludes(p, "4/5");          // adherence
   assertStringIncludes(p, "+12% vs last week"); // load trend
   assertStringIncludes(p, "run on 2026-06-27"); // standout
+});
+
+// This recap had no ATHLETE PROFILE block, so onboarding.goal was the only goal
+// it ever saw: a race name after any set_goal_race, and the athlete's real
+// training goals never at all.
+Deno.test("buildWeekReviewPrompt carries the training goal, and the event when there is one", () => {
+  const base = {
+    name: "Sam", sessions: 4, adherenceDone: 4, adherencePlanned: 5,
+    tss: 320, targetTss: 350, loadDeltaPct: 12,
+    bySport: [{ sport: "run", tss: 220 }],
+    standout: null,
+    phase: "Peak", goal: "Marathon pace + Build muscle",
+  };
+  const withRace = buildWeekReviewPrompt({
+    ...base,
+    goalRace: "Athens Marathon on 2026-11-08, in 13 weeks",
+  });
+  assertStringIncludes(withRace, "training goal: Marathon pace + Build muscle");
+  assertStringIncludes(withRace, "Next goal event: Athens Marathon on 2026-11-08, in 13 weeks");
+
+  const noRace = buildWeekReviewPrompt(base);
+  assertStringIncludes(noRace, "training goal: Marathon pace + Build muscle");
+  assert(!noRace.includes("Next goal event"));
 });
 
 Deno.test("cycling prompt programs power zones + cadence, not run phrasing", () => {

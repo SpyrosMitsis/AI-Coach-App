@@ -316,7 +316,16 @@ function writeStub(byTable: Record<string, unknown>) {
 }
 
 const FIT_ATHLETE = {
-  user_profiles: [{ onboarding: { experience: "intermediate" } }],
+  // The training goal is set, so every goal tool can be checked for leaving it
+  // alone. It is a different fact from the goal RACE and lives in a different
+  // place; the two sharing onboarding.goal is the bug this fixture guards.
+  user_profiles: [{
+    onboarding: {
+      experience: "intermediate",
+      goal: "Marathon pace + Build muscle",
+      goals: ["Marathon pace", "Build muscle"],
+    },
+  }],
   completed_activities: Array.from({ length: 16 }, (_, i) => ({
     date: `2026-07-${String(i + 1).padStart(2, "0")}`,
     distance_m: 14_000,
@@ -343,11 +352,14 @@ Deno.test("set_goal_race writes the races row Settings reads, not just the profi
   assertEquals(race!.row.target, "sub 4:00");
   assertEquals(race!.row.user_id, "u1");
 
-  // And the periodization anchor Home reads is still set.
+  // And the periodization anchor is still set: a DATE pointing at that row.
   const prof = s.of("user_profiles").find((w) => w.op === "update");
   assert(prof, "an A goal must still anchor periodization");
-  assertEquals((prof!.row.onboarding as Any).goal, "Athens Marathon");
   assertEquals((prof!.row.onboarding as Any).goal_date, "2027-11-14");
+  // The regression this whole split exists to stop: the event name used to be
+  // copied over the athlete's training goal, and every coach prompt read it
+  // back as if it were the goal.
+  assertEquals((prof!.row.onboarding as Any).goal, "Marathon pace + Build muscle");
 
   assertEquals(obs.saved_to_goals_and_races, true);
   assertEquals(obs.anchors_periodization, true);
@@ -361,6 +373,10 @@ Deno.test("a B-priority tune-up is saved but does not steal the periodization an
   assert(s.of("races").some((w) => w.op === "insert"), "B races are still saved");
   assertEquals(s.of("user_profiles").filter((w) => w.op === "update").length, 0);
   assertEquals(obs.anchors_periodization, false);
+  // Exactly one row: the tune-up. A B goal used to also backfill a race named
+  // after onboarding.goal, which now holds the training goal, so that would
+  // have created a race called "Marathon pace + Build muscle".
+  assertEquals(s.of("races").filter((w) => w.op === "insert").length, 1);
 });
 
 Deno.test("re-saving the same event updates it instead of duplicating", async () => {
@@ -434,16 +450,16 @@ function iso6WeeksOut(): string {
 const IRONMAN = { id: "r1", name: "Ironman Barcelona", date: "2027-10-03", priority: "A" };
 const MARATHON = { id: "r2", name: "February Marathon", date: "2027-02-14", priority: "B" };
 
-/** Athlete whose anchor and races list both hold the Ironman. */
+/** Athlete whose anchor points at the Ironman, with a training goal of their own. */
 function withIronman(races = [IRONMAN, MARATHON]) {
   return writeStub({
-    user_profiles: [{ onboarding: { goal: IRONMAN.name, goal_date: IRONMAN.date } }],
+    user_profiles: [{ onboarding: { goal: "Marathon pace", goal_date: IRONMAN.date } }],
     races,
     completed_activities: [],
   });
 }
 
-Deno.test("remove_goal_race deletes the race AND clears the anchor Home reads", async () => {
+Deno.test("remove_goal_race deletes the race AND clears the anchor date", async () => {
   const s = withIronman();
   const obs = JSON.parse(
     await executeTool(s.admin, "u1", "auth", "remove_goal_race", { name: "Ironman" }),
@@ -456,8 +472,10 @@ Deno.test("remove_goal_race deletes the race AND clears the anchor Home reads", 
   // The half that was missing: without this the goal comes straight back.
   const prof = s.of("user_profiles").find((w) => w.op === "update");
   assert(prof, "the periodization anchor must be cleared too");
-  assertEquals((prof!.row.onboarding as Any).goal, null);
   assertEquals((prof!.row.onboarding as Any).goal_date, null);
+  // And the athlete's training goal is not collateral damage: removing a race
+  // used to null this field, so the coach lost the goal along with the event.
+  assertEquals((prof!.row.onboarding as Any).goal, "Marathon pace");
 
   assertEquals(obs.removed_count, 1);
   assertEquals(obs.cleared_from_home, true);
@@ -473,22 +491,45 @@ Deno.test("removing the anchor promotes the next A goal rather than leaving none
   // flattens the plan. The B-priority marathon must NOT be promoted.
   assertEquals(obs.new_goal_anchor?.name, "Autumn Marathon");
   const prof = s.of("user_profiles").find((w) => w.op === "update");
-  assertEquals((prof!.row.onboarding as Any).goal, "Autumn Marathon");
+  assertEquals((prof!.row.onboarding as Any).goal_date, nextA.date);
+  // The name is reported to the coach so it can say what took over, but only
+  // the date is persisted. onboarding.goal is not this tool's to write.
+  assertEquals((prof!.row.onboarding as Any).goal, "Marathon pace");
 });
 
-Deno.test("a legacy goal with no race row is still removable", async () => {
-  // Exactly the reported state: set before the tool wrote to `races`, so it
-  // lives only in onboarding.goal. Deleting rows alone would not touch it.
+Deno.test("a dangling anchor is cleared when the athlete names its date", async () => {
+  // A goal_date left pointing at nothing, from before the anchor became a
+  // pointer into `races`. There is no row to delete, so clearing the date is
+  // the whole job, and it must still happen or the phase keeps counting down
+  // to a goal that does not exist.
   const s = writeStub({
-    user_profiles: [{ onboarding: { goal: "Ironman Barcelona", goal_date: "2027-10-03" } }],
+    user_profiles: [{ onboarding: { goal: "Marathon pace", goal_date: "2027-10-03" } }],
     races: [],
     completed_activities: [],
   });
   const obs = JSON.parse(
-    await executeTool(s.admin, "u1", "auth", "remove_goal_race", { name: "ironman" }),
+    await executeTool(s.admin, "u1", "auth", "remove_goal_race", { date: "2027-10-03" }),
   );
   assertEquals(obs.removed_count, 0);
-  assertEquals(obs.cleared_from_home, true, "the anchor is the only copy, and it must go");
+  assertEquals(obs.cleared_from_home, true, "the anchor is the only thing left, and it must go");
+  const prof = s.of("user_profiles").find((w) => w.op === "update");
+  assertEquals((prof!.row.onboarding as Any).goal_date, null);
+});
+
+Deno.test("removing an unrelated race never moves the anchor", async () => {
+  // Same dangling anchor, but the athlete asked for a different race. Matching
+  // loosely here would silently repoint their periodization.
+  const s = writeStub({
+    user_profiles: [{ onboarding: { goal: "Marathon pace", goal_date: "2027-10-03" } }],
+    races: [MARATHON],
+    completed_activities: [],
+  });
+  const obs = JSON.parse(
+    await executeTool(s.admin, "u1", "auth", "remove_goal_race", { name: "February Marathon" }),
+  );
+  assertEquals(obs.removed_count, 1);
+  assertEquals(obs.cleared_from_home, false);
+  assertEquals(s.of("user_profiles").filter((w) => w.op === "update").length, 0);
 });
 
 Deno.test("removing something that does not exist says so instead of confirming", async () => {
@@ -875,4 +916,161 @@ Deno.test("log_stretch_session accepts a past date, unlike set_rest_day/move_wor
   );
   assertEquals(obs.ok, true);
   assertEquals(obs.date, "2026-07-20");
+});
+
+// --- injury backoff + follow-up tools ----------------------------------------
+// The point of these tools is that they write a STRUCTURED field the generators
+// enforce, rather than a coach_knowledge sentence a model may or may not honor
+// later. So the assertions are about what lands in the row, not about wording.
+
+function profileStub(row: Record<string, unknown>) {
+  const updates: Record<string, unknown>[] = [];
+  const admin: Any = {
+    from: () => ({
+      select: () => ({ eq: () => ({ single: () => Promise.resolve({ data: row }) }) }),
+      update: (u: Record<string, unknown>) => {
+        updates.push(u);
+        return { eq: () => Promise.resolve({}) };
+      },
+    }),
+  };
+  return { admin, updates };
+}
+
+Deno.test("injury tools are registered and advertised to the model", () => {
+  const names = ["set_injury_backoff", "clear_injury_backoff", "update_injury_status"];
+  for (const n of names) {
+    const t = TOOL_CATALOG.find((x) => x.name === n);
+    assert(t, `${n} missing from the catalog`);
+    assertEquals(t!.kind, "act");
+    assert(nativeToolDefs().some((d) => d.name === n), `${n} not advertised natively`);
+    assert(toolCatalogPrompt().includes(n), `${n} not in the protocol prompt`);
+  }
+});
+
+Deno.test("set_injury_backoff: writes a dated, structured backoff", () => {
+  const t = TOOL_CATALOG.find((x) => x.name === "set_injury_backoff")!;
+  assertEquals((t.schema as { required?: string[] }).required, ["area", "level"]);
+});
+
+Deno.test("set_injury_backoff: saves area, level and an end date", async () => {
+  const { admin, updates } = profileStub({ injury_backoff: [] });
+  const out = JSON.parse(
+    await executeTool(admin, "u1", "auth", "set_injury_backoff", { area: " Knee ", level: "avoid", days: 10 }),
+  );
+  assertEquals(out.ok, true);
+  assertEquals(out.area, "Knee");
+  assertEquals(out.level, "avoid");
+  const saved = updates[0].injury_backoff as Record<string, unknown>[];
+  assertEquals(saved.length, 1);
+  assertEquals(saved[0].area, "Knee");
+  assertEquals(saved[0].until, out.until);
+  assert(typeof out.until === "string" && /^\d{4}-\d{2}-\d{2}$/.test(out.until));
+});
+
+Deno.test("set_injury_backoff: rejects a bad level rather than guessing", async () => {
+  const { admin } = profileStub({ injury_backoff: [] });
+  assert((await executeTool(admin, "u1", "auth", "set_injury_backoff", { area: "Knee", level: "stop" })).startsWith("error:"));
+  assert((await executeTool(admin, "u1", "auth", "set_injury_backoff", { area: " ", level: "ease" })).startsWith("error:"));
+});
+
+Deno.test("set_injury_backoff: one per area, and the duration is bounded", async () => {
+  const { admin, updates } = profileStub({
+    injury_backoff: [{ area: "Knee", level: "ease", until: "2099-01-01" }],
+  });
+  const out = JSON.parse(
+    await executeTool(admin, "u1", "auth", "set_injury_backoff", { area: "knee", level: "avoid", days: 9999 }),
+  );
+  const saved = updates[0].injury_backoff as Record<string, unknown>[];
+  assertEquals(saved.length, 1, "the same area must not stack two windows");
+  assertEquals(saved[0].level, "avoid");
+  // 60-day cap: a coach that types 9999 must not sideline the athlete for 27 years.
+  const days = Math.round(
+    (new Date(out.until + "T12:00:00").getTime() - new Date(new Date().toISOString().slice(0, 10) + "T12:00:00").getTime()) / 86400000,
+  );
+  assertEquals(days, 60);
+});
+
+Deno.test("clear_injury_backoff: by area, and wholesale", async () => {
+  const two = [
+    { area: "Knee", level: "ease", until: "2099-01-01" },
+    { area: "Shoulder", level: "avoid", until: "2099-01-01" },
+  ];
+  const one = profileStub({ injury_backoff: two });
+  const outOne = JSON.parse(await executeTool(one.admin, "u1", "auth", "clear_injury_backoff", { area: "Knee" }));
+  assertEquals(outOne.cleared, 1);
+  assertEquals((one.updates[0].injury_backoff as Record<string, unknown>[]).length, 1);
+
+  const all = profileStub({ injury_backoff: two });
+  const outAll = JSON.parse(await executeTool(all.admin, "u1", "auth", "clear_injury_backoff", {}));
+  assertEquals(outAll.cleared, 2);
+  assertEquals((all.updates[0].injury_backoff as Record<string, unknown>[]).length, 0);
+});
+
+Deno.test("update_injury_status: 'better' records the answer without dropping the injury", async () => {
+  const { admin, updates } = profileStub({
+    onboarding: { goal: "10K", injuries: [{ area: "Knee", severity: "moderate", raised_at: "2026-07-01" }] },
+    injury_backoff: [],
+  });
+  const out = JSON.parse(
+    await executeTool(admin, "u1", "auth", "update_injury_status", { area: "Knee", status: "better" }),
+  );
+  assertEquals(out.removed_from_injuries, false);
+  const onboarding = updates[0].onboarding as Record<string, unknown>;
+  const injuries = onboarding.injuries as Record<string, unknown>[];
+  assertEquals(injuries.length, 1);
+  assertEquals(injuries[0].status, "better");
+  assert(typeof injuries[0].last_checked === "string");
+  assertEquals(onboarding.goal, "10K", "unrelated onboarding fields must survive");
+});
+
+Deno.test("update_injury_status: 'resolved' removes the injury AND its backoff", async () => {
+  // Otherwise the athlete says "it's fine now" and keeps getting sessions built
+  // around a healed knee until the dated window happens to lapse.
+  const { admin, updates } = profileStub({
+    onboarding: { injuries: [{ area: "Knee", severity: "moderate" }, { area: "Shoulder", severity: "" }] },
+    injury_backoff: [{ area: "Knee", level: "avoid", until: "2099-01-01" }],
+  });
+  const out = JSON.parse(
+    await executeTool(admin, "u1", "auth", "update_injury_status", { area: "Knee", status: "resolved" }),
+  );
+  assertEquals(out.removed_from_injuries, true);
+  const injuries = (updates[0].onboarding as Record<string, unknown>).injuries as Record<string, unknown>[];
+  assertEquals(injuries.map((i) => i.area), ["Shoulder"]);
+  assertEquals((updates[0].injury_backoff as unknown[]).length, 0);
+});
+
+Deno.test("update_injury_status: an unknown area errors and names what IS on file", async () => {
+  // A silent no-op would let the coach tell the athlete their elbow is logged
+  // as resolved when nothing was written.
+  const { admin } = profileStub({ onboarding: { injuries: [{ area: "Knee", severity: "" }] }, injury_backoff: [] });
+  const err = await executeTool(admin, "u1", "auth", "update_injury_status", { area: "Elbow", status: "resolved" });
+  assert(err.startsWith("error:"), err);
+  assert(err.includes("Knee"), err);
+});
+
+Deno.test("update_injury_status: rejects a status outside the three answers", async () => {
+  const { admin } = profileStub({ onboarding: { injuries: [{ area: "Knee", severity: "" }] }, injury_backoff: [] });
+  assert((await executeTool(admin, "u1", "auth", "update_injury_status", { area: "Knee", status: "fine" })).startsWith("error:"));
+});
+
+Deno.test("get_profile: surfaces injury follow-up state and active backoffs", async () => {
+  // The coach could set a backoff and then had no way to know it existed, so it
+  // re-imposed one every turn.
+  const admin = adminStub({
+    user_profiles: {
+      display_name: "A",
+      onboarding: { injuries: [{ area: "Knee", severity: "moderate", raised_at: "2026-07-01", status: "present" }] },
+      injury_backoff: [
+        { area: "Knee", level: "avoid", until: "2099-01-01" },
+        { area: "Shoulder", level: "ease", until: "2000-01-01" }, // expired
+      ],
+    },
+  });
+  const obs = JSON.parse(await executeTool(admin, "u1", "auth", "get_profile", {}));
+  assertEquals(obs.injury_status.length, 1);
+  assertEquals(obs.injury_status[0].area, "Knee");
+  assertEquals(obs.injury_status[0].status, "present");
+  assertEquals(obs.injury_backoff.length, 1, "expired backoffs must not be reported as in force");
+  assertEquals(obs.injury_backoff[0].area, "Knee");
 });

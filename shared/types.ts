@@ -93,10 +93,25 @@ export interface UserProfile {
   llm_fallback_chain: LlmProvider[];
 }
 
+// Mirrors supabase/functions/_shared/types.ts. raised_at/last_checked/status
+// drive the injury follow-up loop (_shared/injury.ts); all optional, since
+// profiles written before it existed carry none of them.
 export interface InjuryEntry {
   area: string;
   severity: "mild" | "moderate" | "serious" | "";
   note?: string;
+  raised_at?: string; // YYYY-MM-DD
+  last_checked?: string; // YYYY-MM-DD
+  status?: "" | "present" | "better" | "resolved";
+}
+
+// Active per-area backoff, self-expiring against the client's local date.
+export interface InjuryBackoff {
+  area: string;
+  level: "ease" | "avoid";
+  until: string; // YYYY-MM-DD, inclusive
+  reason?: string;
+  set_at?: string;
 }
 
 export interface OnboardingData {

@@ -15,6 +15,17 @@ import { hostedLlm } from "../_shared/entitlement.ts";
 import { pickDebrief, type SessionDebrief } from "../_shared/debrief.ts";
 import { computeBodyTrend } from "../_shared/body_trend.ts";
 import { pickGoalRace, type RaceRow } from "../_shared/context.ts";
+import { pickPrimaryPlannedWorkout } from "../_shared/planned_today.ts";
+import { injuriesOf } from "../_shared/profile.ts";
+import { muscleOf } from "../_shared/workout_review.ts";
+import {
+  activeBackoffs,
+  daysBetween,
+  followUpQuestion,
+  injuryFollowUpDue,
+  painCheckArea,
+} from "../_shared/injury.ts";
+import type { Workout } from "../_shared/types.ts";
 
 const DAY = 86_400_000;
 const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
@@ -42,32 +53,69 @@ Deno.serve(async (req) => {
     const since7 = new Date(anchorMs - 7 * DAY).toISOString().slice(0, 10);
     const since90 = new Date(anchorMs - 90 * DAY).toISOString().slice(0, 10);
 
-    const [{ data: profile }, { data: wellness }, { data: activities }, { data: planned }, { data: plannedWeek }] =
-      await Promise.all([
-        admin.from("user_profiles").select("onboarding, active_llm_provider").eq("id", userId).single(),
-        admin.from("wellness_checkins").select("date, energy, soreness, zepp_sleep_minutes")
-          .eq("user_id", userId).gte("date", since14).lte("date", today).order("date", { ascending: false }),
-        admin.from("completed_activities").select("date, type, distance_m, tss, ctl, atl, data_json")
-          .eq("user_id", userId).gte("date", since14).lte("date", today).order("date", { ascending: true }),
-        admin.from("planned_workouts").select("*").eq("user_id", userId).eq("date", today),
-        admin.from("planned_workouts").select("date, type, workout_json, completed")
-          .eq("user_id", userId).gte("date", since7).lte("date", today).neq("type", "rest"),
-      ]);
+    // ONE round of parallel reads. This endpoint is the app's most-hit by a wide
+    // margin (every Home open, every morning notification), and it used to fan
+    // out five queries here and then run four MORE sequentially below: three
+    // further reads of wellness_checkins (two over the identical window, just
+    // different columns) plus a second read of user_profiles. Same rows, same
+    // user, four extra round trips on the critical path.
+    //
+    // Now every read starts at once. The wellness data is fetched over the
+    // WIDEST window any consumer needs (since90) and narrowed per consumer in
+    // memory, because slicing an array costs nothing and a round trip does not.
+    //
+    // The split into core/extended is deliberate and is the one thing not to
+    // "simplify" away: the core columns ship in the initial schema and must
+    // always work, while the extended ones arrive in later migrations
+    // (hrv/rhr in 8, sleep_score in 28, vo2max in 19, body metrics in 39). Only
+    // the extended read is allowed to fail, so a partially-migrated database
+    // loses VO2/body-trend and keeps its dashboard, exactly as before. The
+    // change is that those three now degrade together rather than one by one.
+    const [
+      { data: profile },
+      { data: wellnessCore },
+      extended,
+      { data: activities },
+      { data: planned },
+      { data: plannedWeek },
+      backoffRow,
+      { data: raceRows },
+    ] = await Promise.all([
+      admin.from("user_profiles").select("onboarding, active_llm_provider").eq("id", userId).single(),
+      admin.from("wellness_checkins").select("date, energy, soreness, zepp_sleep_minutes")
+        .eq("user_id", userId).gte("date", since90).lte("date", today).order("date", { ascending: false }),
+      admin.from("wellness_checkins")
+        .select("date, hrv_rmssd, resting_hr, sleep_score, vo2max, weight_kg, body_fat_pct, lean_mass_kg")
+        .eq("user_id", userId).gte("date", since90).lte("date", today).order("date", { ascending: true })
+        .then((r) => r, () => ({ data: null, error: true })),
+      admin.from("completed_activities").select("date, type, distance_m, tss, ctl, atl, data_json")
+        .eq("user_id", userId).gte("date", since14).lte("date", today).order("date", { ascending: true }),
+      admin.from("planned_workouts").select("*").eq("user_id", userId).eq("date", today),
+      admin.from("planned_workouts").select("date, type, workout_json, completed")
+        .eq("user_id", userId).gte("date", since7).lte("date", today).neq("type", "rest"),
+      admin.from("user_profiles").select("injury_backoff").eq("id", userId).single()
+        .then((r) => r, () => ({ data: null })),
+      // Depends only on `today`, so there is no reason for it to wait for the
+      // recovery maths that used to precede it.
+      admin.from("races").select("name, date, priority").eq("user_id", userId)
+        .gte("date", today).order("date", { ascending: true }).limit(8),
+    ]);
+
+    // Per-consumer windows, sliced from the one fetch above. `wells` keeps its
+    // old shape exactly: 14 days, newest first, which is what computeRecovery
+    // and the 3-day wellness average both assume.
+    const wellsAll = wellnessCore ?? [];
+    const wells = wellsAll.filter((w) => (w.date ?? "") >= since14);
+    // deno-lint-ignore no-explicit-any
+    const wellnessExt: any[] = (extended as { data: unknown[] | null }).data ?? [];
+    const extOk = wellnessExt.length > 0 || !(extended as { error?: unknown }).error;
+    const ext14 = wellnessExt.filter((w) => (w.date ?? "") >= since14);
 
     // When today holds several sessions, pick the SAME "primary" the calendar
-    // shows first: still-pending before done/skipped, real work before rest,
-    // newest first — so Home and Calendar never disagree about today's workout.
-    const todayWorkout = [...(planned ?? [])].sort((a, b) => {
-      const aSettled = !!a.completed || !!a.skipped;
-      const bSettled = !!b.completed || !!b.skipped;
-      if (aSettled !== bSettled) return aSettled ? 1 : -1;
-      const aRest = a.type === "rest" ? 1 : 0;
-      const bRest = b.type === "rest" ? 1 : 0;
-      if (aRest !== bRest) return aRest - bRest;
-      return String(b.created_at ?? "").localeCompare(String(a.created_at ?? ""));
-    })[0] ?? null;
+    // shows first (shared with weather-check so Home/Calendar/the weather
+    // prompt never disagree about today's workout) — see planned_today.ts.
+    const todayWorkout = pickPrimaryPlannedWorkout(planned ?? []);
 
-    const wells = wellness ?? [];
     // No intervals-provided CTL in the window? Fill estimated values from
     // stored TSS so the TSB sparkline and goal trend work without intervals.icu.
     const acts = await applyFallbackFitness(admin, userId, today, activities ?? []);
@@ -84,25 +132,18 @@ Deno.serve(async (req) => {
     type DatedNum = { date?: string; value: number };
     let hcHrv: DatedNum[] = [];
     let hcRhr: DatedNum[] = [];
-    {
-      // sleep_score (migration 28) selected here best-effort so a pre-migration
-      // DB never breaks the dashboard; merged onto wells for full-res recovery.
-      const { data, error } = await admin.from("wellness_checkins")
-        .select("date, hrv_rmssd, resting_hr, sleep_score")
-        .eq("user_id", userId).gte("date", since14).lte("date", today).order("date", { ascending: true });
-      if (!error && data) {
-        hcHrv = data.filter((w) => isNum((w as { hrv_rmssd?: number }).hrv_rmssd))
-          .map((w) => ({ date: (w as { date?: string }).date, value: (w as { hrv_rmssd: number }).hrv_rmssd }));
-        hcRhr = data.filter((w) => isNum((w as { resting_hr?: number }).resting_hr))
-          .map((w) => ({ date: (w as { date?: string }).date, value: (w as { resting_hr: number }).resting_hr }));
-        const scoreByDate = new Map<string, number>();
-        for (const r of data as { date: string; sleep_score?: number }[]) {
-          if (isNum(r.sleep_score)) scoreByDate.set(r.date, r.sleep_score);
-        }
-        for (const w of wells) {
-          const s = w.date ? scoreByDate.get(w.date) : undefined;
-          if (s !== undefined) (w as { sleep_score?: number }).sleep_score = s;
-        }
+    if (extOk) {
+      // Same 14-day slice and same ascending order the dedicated query used;
+      // sleep_score is merged onto wells for full-resolution recovery.
+      hcHrv = ext14.filter((w) => isNum(w.hrv_rmssd))
+        .map((w) => ({ date: w.date as string | undefined, value: w.hrv_rmssd as number }));
+      hcRhr = ext14.filter((w) => isNum(w.resting_hr))
+        .map((w) => ({ date: w.date as string | undefined, value: w.resting_hr as number }));
+      const scoreByDate = new Map<string, number>();
+      for (const r of ext14) if (isNum(r.sleep_score)) scoreByDate.set(r.date as string, r.sleep_score);
+      for (const w of wells) {
+        const sc = w.date ? scoreByDate.get(w.date) : undefined;
+        if (sc !== undefined) (w as { sleep_score?: number }).sleep_score = sc;
       }
     }
     const ivHrv: DatedNum[] = acts.filter((a) => isNum((a.data_json as { hrv?: number })?.hrv))
@@ -135,33 +176,24 @@ Deno.serve(async (req) => {
     // value + change over ~90d.
     // Best-effort — works whether or not the vo2max column migration is applied.
     let vo2max: { value: number; change: number | null } | null = null;
-    try {
-      const { data, error } = await admin.from("wellness_checkins")
-        .select("date, vo2max").eq("user_id", userId).gte("date", since90).lte("date", today).order("date", { ascending: true });
-      if (!error && data) {
-        const series = data.map((r) => (r as { vo2max?: number }).vo2max).filter(isNum);
-        if (series.length) {
-          const value = series[series.length - 1];
-          const change = series.length >= 2 ? +(value - series[0]).toFixed(1) : null;
-          vo2max = { value: +value.toFixed(1), change };
-        }
+    if (extOk) {
+      const series = wellnessExt.map((r) => r.vo2max).filter(isNum);
+      if (series.length) {
+        const value = series[series.length - 1];
+        const change = series.length >= 2 ? +(value - series[0]).toFixed(1) : null;
+        vo2max = { value: +value.toFixed(1), change };
       }
-    } catch { /* column not migrated yet */ }
+    }
 
     // Body-composition trend, read through the strength goals (build muscle →
     // lean mass, lose fat → weight/fat). Best-effort: pre-migration selects
     // error out and the key is simply omitted.
     let bodyTrend: ReturnType<typeof computeBodyTrend> = null;
-    try {
-      const { data, error } = await admin.from("wellness_checkins")
-        .select("date, weight_kg, body_fat_pct, lean_mass_kg")
-        .eq("user_id", userId).gte("date", since90).lte("date", today).order("date", { ascending: true });
-      if (!error && data) {
-        const goals = ((profile?.onboarding as { goals_by_sport?: Record<string, string[]> })
-          ?.goals_by_sport?.strength) ?? [];
-        bodyTrend = computeBodyTrend(data, goals, today);
-      }
-    } catch { /* columns not migrated yet */ }
+    if (extOk) {
+      const goals = ((profile?.onboarding as { goals_by_sport?: Record<string, string[]> })
+        ?.goals_by_sport?.strength) ?? [];
+      bodyTrend = computeBodyTrend(wellnessExt, goals, today);
+    }
 
     // --- session debrief (today's or yesterday's analyzed session) ----------
     // Dedicated narrow query: analysis_json also lives on the wide activities
@@ -234,13 +266,57 @@ Deno.serve(async (req) => {
         : null,
     };
 
+    // --- injury follow-up + post-workout pain check --------------------------
+    // Deliberately SERVER-side, and deliberately on this endpoint. The follow-up
+    // is a "N days after the athlete raised an injury" question, and Android has
+    // no scheduler shaped like that: CheckinReminder is a daily periodic worker
+    // keyed off wake time, so a per-injury delayed job would have been new
+    // scheduling infrastructure (and a WorkManager request whose id, cancellation
+    // and re-scheduling all had to track a jsonb array inside a profile). This
+    // endpoint already runs every morning, already knows the client's local date,
+    // and already carries the cards Home draws. The check is three pure function
+    // calls on data the request has in hand, so it costs nothing and there is no
+    // second copy of "is it due?" to drift.
+    //
+    // Both are payload, not state: nothing is written until the athlete answers
+    // (injury-checkin), so a summary fetched five times shows the same card.
+    let injuryCheckin: {
+      area: string; severity: string | null; note: string | null;
+      raised_at: string | null; days_since: number | null; question: string;
+    } | null = null;
+    let painCheck: { area: string; planned_workout_id: string | null } | null = null;
+    let injuryBackoff: ReturnType<typeof activeBackoffs> = [];
+    try {
+      const injuries = injuriesOf((profile?.onboarding ?? {}) as Record<string, unknown>);
+      const due = injuryFollowUpDue(injuries, today);
+      if (due) {
+        injuryCheckin = {
+          area: due.area,
+          severity: due.severity || null,
+          note: due.note ?? null,
+          raised_at: due.raised_at ?? null,
+          days_since: due.raised_at ? daysBetween(due.raised_at, today) : null,
+          question: followUpQuestion(due, today),
+        };
+      }
+      // Asked about TODAY's session, and only when that session could actually
+      // have loaded an injured area (see painCheckArea). The client shows it
+      // after the athlete marks the workout done.
+      const wj = (todayWorkout?.workout_json ?? null) as Workout | null;
+      const area = painCheckArea(injuries, wj, muscleOf);
+      if (area) painCheck = { area, planned_workout_id: todayWorkout?.id ?? null };
+      // Fetched in the parallel round above; a pre-migration DB yields null
+      // there rather than costing the athlete their dashboard.
+      injuryBackoff = activeBackoffs(
+        (backoffRow as { data?: { injury_backoff?: unknown } }).data?.injury_backoff,
+        today,
+      );
+    } catch { /* column not migrated yet */ }
+
     // --- goal tracking ------------------------------------------------------
     // Goals and races is the source of truth: the card names the athlete's own
     // race row, and shows nothing when that page is empty. See pickGoalRace.
     const onboard = (profile?.onboarding ?? {}) as { goal?: string; goal_date?: string };
-    const { data: raceRows } = await admin.from("races")
-      .select("name, date, priority").eq("user_id", userId)
-      .gte("date", today).order("date", { ascending: true }).limit(8);
     const goalRace = pickGoalRace((raceRows ?? []) as RaceRow[], today, onboard.goal_date);
     let goal = null as null | {
       goal: string; goal_date: string | null; weeks_to_goal: number | null;
@@ -291,6 +367,12 @@ Deno.serve(async (req) => {
       weekly_load: { tss: Math.round(weeklyTss), target: targetWeeklyTss },
       week_review: weekReview,
       debrief,
+      // The injury loop's read side: one follow-up question at most, the pain
+      // question for today's session if it could have aggravated something, and
+      // whatever backoff is currently reshaping the training.
+      injury_checkin: injuryCheckin,
+      pain_check: painCheck,
+      injury_backoff: injuryBackoff,
       active_llm_provider: profile?.active_llm_provider ?? "groq",
       goal,
       // Deployment capabilities — self-hosted stacks without the hosted LLM

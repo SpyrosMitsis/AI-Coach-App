@@ -10,7 +10,7 @@
 
 import { errorStatus, handleOptions, json } from "../_shared/cors.ts";
 import { logger } from "../_shared/log.ts";
-import { adminClient, decryptSecret, getUserId } from "../_shared/supabase.ts";
+import { adminClient, decryptSecret, getUserId, PROFILE_COLUMNS_GENERATION, type ProfileRow } from "../_shared/supabase.ts";
 import {
   customPriceFromProfile,
   estimateCostUsd,
@@ -38,9 +38,12 @@ import {
   goalBlock,
   intervalsPhysiology,
   knowledgeBlock,
+  pickGoalRace,
   racesBlock,
   recoveryBlock,
+  upcomingGoals,
   weatherBlock,
+  weeksBetween,
 } from "../_shared/context.ts";
 import { memoryDocsBlock, memoryFromProfile } from "../_shared/agent_memory.ts";
 import { computeRecovery } from "../_shared/recovery.ts";
@@ -53,6 +56,7 @@ import {
   registerUnknownExercises,
 } from "../_shared/exercise_catalog.ts";
 import { type MainLift, reviewWorkout } from "../_shared/workout_review.ts";
+import { activeBackoffs, backoffBlock, sportsToAvoid, substituteSport } from "../_shared/injury.ts";
 import { nextTarget } from "../_shared/progression.ts";
 import { defaultHrZones } from "../_shared/zones.ts";
 import { bodyComposition, challengeBlock, experienceForSport, goalsText, injuriesOf, minutesForDate, profileFactsBlock } from "../_shared/profile.ts";
@@ -80,11 +84,12 @@ Deno.serve(async (req) => {
     log.info("request", { date, requestedType, push: shouldPush, hasRequest: !!body.request });
 
     // 1. profile ------------------------------------------------------------
-    const { data: profile } = await admin
+    const { data: profileRow } = await admin
       .from("user_profiles")
-      .select("*")
+      .select(PROFILE_COLUMNS_GENERATION)
       .eq("id", userId)
       .single();
+    const profile = profileRow as ProfileRow | null;
     if (!profile) return json({ error: "profile not found" }, 404);
     const onboarding = profile.onboarding ?? {};
 
@@ -206,12 +211,11 @@ Deno.serve(async (req) => {
 
     const goal: string = goalsText(onboarding);
 
-    // Training phase from weeks until the goal race (onboarding.goal_date).
-    let weeksToGoal: number | null = null;
-    if (onboarding.goal_date) {
-      const d = (new Date(onboarding.goal_date).getTime() - now.getTime()) / (7 * DAY);
-      weeksToGoal = d >= 0 ? Math.round(d) : null;
-    }
+    // Training phase from weeks until the goal race. onboarding.goal_date is a
+    // POINTER into `races`: resolve it to the row, so an anchor left behind by
+    // a deleted race stops driving the phase and the taper.
+    const goalRace = pickGoalRace(await upcomingGoals(admin, userId, date), date, onboarding.goal_date);
+    const weeksToGoal = goalRace?.date ? weeksBetween(date, goalRace.date) : null;
     const phase = trainingPhase(weeksToGoal);
 
     // Auto-rest when the athlete is genuinely cooked — low readiness or deeply
@@ -238,6 +242,24 @@ Deno.serve(async (req) => {
         type = ["run", "ride", "swim"].find((s) => sports.includes(s)) ??
           (sports.includes("strength") ? "strength" : "run");
       }
+    }
+
+    // An active AVOID backoff outranks the type, whether the athlete asked for
+    // it or "auto" chose it. Resolved HERE, before the prompt is built, rather
+    // than by rejecting the model's output afterwards: catching an avoided run
+    // post-generation leaves nothing to serve but a rest day, and a swim is a
+    // better answer than nothing. reviewWorkout still enforces it structurally
+    // (and strips the lifts that load the area) if the model wanders.
+    const backoffs = activeBackoffs(profile.injury_backoff, date);
+    const avoidedSports = sportsToAvoid(backoffs);
+    const sub = substituteSport(
+      type,
+      Array.isArray(onboarding.sports) ? onboarding.sports as string[] : [],
+      avoidedSports,
+    );
+    type = sub.type;
+    if (sub.swappedFrom) {
+      log.info("injury backoff swapped the sport", { from: sub.swappedFrom, to: type });
     }
 
     // 5b. live Intervals.icu physiology (shared with the week planner). The
@@ -480,7 +502,7 @@ Deno.serve(async (req) => {
       userPrompt += physiologyBlock;
       userPrompt += await adherenceBlock(admin, userId, since14, date, acts28);
       userPrompt += await executionBlock(admin, userId, since14);
-      userPrompt += goalBlock(onboarding, weeksToGoal, phase, acts28);
+      userPrompt += goalBlock(goalRace?.date ?? null, weeksToGoal, phase, acts28);
       // Every dated goal, not just the anchor's date: the sport, the distance
       // and the athlete's own target are collected by the app and were, until
       // now, read by nothing that plans.
@@ -488,11 +510,11 @@ Deno.serve(async (req) => {
       // Today's busy windows (derived on-device from the athlete's calendar) —
       // a packed day should get a shorter session, not a heroic one.
       userPrompt += calendarBlock(body.calendar_busy ?? null);
-      if (type === "run") {
+      if (type === "run" || type === "ride") {
         const lat = typeof body.lat === "number" ? body.lat : profile.last_lat;
         const lon = typeof body.lon === "number" ? body.lon : profile.last_lon;
         if (typeof lat === "number" && typeof lon === "number") {
-          userPrompt += await weatherBlock(lat, lon);
+          userPrompt += await weatherBlock(lat, lon, type);
         }
       }
     }
@@ -518,6 +540,13 @@ ${JSON.stringify(body.base_workout)}
 ${knowledgeBlock(profile)}${catalogNote}
 Return the revised workout as JSON only, same schema.`;
     }
+
+    // Appended LAST, and to both paths. A backoff is the most recent, most
+    // specific thing known about this athlete's body, so it goes closest to the
+    // instruction and applies just as much when they are tweaking a session as
+    // when they are generating one. The strip in reviewWorkout is what actually
+    // guarantees it; this is so the coach note can explain itself.
+    userPrompt += backoffBlock(backoffs);
 
     // 7. resolve fallback chain + keys, then generate ----------------------
     const { chain, resolveKey, resolveModel, resolveBaseUrl, hosted } = await llmAccess(admin, userId, profile);
@@ -619,6 +648,9 @@ Return the revised workout as JSON only, same schema.`;
       // Structured safety: injuries on file (coach_knowledge is separate free
       // text, covered by the prompt-level instruction, not this backstop).
       injuries: injuriesOf(onboarding),
+      // Dated pain backoffs, enforced structurally (strip / intensity cap) the
+      // same way the contraindication engine is.
+      backoffs,
       // Deterministic intensity ceiling + equipment hard-filter. The basis
       // rides along: an unmeasured 50 must not cap anything.
       readiness: recovery.score,

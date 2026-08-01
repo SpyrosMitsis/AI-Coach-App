@@ -566,6 +566,8 @@ internal fun AppearanceSection(vm: SettingsViewModel) {
             palette = s.themePalette,
             onMode = { vm.setThemeMode(it) },
             onPalette = { vm.setThemePalette(it) },
+            // The detail header above already says what this screen is.
+            label = null,
         )
     }
 }

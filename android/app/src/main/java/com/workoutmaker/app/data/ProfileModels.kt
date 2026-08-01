@@ -13,6 +13,14 @@ data class InjuryEntry(
     val area: String,
     val severity: String = "", // "" | "mild" | "moderate" | "serious"
     val note: String? = null,
+    // The follow-up loop (_shared/injury.ts). raised_at is stamped when the
+    // athlete adds the injury, which is the only moment the app knows it; the
+    // other two are written by the server when they answer a check-in. Entries
+    // saved before this existed have none of them, and the server treats that
+    // as "never asked", which is exactly right for them.
+    val raised_at: String? = null,      // YYYY-MM-DD
+    val last_checked: String? = null,   // YYYY-MM-DD
+    val status: String = "",            // "" | "present" | "better" | "resolved"
 )
 
 @Serializable

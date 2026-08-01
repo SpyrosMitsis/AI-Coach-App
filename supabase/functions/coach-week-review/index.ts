@@ -15,6 +15,8 @@ import { llmGenerateWithFallback } from "../_shared/llm.ts";
 import { logLlmResult } from "../_shared/generation_log.ts";
 import { buildWeekReviewPrompt, trainingPhase, WEEK_REVIEW_SYSTEM } from "../_shared/prompt.ts";
 import { memoryDocsBlock, memoryFromProfile } from "../_shared/agent_memory.ts";
+import { goalsText } from "../_shared/profile.ts";
+import { goalRaceLine, pickGoalRace, upcomingGoals, weeksBetween } from "../_shared/context.ts";
 
 const DAY = 86_400_000;
 const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
@@ -66,11 +68,14 @@ Deno.serve(async (req) => {
       .single();
     const onboarding = (profile?.onboarding ?? {}) as Record<string, unknown>;
 
-    const [{ data: activities }, { data: planned }] = await Promise.all([
+    const [{ data: activities }, { data: planned }, goalRows] = await Promise.all([
       admin.from("completed_activities").select("date, type, tss")
         .eq("user_id", userId).gte("date", prevStart).lte("date", weekEnd).order("date", { ascending: true }),
       admin.from("planned_workouts").select("date, type, completed")
         .eq("user_id", userId).gte("date", weekStart).lte("date", weekEnd).neq("type", "rest"),
+      // Anchored on the week being reviewed, so a recap of a past week counts
+      // from that week rather than from today.
+      upcomingGoals(admin, userId, weekStart),
     ]);
 
     const acts = activities ?? [];
@@ -101,11 +106,8 @@ Deno.serve(async (req) => {
       : null;
 
     const targetTss = (onboarding as { weekly_tss_target?: number }).weekly_tss_target ?? 350;
-    let weeksToGoal: number | null = null;
-    if (onboarding.goal_date) {
-      const d = (new Date(String(onboarding.goal_date)).getTime() - startMs) / (7 * DAY);
-      weeksToGoal = d >= 0 ? Math.round(d) : null;
-    }
+    const goalRace = pickGoalRace(goalRows, weekStart, onboarding.goal_date as string | undefined);
+    const weeksToGoal = goalRace?.date ? weeksBetween(weekStart, goalRace.date) : null;
 
     const userPrompt = buildWeekReviewPrompt({
       name: (profile?.display_name as string) ?? "athlete",
@@ -118,7 +120,11 @@ Deno.serve(async (req) => {
       bySport,
       standout,
       phase: trainingPhase(weeksToGoal),
-      goal: (onboarding.goal as string) ?? "general fitness",
+      // This recap had no ATHLETE PROFILE block, so onboarding.goal was the only
+      // goal it ever saw: after any set_goal_race that was a race name, and the
+      // athlete's actual training goals never reached it at all.
+      goal: goalsText(onboarding),
+      goalRace: goalRaceLine(goalRace, weekStart),
     });
     const systemPrompt = WEEK_REVIEW_SYSTEM + memoryDocsBlock(memoryFromProfile(profile));
 

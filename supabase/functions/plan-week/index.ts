@@ -9,7 +9,7 @@
 //     user with user_profiles.auto_plan = true.
 
 import { errorStatus, handleOptions, json } from "../_shared/cors.ts";
-import { adminClient, getUserId } from "../_shared/supabase.ts";
+import { adminClient, getUserId, PROFILE_COLUMNS_GENERATION, type ProfileRow } from "../_shared/supabase.ts";
 import { llmAccess } from "../_shared/llm_keys.ts";
 import { customPriceFromProfile, estimateCostUsd, extractJson, llmGenerateWithFallback } from "../_shared/llm.ts";
 import { logGeneration, logLlmResult } from "../_shared/generation_log.ts";
@@ -25,7 +25,17 @@ import {
 import { createEvent, deleteEvent, latestFitness } from "../_shared/intervals.ts";
 import { applyFallbackFitness } from "../_shared/load.ts";
 import { renderIntervalsWorkout } from "../_shared/intervals_workout.ts";
-import { adherenceBlock, calendarBlock, executionBlock, goalBlock, intervalsPhysiology, racesBlock } from "../_shared/context.ts";
+import {
+  adherenceBlock,
+  calendarBlock,
+  executionBlock,
+  goalBlock,
+  intervalsPhysiology,
+  pickGoalRace,
+  racesBlock,
+  upcomingGoals,
+  weeksBetween,
+} from "../_shared/context.ts";
 import {
   availabilityBlock,
   challengeBlock,
@@ -41,6 +51,12 @@ import { memoryDocsBlock, memoryFromProfile } from "../_shared/agent_memory.ts";
 import { exerciseCatalogBlock, registerUnknownExercises } from "../_shared/exercise_catalog.ts";
 import { isHardSession, type MainLift, muscleOf, reviewWorkout } from "../_shared/workout_review.ts";
 import { coerceForPause, computeDayList, computePeriodization, weekdayOf } from "../_shared/week_planning.ts";
+import {
+  activeBackoffs,
+  backoffBlock,
+  type EnduranceSport,
+  sportsToAvoid,
+} from "../_shared/injury.ts";
 import type { LlmProvider, Workout } from "../_shared/types.ts";
 import type { SupabaseClient } from "jsr:@supabase/supabase-js@2";
 
@@ -73,7 +89,8 @@ async function planForUser(admin: SupabaseClient, userId: string, start: string,
   if (dates.length === 0) throw new Error("that week is already over, nothing left to plan");
   const planFrom = dates[0];
 
-  const { data: profile } = await admin.from("user_profiles").select("*").eq("id", userId).single();
+  const { data: profileRow } = await admin.from("user_profiles").select(PROFILE_COLUMNS_GENERATION).eq("id", userId).single();
+  const profile = profileRow as ProfileRow | null;
   if (!profile) throw new Error("profile not found");
   const onboarding = profile.onboarding ?? {};
 
@@ -109,11 +126,10 @@ async function planForUser(admin: SupabaseClient, userId: string, start: string,
     sleep: avg(wells.slice(0, 3).map((w) => isNum(w.sleep_score) ? w.sleep_score / 20 : 3)),
   };
 
-  let weeksToGoal: number | null = null;
-  if (onboarding.goal_date) {
-    const d = (new Date(onboarding.goal_date).getTime() - new Date(start + "T12:00:00").getTime()) / (7 * DAY);
-    weeksToGoal = d >= 0 ? Math.round(d) : null;
-  }
+  // The anchor is a pointer into `races`, resolved to the row so a stale date
+  // cannot flatten (or taper) a week around a goal that no longer exists.
+  const goalRace = pickGoalRace(await upcomingGoals(admin, userId, start), start, onboarding.goal_date as string | undefined);
+  const weeksToGoal = goalRace?.date ? weeksBetween(start, goalRace.date) : null;
   const phase = trainingPhase(weeksToGoal);
 
   const weeklyKm = runs.filter((r) => (r.date ?? "") >= since7).reduce((s, r) => s + (r.distance_m ?? 0) / 1000, 0);
@@ -136,8 +152,32 @@ async function planForUser(admin: SupabaseClient, userId: string, start: string,
       `- ${d} (${weekdayOf(d)}): ${(r.workout_json as Workout)?.title ?? r.type} [${r.type}]`).join("\n");
 
   // Athlete's modalities + strength split → constrain and shape the week.
-  const sportsList: string[] = Array.isArray(onboarding.sports) ? onboarding.sports as string[] : [];
+  const declaredSports: string[] = Array.isArray(onboarding.sports) ? onboarding.sports as string[] : [];
   const splitStyle = (onboarding.split_style as string | undefined) ?? "";
+
+  // INJURY BACKOFF, given the same structural authority as the training pause
+  // below. sportsBlock already tells the model "ONLY schedule these modalities",
+  // and that instruction is honored — so the cheapest way to stop a week full of
+  // runs on a torn Achilles is to REMOVE running from the list it is handed,
+  // rather than adding a paragraph asking it not to. Same lesson as
+  // training_paused_until: a fact that has to beat specific dates needs to feed
+  // a structured input, not compete with one as prose (agent_memory.ts).
+  //
+  // Only "avoid" removes a sport ("ease" means train it lighter), and only when
+  // something is left to schedule: an athlete who does nothing but run gets a
+  // heavily-caveated running week rather than an empty one, which is a
+  // conversation for the coach, not a silently blank calendar.
+  //
+  // The list is a WEEK-level input, so a sport is only removed when the backoff
+  // covers the whole window (still active on `end`). A backoff that lapses on
+  // Wednesday must not cost the athlete Saturday's long run: for those, the
+  // block below names the exact end date, and the per-DATE review inside the
+  // scheduling loop is the thing with day-level authority, exactly as
+  // computeDayList is for the pause.
+  const backoffs = activeBackoffs(profile.injury_backoff, start);
+  const avoidedAllWeek = sportsToAvoid(activeBackoffs(profile.injury_backoff, end));
+  const survivors = declaredSports.filter((s) => !avoidedAllWeek.has(s as EnduranceSport));
+  const sportsList = declaredSports.length > 0 && survivors.length > 0 ? survivors : declaredSports;
 
   // The most load the athlete's declared day budgets can hold; clamps both the
   // weekly target below and the periodization ramp target, so no part of the
@@ -180,13 +220,14 @@ async function planForUser(admin: SupabaseClient, userId: string, start: string,
     memoryDocsBlock(memoryFromProfile(profile)) + phys.block +
     await adherenceBlock(admin, userId, since14, start, acts28) +
     await executionBlock(admin, userId, since14) +
-    goalBlock(onboarding, weeksToGoal, phase, acts28) +
+    goalBlock(goalRace?.date ?? null, weeksToGoal, phase, acts28) +
     // The week is where a B/C tune-up actually lands, so the planner has to
     // know it exists: it gets easy days in front of it and no taper.
     await racesBlock(admin, userId, start) + lockedBlock +
     calendarBlock(calendarBusy) +
     sportsBlock(sportsList) + splitBlock(splitStyle) + periodizationBlock +
     availabilityBlock(onboarding) + experienceBlock(onboarding) + challengeBlock(onboarding) +
+    backoffBlock(backoffs) +
     await exerciseCatalogBlock(admin, userId);
 
   // An active training pause (set via the coach-chat set_training_pause tool)
@@ -374,6 +415,10 @@ async function planForUser(admin: SupabaseClient, userId: string, start: string,
       mainLifts, weeklySetsByMuscle, muscleGroupsLast48h,
       tsb: fitness.tsb, daysSinceLastHard: lastHardDate ? daysBetweenIso(lastHardDate, date) : 99,
       experience: onboarding.experience ?? "Intermediate", injuries, readiness, readinessBasis, equipment,
+      // Re-resolved per DATE, not once for the week: a backoff that ends on
+      // Wednesday must stop constraining Thursday. This is the day-level
+      // authority the sports list above deliberately does not try to have.
+      backoffs: activeBackoffs(profile.injury_backoff, date),
     });
     session = rev.corrected;
     if (session.type !== "rest" && session.sections.every((s) => s.exercises.length === 0)) {

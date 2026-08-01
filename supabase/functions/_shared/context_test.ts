@@ -4,11 +4,13 @@ import {
   calendarBlock,
   clipText,
   executionLine,
+  goalRaceLine,
   pickGoalRace,
   raceLine,
   racesBlock,
   recoveryBlock,
   testAgeNote,
+  upcomingGoals,
   weeksBetween,
 } from "./context.ts";
 
@@ -280,4 +282,49 @@ Deno.test("racesBlock: no goals means no heading at all", async () => {
     await racesBlock(adminWithRaces([{ date: "2026-09-01" }], rec), "u1", "2026-08-09"),
     "",
   );
+});
+
+Deno.test("upcomingGoals: soonest first, and a failed read costs a line not a plan", async () => {
+  const rec: Recorded = { table: "", select: "", filters: [], limit: null };
+  const rows = await upcomingGoals(
+    adminWithRaces([{ name: "Club 10K", date: "2026-09-06" }], rec),
+    "u1",
+    "2026-08-09",
+  );
+  assertEquals(rows.length, 1);
+  assertEquals(rec.filters, ["eq:user_id=u1", "gte:date=2026-08-09", "order:date"]);
+
+  const exploding = {
+    from() {
+      throw new Error("network");
+    },
+  } as unknown as SupabaseClient;
+  assertEquals(await upcomingGoals(exploding, "u1", "2026-08-09"), []);
+});
+
+// One clause, not the planner's bracketed rules: this is what a chat turn, a
+// brief and a week recap get, so the coach can mention the goal in passing
+// instead of reading a calendar back.
+Deno.test("goalRaceLine: the dated goal as one clause of prose", () => {
+  assertEquals(
+    goalRaceLine({ name: "Athens Marathon", date: "2026-11-08", priority: "A" }, "2026-08-09"),
+    "Athens Marathon on 2026-11-08, in 13 weeks",
+  );
+  assertEquals(
+    goalRaceLine({ name: "Club 10K", date: "2026-08-16", priority: "B" }, "2026-08-09"),
+    "Club 10K on 2026-08-16, in 1 week",
+  );
+  // Race week, and race day itself, still count.
+  assertEquals(
+    goalRaceLine({ name: "Parkrun", date: "2026-08-09" }, "2026-08-09"),
+    "Parkrun on 2026-08-09, this week",
+  );
+});
+
+Deno.test("goalRaceLine: nothing to say renders nothing, so callers can append it blind", () => {
+  assertEquals(goalRaceLine(null, "2026-08-09"), "");
+  assertEquals(goalRaceLine(undefined, "2026-08-09"), "");
+  assertEquals(goalRaceLine({ date: "2026-11-08" }, "2026-08-09"), "");
+  assertEquals(goalRaceLine({ name: "No date" }, "2026-08-09"), "");
+  assertEquals(goalRaceLine({ name: "Last year", date: "2025-11-09" }, "2026-08-09"), "");
 });

@@ -89,6 +89,13 @@ suspend fun WorkoutRepository.setLocked(plannedId: String, locked: Boolean) {
         .update(mapOf("locked" to JsonPrimitive(locked))) { filter { eq("id", plannedId) } }
 }
 
+// "Don't ask again" from the weather-swap dialog — direct RLS-scoped update,
+// no edge function/LLM involved. Read by weather-check/index.ts.
+suspend fun WorkoutRepository.setWeatherPromptOptOut(optOut: Boolean) {
+    supabase.postgrest.from("user_profiles")
+        .update(mapOf("weather_prompt_opt_out" to JsonPrimitive(optOut))) { filter { eq("id", uid()) } }
+}
+
 // Ask the AI for a session on a specific date from a free-text request
 // (e.g. "social 10k run with friends, keep it easy"), locked by default so
 // the weekly re-planner plans around it instead of replacing it.

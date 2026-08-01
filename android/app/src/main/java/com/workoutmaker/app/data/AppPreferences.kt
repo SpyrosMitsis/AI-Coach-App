@@ -33,13 +33,18 @@ enum class ThemeMode(val label: String) {
 }
 
 // Selectable colour palette (the actual colours live in ui/theme/Theme.kt; this
-// is just the persisted choice). SERENE is the locked baseline.
+// is just the persisted choice). SERENE is the locked baseline; DYNAMIC leads the
+// list and is the default, so a fresh install already looks like the phone it is
+// on. The choice persists by NAME, so this order is free to change.
 enum class ThemePalette(val label: String) {
-    SERENE("Serene Vanguard"), EMBER("Ember"), TIDAL("Tidal"),
+    // Pulled live from the device wallpaper (Android 12+ dynamic color / "Material You").
+    // Falls back to Serene on older Android versions.
+    DYNAMIC("Material You"),
+    SERENE("Serene"), EMBER("Ember"), TIDAL("Tidal"),
     NOCTURNE("Nocturne"), BLOOM("Bloom"), SOLSTICE("Solstice");
 
     companion object {
-        fun fromName(n: String?): ThemePalette = entries.firstOrNull { it.name == n } ?: SERENE
+        fun fromName(n: String?): ThemePalette = entries.firstOrNull { it.name == n } ?: DYNAMIC
     }
 }
 
@@ -74,7 +79,7 @@ data class AppSettings(
     val restChime: RestChime = RestChime.SYSTEM,
     val keepScreenOn: Boolean = true,
     val themeMode: ThemeMode = ThemeMode.SYSTEM,
-    val themePalette: ThemePalette = ThemePalette.SERENE,
+    val themePalette: ThemePalette = ThemePalette.DYNAMIC,
     // Soft monthly AI-spend cap (USD). 0 = no cap; Diagnostics warns when 30-day
     // estimated spend crosses it.
     val spendCapUsd: Double = 0.0,
@@ -84,6 +89,9 @@ data class AppSettings(
     // permission): read busy times into planning / write workouts as all-day events.
     val calendarRead: Boolean = false,
     val calendarWrite: Boolean = false,
+    // Debug logs are always kept locally (for export). Off by default: the log
+    // file only ever leaves the phone if the athlete opts into sending it.
+    val debugLogSharingEnabled: Boolean = false,
 )
 
 private val Context.dataStore by preferencesDataStore(name = "app_prefs")
@@ -110,6 +118,7 @@ class AppPreferences @Inject constructor(
         val setupNudgeDismissedAt = longPreferencesKey("setup_nudge_dismissed_at")
         val calendarRead = booleanPreferencesKey("calendar_read")
         val calendarWrite = booleanPreferencesKey("calendar_write")
+        val debugLogSharing = booleanPreferencesKey("debug_log_sharing_enabled")
         // Home layout: the athlete's own card order, and what they switched off.
         // Two CSVs of card keys rather than a serialized object, so an unknown
         // key from a future or past release is skipped instead of failing to parse.
@@ -222,6 +231,7 @@ class AppPreferences @Inject constructor(
             morningNotify = p[Keys.morningNotify] ?: true,
             calendarRead = p[Keys.calendarRead] ?: false,
             calendarWrite = p[Keys.calendarWrite] ?: false,
+            debugLogSharingEnabled = p[Keys.debugLogSharing] ?: false,
         )
     }
 
@@ -238,6 +248,7 @@ class AppPreferences @Inject constructor(
     suspend fun setMorningNotify(on: Boolean) = edit { it[Keys.morningNotify] = on }
     suspend fun setCalendarRead(on: Boolean) = edit { it[Keys.calendarRead] = on }
     suspend fun setCalendarWrite(on: Boolean) = edit { it[Keys.calendarWrite] = on }
+    suspend fun setDebugLogSharing(on: Boolean) = edit { it[Keys.debugLogSharing] = on }
 
     private suspend fun edit(block: (MutablePreferences) -> Unit) {
         context.dataStore.edit(block)

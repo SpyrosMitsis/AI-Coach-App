@@ -30,6 +30,8 @@ import com.workoutmaker.app.ui.components.InsetStat
 import com.workoutmaker.app.ui.components.SectionCard
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import com.workoutmaker.app.data.InjuryBackoff
+import com.workoutmaker.app.data.InjuryCheckin
 import com.workoutmaker.app.data.RecoveryDriver
 import com.workoutmaker.app.data.RecoveryTrend
 import com.workoutmaker.app.ui.theme.amberAccent
@@ -58,9 +60,12 @@ internal fun WellnessCheckinCard(mod: Modifier, busy: Boolean, onSave: (Int, Int
     }
 }
 
-// One 1–5 row: label, low/high anchor words, and five tap targets.
+// One 1-5 row: label, low/high anchor words, and five tap targets. Internal
+// because the post-workout pain check reuses it verbatim: the athlete should
+// only ever have to learn one scale, and a second one drawn differently would
+// make 3 mean something different depending on which card asked.
 @Composable
-private fun WellnessScale(label: String, low: String, high: String, selected: Int?, onSelect: (Int) -> Unit) {
+internal fun WellnessScale(label: String, low: String, high: String, selected: Int?, onSelect: (Int) -> Unit) {
     val haptics = LocalHapticFeedback.current
     Column(Modifier.padding(top = 8.dp)) {
         Text(label, style = MaterialTheme.typography.labelLarge)
@@ -95,6 +100,87 @@ private fun WellnessScale(label: String, low: String, high: String, selected: In
             Text(low, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
             Text(high, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// The injury follow-up loop
+// ---------------------------------------------------------------------------
+
+// "Is your knee still bothering you?", a few days after they raised it and then
+// weekly while it lasts. Three answers, one tap, no free text: the whole point
+// is that it costs nothing to close, because a question that costs something to
+// answer stops being answered.
+//
+// The question itself is composed server-side (followUpQuestion in
+// _shared/injury.ts) so the coach and the card word it the same way.
+@Composable
+internal fun InjuryCheckinCard(
+    mod: Modifier,
+    checkin: InjuryCheckin,
+    busy: Boolean,
+    onAnswer: (String) -> Unit,
+) {
+    val haptics = LocalHapticFeedback.current
+    SectionCard(mod, title = checkin.question) {
+        Text(
+            "It changes what I program. Nothing else, no follow-up questions.",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        Row(Modifier.padding(top = 4.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            listOf(
+                "present" to "Still there",
+                "better" to "Better",
+                "resolved" to "All good",
+            ).forEach { (status, label) ->
+                Button(
+                    onClick = {
+                        haptics.performHapticFeedback(HapticFeedbackType.LongPress)
+                        onAnswer(status)
+                    },
+                    enabled = !busy,
+                    modifier = Modifier.weight(1f),
+                ) { Text(label, style = MaterialTheme.typography.labelSmall) }
+            }
+        }
+    }
+}
+
+// What the engine is currently doing about a reported pain, in the athlete's
+// words. Amber, not red: something to work around, not an emergency (the
+// palette note in CLAUDE.md). Shown because training that quietly changes shape
+// is worse than training that says why it changed.
+@Composable
+internal fun InjuryBackoffBanner(mod: Modifier, backoffs: List<InjuryBackoff>) {
+    if (backoffs.isEmpty()) return
+    val amber = amberAccent()
+    SectionCard(mod) {
+        backoffs.forEach { b ->
+            Text(
+                backoffLine(b),
+                style = MaterialTheme.typography.bodyMedium,
+                color = amber,
+            )
+        }
+        Text(
+            "It lifts on its own. Tell me sooner if it settles.",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+    }
+}
+
+/** One backoff, said out loud. Kept pure so the wording is unit-testable. */
+internal fun backoffLine(b: InjuryBackoff): String {
+    val area = b.area.trim().lowercase()
+    val until = runCatching {
+        LocalDate.parse(b.until).format(DateTimeFormatter.ofPattern("d MMM"))
+    }.getOrDefault(b.until)
+    return if (b.level == "avoid") {
+        "Keeping the load off your $area until $until."
+    } else {
+        "Going easy on your $area until $until."
     }
 }
 

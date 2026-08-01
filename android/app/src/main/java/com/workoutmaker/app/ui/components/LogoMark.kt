@@ -6,22 +6,23 @@ import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
-import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.layout.size
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.geometry.Offset
-import androidx.compose.ui.geometry.Size
-import androidx.compose.ui.graphics.drawscope.Stroke
-import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.ColorFilter
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
+import com.workoutmaker.app.R
 
-// The brand mark: two open concentric arcs (a rep in progress) around a pulse
-// dot that breathes. Drawn in the active palette's primary so it adapts to all
-// six palettes and both modes. Mirrored statically in res/drawable/ic_splash_logo.xml.
+// The brand mark: the monochrome logo asset, tinted to the active palette's
+// primary so it adapts to all six palettes and both modes, with a gentle
+// breathing scale. Mirrored statically in res/drawable/ic_splash_logo.xml and
+// res/drawable/ic_launcher_foreground.xml.
 @Composable
 fun LogoMark(modifier: Modifier = Modifier, size: Dp = 72.dp, animate: Boolean = true) {
     val color = MaterialTheme.colorScheme.primary
@@ -36,37 +37,16 @@ fun LogoMark(modifier: Modifier = Modifier, size: Dp = 72.dp, animate: Boolean =
         p
     } else 0.5f
 
-    Canvas(modifier.size(size)) {
-        val s = this.size.minDimension
-        val stroke = s * 0.075f
-        val center = Offset(s / 2f, s / 2f)
-
-        // Outer arc: open at the top-right, sweeping most of the circle.
-        drawArc(
-            color = color,
-            startAngle = -60f,
-            sweepAngle = 300f,
-            useCenter = false,
-            topLeft = Offset(stroke / 2f, stroke / 2f),
-            size = Size(s - stroke, s - stroke),
-            style = Stroke(width = stroke, cap = StrokeCap.Round),
-        )
-        // Inner arc: opens the other way, offset phase.
-        val inset = s * 0.22f
-        drawArc(
-            color = color.copy(alpha = 0.55f),
-            startAngle = 140f,
-            sweepAngle = 250f,
-            useCenter = false,
-            topLeft = Offset(inset, inset),
-            size = Size(s - inset * 2f, s - inset * 2f),
-            style = Stroke(width = stroke * 0.8f, cap = StrokeCap.Round),
-        )
-        // The pulse dot, breathing between 55% and 100% of its size.
-        drawCircle(
-            color = color,
-            radius = s * 0.075f * (0.55f + 0.45f * pulse),
-            center = center,
-        )
-    }
+    Image(
+        painter = painterResource(R.drawable.ic_logo_monochrome),
+        contentDescription = null,
+        colorFilter = ColorFilter.tint(color),
+        modifier = modifier
+            .size(size)
+            .graphicsLayer {
+                val scale = 0.92f + 0.08f * pulse
+                scaleX = scale
+                scaleY = scale
+            },
+    )
 }

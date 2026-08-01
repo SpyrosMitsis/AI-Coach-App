@@ -143,6 +143,28 @@ class WorkoutRepository @Inject constructor(
         }
     }
 
+    // Opt-in upload of the local debug log (AppLog.file()) to the debug_logs
+    // table. No-op unless the athlete has turned the setting on. The file is
+    // truncated after a successful upload so the next call only sends what's
+    // new since then, not the whole history again.
+    suspend fun uploadDebugLogIfEnabled() {
+        if (!prefs.settings.first().debugLogSharingEnabled) return
+        val f = com.workoutmaker.app.util.AppLog.file() ?: return
+        if (!f.exists() || f.length() == 0L) return
+        val text = runCatching { f.readText() }.getOrNull() ?: return
+        val rec = DebugLogRecord(
+            version_name = com.workoutmaker.app.BuildConfig.VERSION_NAME,
+            version_code = com.workoutmaker.app.BuildConfig.VERSION_CODE,
+            flavor = com.workoutmaker.app.BuildConfig.FLAVOR,
+            sdk_int = android.os.Build.VERSION.SDK_INT,
+            device = "${android.os.Build.MANUFACTURER} ${android.os.Build.MODEL}",
+            log_text = text.takeLast(200_000),
+        )
+        val ok = runCatching { supabase.postgrest.from("debug_logs").insert(rec) }
+            .logFailure("uploadDebugLogIfEnabled").isSuccess
+        if (ok) runCatching { f.writeText("") }
+    }
+
     // Permanent server-side account deletion (Play requirement). The edge
     // function cascades through every owned row; afterwards the local session
     // is dead anyway, so clear it like a sign-out.
@@ -296,3 +318,15 @@ class WorkoutRepository @Inject constructor(
         const val TAG = "WorkoutRepo"
     }
 }
+
+// One row of the opt-in debug log upload (debug_logs table); see
+// WorkoutRepository.uploadDebugLogIfEnabled.
+@kotlinx.serialization.Serializable
+data class DebugLogRecord(
+    val version_name: String,
+    val version_code: Int,
+    val flavor: String,
+    val sdk_int: Int,
+    val device: String,
+    val log_text: String,
+)

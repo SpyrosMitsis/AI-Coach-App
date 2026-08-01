@@ -23,6 +23,7 @@ import com.workoutmaker.app.data.PlanChangeBus
 import com.workoutmaker.app.data.PlanStatus
 import com.workoutmaker.app.data.SessionDebrief
 import com.workoutmaker.app.data.TrainingProfile
+import com.workoutmaker.app.data.WeatherCheckResult
 import com.workoutmaker.app.data.WellnessCheckin
 import com.workoutmaker.app.data.WorkoutFeedback
 import com.workoutmaker.app.strength.SetEntity
@@ -46,6 +47,13 @@ import com.workoutmaker.app.data.loadProfile
 import com.workoutmaker.app.data.markPlannedComplete
 import com.workoutmaker.app.data.planStatus
 import com.workoutmaker.app.data.refreshMemory
+import com.workoutmaker.app.data.requestSession
+import com.workoutmaker.app.data.setWeatherPromptOptOut
+import android.content.Context
+import com.workoutmaker.app.work.FeedbackSyncWorker
+import dagger.hilt.android.qualifiers.ApplicationContext
+import com.workoutmaker.app.data.answerInjuryCheckin
+import com.workoutmaker.app.data.reportPain
 import com.workoutmaker.app.data.submitFeedback
 import com.workoutmaker.app.data.syncHealth
 import com.workoutmaker.app.data.syncIntervals
@@ -57,6 +65,7 @@ import com.workoutmaker.app.data.wellnessCheckin
 
 @HiltViewModel
 class HomeViewModel @Inject constructor(
+    @param:ApplicationContext private val appContext: Context,
     private val repo: WorkoutRepository,
     private val strength: StrengthRepository,
     private val location: LocationProvider,
@@ -109,6 +118,48 @@ class HomeViewModel @Inject constructor(
                     ?.let { openedActivity.value = it }
             }
         }
+        // Weather-swap line tapped on the morning notification (MainScaffold has
+        // already navigated to the Home tab); render WeatherSwapDialog.
+        viewModelScope.launch {
+            NotificationDeepLinks.openWeatherPrompt.collect { prompt ->
+                if (prompt == null) return@collect
+                NotificationDeepLinks.openWeatherPrompt.value = null
+                weatherPrompt.value = prompt
+            }
+        }
+    }
+
+    // Today's outdoor session was flagged unviable by the token-free
+    // weather-check; non-null shows WeatherSwapDialog.
+    val weatherPrompt = MutableStateFlow<WeatherCheckResult?>(null)
+
+    fun dismissWeatherPrompt() { weatherPrompt.value = null }
+
+    // Regenerate today's session as an indoor equivalent (LLM call — only
+    // fires on this explicit opt-in, never from the daily check itself).
+    fun swapWeatherWorkout() = viewModelScope.launch {
+        val p = weatherPrompt.value ?: return@launch
+        weatherPrompt.value = null
+        val type = p.swap_type ?: p.sport ?: return@launch
+        val reasonText = p.reason ?: "unsafe outdoor conditions"
+        generating.value = true
+        runCatching {
+            repo.requestSession(
+                date = LocalDate.now().toString(),
+                request = "Today's outdoor conditions are unsafe ($reasonText). Rewrite this as an " +
+                    "indoor session — treadmill for a run, indoor trainer for a ride — same duration and purpose.",
+                type = type,
+                lock = false,
+            )
+        }
+        generating.value = false
+        load()
+    }
+
+    // "Don't ask again" — direct profile update, no LLM involved.
+    fun optOutOfWeatherPrompts() = viewModelScope.launch {
+        weatherPrompt.value = null
+        runCatching { repo.setWeatherPromptOptOut(true) }
     }
 
     val summary = MutableStateFlow<DailySummary?>(null)
@@ -136,6 +187,11 @@ class HomeViewModel @Inject constructor(
     val wellnessToday = MutableStateFlow<WellnessCheckin?>(null)
     val wellnessLoaded = MutableStateFlow(false)
     val wellnessBusy = MutableStateFlow(false)
+
+    // Injury follow-up card: in-flight guard + the one-line acknowledgement that
+    // replaces it once answered (the card itself goes away on the next load()).
+    val injuryBusy = MutableStateFlow(false)
+    val injuryStatus = MutableStateFlow<String?>(null)
 
     // The coach's proactive daily note. Null until it streams in (it's a separate,
     // possibly-slow generation) or when the briefing is disabled / offline — Home
@@ -408,7 +464,7 @@ class HomeViewModel @Inject constructor(
         repo.refreshMemory()
     }
 
-    fun submitFeedback(difficulty: String, rpe: Int?) = viewModelScope.launch {
+    fun submitFeedback(difficulty: String, rpe: Int?, pain: Int? = null) = viewModelScope.launch {
         if (!submittingFeedback.compareAndSet(false, true)) return@launch
         val today = summary.value?.today_workout
         val date = LocalDate.now().toString()
@@ -421,11 +477,89 @@ class HomeViewModel @Inject constructor(
                 )
             }
         }.onSuccess {
-            feedbackStatus.value = "✓ Marked done, your next workout will adapt."
+            // The pain answer rides on the SAME submit, after the session is
+            // logged: injury-checkin updates the feedback row it just wrote.
+            // Reported separately so a failure here can never lose the "I did
+            // this workout" the athlete already tapped.
+            val painNote = pain?.let { reportPain(it, today?.id) }
+            feedbackStatus.value = painNote ?: "✓ Marked done, your next workout will adapt."
             repo.refreshMemory()
             load()
-        }.onFailure { feedbackStatus.value = it.message }
+        }.onFailure { queueFeedback(date, rpe, difficulty, today?.id, true, pain) }
         submittingFeedback.value = false
+    }
+
+    /**
+     * The rating survives a failed write.
+     *
+     * The direct write above is the fast path: online it lands immediately and
+     * Home can refresh from the server straight away. When it fails, the answer
+     * used to become an error string on screen and then be gone, which is the
+     * wrong outcome for a rating tapped in a basement gym on the worst network
+     * of the day. FeedbackSyncWorker already solved this for the strength
+     * logger; Home just was not using it.
+     *
+     * The queued item carries the pain answer too, so a session can never be
+     * logged with its pain report silently dropped.
+     */
+    private fun queueFeedback(
+        date: String,
+        rpe: Int?,
+        difficulty: String?,
+        plannedId: String?,
+        completed: Boolean,
+        pain: Int?,
+    ) {
+        FeedbackSyncWorker.request(
+            appContext,
+            date = date,
+            rpe = rpe,
+            difficulty = difficulty,
+            notes = null,
+            plannedId = plannedId,
+            completed = completed,
+            painArea = summary.value?.pain_check?.area.takeIf { pain != null },
+            pain = pain,
+        )
+        feedbackStatus.value = "Saved. It will sync when you are back online."
+    }
+
+    // Send the post-workout pain score and say what the server decided to do
+    // about it. The escalation itself is the server's call (backoffFromPain in
+    // _shared/injury.ts) so the phone and the coach can never disagree about
+    // what a 4 means.
+    private suspend fun reportPain(pain: Int, plannedId: String?): String? {
+        val area = summary.value?.pain_check?.area ?: return null
+        return runCatching {
+            val r = repo.reportPain(area, pain, plannedId)
+            val what = r.backoff?.level
+            when {
+                r.severe -> "Logged. I am keeping the load off your ${area.lowercase()}. " +
+                    "If it is still sharp in a week, get it looked at."
+                what == "avoid" -> "Logged. I will work around your ${area.lowercase()} for now."
+                what == "ease" -> "Logged. I will go easy on your ${area.lowercase()} for a bit."
+                r.cleared -> "Good. Back to normal training."
+                else -> "✓ Marked done, your next workout will adapt."
+            }
+        }.getOrNull()
+    }
+
+    // The follow-up card's three answers. "resolved" also drops any active
+    // backoff, server-side, so the athlete never has to un-say it twice.
+    fun answerInjuryCheckin(status: String) = viewModelScope.launch {
+        val area = summary.value?.injury_checkin?.area ?: return@launch
+        if (!injuryBusy.compareAndSet(false, true)) return@launch
+        runCatching { repo.answerInjuryCheckin(area, status) }
+            .onSuccess {
+                injuryStatus.value = when (status) {
+                    "resolved" -> "Good. I will stop working around it."
+                    "better" -> "Noted, I will keep an eye on it."
+                    else -> "Noted. I will keep working around it."
+                }
+                load()
+            }
+            .onFailure { injuryStatus.value = it.message }
+        injuryBusy.value = false
     }
 
     fun skipToday() = viewModelScope.launch {
@@ -434,7 +568,9 @@ class HomeViewModel @Inject constructor(
         val date = LocalDate.now().toString()
         runCatching { repo.markPlannedComplete(today.id, date, completed = false, difficulty = null, rpe = null) }
             .onSuccess { feedbackStatus.value = null; repo.refreshMemory(); load() }
-            .onFailure { feedbackStatus.value = it.message }
+            // A skip is a real signal to the planner, so losing it offline is
+            // the same bug as losing a rating.
+            .onFailure { queueFeedback(date, null, null, today.id, false, null) }
         submittingFeedback.value = false
     }
 

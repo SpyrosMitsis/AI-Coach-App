@@ -239,6 +239,16 @@ fun HomeScreen(
                 onDismiss = { showCalendar = false },
             )
         }
+        val weatherPrompt by vm.weatherPrompt.collectAsStateSafe()
+        weatherPrompt?.let { p ->
+            WeatherSwapDialog(
+                sport = p.sport ?: "session",
+                reason = p.reason ?: "conditions look rough",
+                onKeep = { vm.dismissWeatherPrompt() },
+                onSwap = { vm.swapWeatherWorkout() },
+                onDontAskAgain = { vm.optOutOfWeatherPrompts() },
+            )
+        }
         if (loading && summary == null) {
             Column(mod, verticalArrangement = Arrangement.spacedBy(12.dp)) {
                 SkeletonCard(lines = 3)
@@ -309,6 +319,27 @@ fun HomeScreen(
         // a ring told the athlete they were "moderately recovered" on the strength
         // of no evidence at all. Show the absence instead, and the way to fix it.
         val unmeasured = rec?.basis == "none"
+
+        // The injury loop's two prompts sit ABOVE the athlete's own card order on
+        // purpose. They are not dashboard cards: one is a question that goes
+        // away the moment it is answered, the other explains why this week's
+        // training changed shape. Neither belongs at the bottom of a list
+        // somebody reordered six months ago, and neither is worth a switch in
+        // Customize home. Both are absent unless the server says otherwise.
+        val injuryBusy by vm.injuryBusy.collectAsStateSafe()
+        val injuryStatus by vm.injuryStatus.collectAsStateSafe()
+        s.injury_checkin?.let { c ->
+            InjuryCheckinCard(mod, c, injuryBusy) { vm.answerInjuryCheckin(it) }
+        }
+        injuryStatus?.let { msg ->
+            Text(
+                msg,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(horizontal = 16.dp),
+            )
+        }
+        InjuryBackoffBanner(mod, s.injury_backoff)
 
         // Everything below is the athlete's own order (Customize home). key() is
         // load-bearing: without it a reorder would shuffle each card's remember
@@ -602,13 +633,30 @@ fun HomeScreen(
                                 style = MaterialTheme.typography.bodySmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                             )
+                            // The pain check, but ONLY when this session could
+                            // actually have loaded something on file: the server
+                            // sends pain_check for a squat day with a bad knee
+                            // and stays silent for a swim (painCheckArea in
+                            // _shared/injury.ts). An always-on "any pain?" is
+                            // the kind of question athletes learn to tap past.
+                            // Same 1-5 scale as the morning soreness check, and
+                            // it rides on the same submit as the difficulty, so
+                            // logging the workout is still one decision.
+                            var pain by rememberSaveable(s.today_workout?.id) { mutableStateOf<Int?>(null) }
+                            s.pain_check?.let { pc ->
+                                SectionLabel(
+                                    "Any pain in your ${pc.area.lowercase()}?",
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                                WellnessScale("Pain", "none", "sharp", pain) { pain = it }
+                            }
                             SectionLabel("How did it go?", color = MaterialTheme.colorScheme.onSurfaceVariant)
                             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                                 listOf("too_easy" to "Too easy", "just_right" to "Just right", "too_hard" to "Too hard").forEach { (k, label) ->
                                     GhostButton(
                                         onClick = {
                                             haptics.performHapticFeedback(HapticFeedbackType.LongPress)
-                                            vm.submitFeedback(k, rpe)
+                                            vm.submitFeedback(k, rpe, pain)
                                         },
                                         modifier = Modifier.weight(1f),
                                         enabled = !submittingFeedback,

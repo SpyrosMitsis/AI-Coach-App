@@ -57,7 +57,7 @@
         android:name=".WorkoutMakerApp"
         android:allowBackup="false"
         android:icon="@mipmap/ic_launcher"
-        android:label="Workout Maker"
+        android:label="Metis"
         android:supportsRtl="true"
         android:theme="@style/Theme.WorkoutMaker"
         tools:targetApi="34">

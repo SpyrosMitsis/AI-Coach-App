@@ -165,11 +165,14 @@ export default function SettingsPage() {
                 </select>
               </Field>
 
+              {/* The goal RACE is named by the starred row in Goals & races
+                  below, which owns it. This line used to print onboarding.goal
+                  beside the race date, which is the athlete's training goal
+                  wearing a race's clothes. */}
               {(o.goal_date || o.target_pace) && (
                 <p className="text-xs text-muted-foreground">
-                  Goal: {o.goal ?? "-"}
-                  {o.goal_date ? ` · ${o.goal_date}` : ""}
-                  {o.target_pace ? ` · ${o.target_pace}` : ""} (set in Goals &amp; races below)
+                  Goal race{o.goal_date ? `: ${o.goal_date}` : ""}
+                  {o.target_pace ? ` · target ${o.target_pace}` : ""} (starred in Goals &amp; races below)
                 </p>
               )}
               <Input

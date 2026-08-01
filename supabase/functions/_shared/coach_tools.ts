@@ -8,8 +8,19 @@ import type { SupabaseClient } from "jsr:@supabase/supabase-js@2";
 import { computeRecovery } from "./recovery.ts";
 import { freshnessWord, recoveryWord } from "./prompt.ts";
 import { applyFallbackFitness } from "./load.ts";
-import { injuriesText } from "./profile.ts";
+import { goalsText, injuriesOf, injuriesText } from "./profile.ts";
+import {
+  activeBackoffs,
+  addDays,
+  BACKOFF_DAYS,
+  clearBackoff,
+  FOLLOWUP_REPEAT_DAYS,
+  markInjuryChecked,
+  unresolvedInjuries,
+  upsertBackoff,
+} from "./injury.ts";
 import { assessFeasibility, type FeasibilityInput, matchDemand } from "./feasibility.ts";
+import { goalRaceLine, pickGoalRace, type RaceRow } from "./context.ts";
 
 const DAY = 86400000;
 const iso = (d: number) => new Date(d).toISOString().slice(0, 10);
@@ -73,8 +84,7 @@ export function goalTextFor(name: string, distance: string | null): string {
 }
 
 /**
- * Does a goal (a race row, or the profile's anchor) answer to what the athlete
- * asked to remove?
+ * Does a race row answer to what the athlete asked to remove?
  *
  * Loose on the name deliberately: people say "the Ironman", not "Ironman
  * Barcelona 2027". Substring either way, so both a shorter and a longer phrase
@@ -97,30 +107,6 @@ export function matchesGoal(
   if (!a) return false;
   const byName = a.includes(b) || b.includes(a);
   return byName && byDate;
-}
-
-/**
- * Give the profile's goal anchor a row in `races` if it has none.
- *
- * An anchor set before set_goal_race wrote to `races` exists only in
- * onboarding.goal: Home shows it, Goals and races does not, and the athlete has
- * no way to delete something they cannot see. Backfilling makes the two agree
- * without ever discarding a goal.
- */
-async function backfillAnchorRace(admin: SupabaseClient, userId: string): Promise<void> {
-  const { data: p } = await admin.from("user_profiles")
-    .select("onboarding").eq("id", userId).single();
-  const o = (p?.onboarding ?? {}) as Record<string, unknown>;
-  const name = typeof o.goal === "string" ? o.goal.trim() : "";
-  const date = typeof o.goal_date === "string" ? o.goal_date.trim() : "";
-  if (!name || !/^\d{4}-\d{2}-\d{2}$/.test(date)) return;
-
-  const { data: existing } = await admin.from("races")
-    .select("id").eq("user_id", userId).eq("name", name).eq("date", date).maybeSingle();
-  if (existing?.id) return;
-  await admin.from("races").insert({
-    user_id: userId, name, date, priority: "A", sport: "run",
-  });
 }
 
 /**
@@ -280,6 +266,67 @@ export const TOOL_CATALOG: ToolDef[] = [
   {
     name: "resume_training", kind: "act", args: "{}", schema: NO_ARGS,
     description: "End an active training pause early. Use if the athlete says they're back / resuming sooner than the pause's original end date.",
+  },
+  {
+    name: "set_injury_backoff", kind: "act",
+    args: "{ area: string, level: 'ease'|'avoid', days?: number, reason?: string }",
+    schema: {
+      type: "object",
+      properties: {
+        area: { type: "string", description: "Body area, e.g. 'Knee', 'Lower back', 'Achilles'. Match an existing injury area when there is one." },
+        level: {
+          type: "string",
+          enum: ["ease", "avoid"],
+          description: "ease = keep training it but cap the intensity; avoid = do not load it at all (also stops the sports that stress it being scheduled)",
+        },
+        days: { type: "number", description: "How long, in days from today. Defaults to 7. Capped at 60." },
+        reason: { type: "string", description: "Why, e.g. 'sharp pain on Tuesday's run'" },
+      },
+      required: ["area", "level"],
+    },
+    description:
+      "Back off an injured area for a set number of days. This is what actually changes the workouts: it strips the movements that load that area out of generated sessions and, at 'avoid', stops the affected sports being scheduled. Use whenever the athlete reports pain in an area, do NOT rely on remember alone for this.",
+  },
+  {
+    name: "clear_injury_backoff", kind: "act", args: "{ area?: string }",
+    schema: {
+      type: "object",
+      properties: { area: { type: "string", description: "Area to release. Omit to clear every active backoff." } },
+    },
+    description: "End an injury backoff early, when the athlete says the area feels fine again. Backoffs expire on their own, so this is only for 'it's better already'.",
+  },
+  {
+    name: "update_injury_status", kind: "act",
+    args: "{ area: string, status: 'present'|'better'|'resolved' }",
+    schema: {
+      type: "object",
+      properties: {
+        area: { type: "string", description: "The injury area the athlete is talking about" },
+        status: {
+          type: "string",
+          enum: ["present", "better", "resolved"],
+          description: "resolved REMOVES it from the injuries the coach programs around, use it only when they say it is genuinely gone",
+        },
+      },
+      required: ["area", "status"],
+    },
+    description:
+      "Record how a known injury is doing. 'resolved' takes it off the list so sessions stop being built around it; 'present'/'better' just log the answer and push the next check-in out a week. Use when the athlete volunteers an update on an injury, so the app stops asking.",
+  },
+  {
+    name: "set_weather_prompt_pref", kind: "act", args: "{ opt_out: boolean, reason?: string }",
+    schema: {
+      type: "object",
+      properties: {
+        opt_out: {
+          type: "boolean",
+          description: "true = stop asking about weather-blocked outdoor sessions (athlete has an indoor alternative like a gym/treadmill/trainer); false = resume asking",
+        },
+        reason: { type: "string", description: "Why, e.g. 'have a home gym', 'treadmill at work'" },
+      },
+      required: ["opt_out"],
+    },
+    description: "Set whether the daily weather check should prompt the athlete to swap outdoor sessions when conditions are unsafe. Use when the athlete says something like 'I have gym access, stop asking about weather' or conversely 'go ahead and ask me again'.",
   },
   {
     name: "set_goal_race",
@@ -618,7 +665,7 @@ export async function executeTool(
       }
       case "get_profile": {
         const { data: p } = await admin.from("user_profiles")
-          .select("display_name, onboarding, coach_knowledge, training_paused_until, training_pause_reason")
+          .select("display_name, onboarding, coach_knowledge, training_paused_until, training_pause_reason, injury_backoff")
           .eq("id", userId).single();
         const o = (p?.onboarding ?? {}) as Record<string, unknown>;
         const { data: races } = await admin.from("races")
@@ -633,8 +680,13 @@ export async function executeTool(
           .order("date", { ascending: false })
           .limit(8);
         const pausedUntil = p?.training_paused_until as string | null;
+        const today = iso(Date.now());
         return JSON.stringify({
-          goal: o.goal, goal_date: o.goal_date, experience: o.experience,
+          // `goal` is the overarching TRAINING goal; the dated goal is a row in
+          // `goals` below, named here so the two can never be read as one.
+          goal: goalsText(o), goal_date: o.goal_date,
+          goal_race: goalRaceLine(pickGoalRace((races ?? []) as RaceRow[], today, o.goal_date as string), today) || null,
+          experience: o.experience,
           days: o.days, session_min: o.session_duration, equipment: o.equipment,
           injuries: injuriesText(o), lthr: o.lthr, ftp: o.ftp, threshold_pace: o.threshold_pace_per_km,
           target_pace: o.target_pace, goals: races ?? [], known: p?.coach_knowledge ?? "",
@@ -645,6 +697,20 @@ export async function executeTool(
           // Active training pause (set_training_pause), null when there isn't one.
           training_paused_until: pausedUntil && pausedUntil >= iso(Date.now()) ? pausedUntil : null,
           training_pause_reason: p?.training_pause_reason ?? null,
+          // The follow-up loop's state, so the coach can ask about a niggle it
+          // has not heard about in a week instead of re-asking about one the
+          // athlete answered this morning. `injuries` above is the prose line;
+          // this is the same list with its dates.
+          injury_status: unresolvedInjuries(injuriesOf(o)).map((i) => ({
+            area: i.area,
+            severity: i.severity || null,
+            raised_at: i.raised_at ?? null,
+            last_checked: i.last_checked ?? null,
+            status: i.status || "not asked yet",
+          })),
+          // Dated backoffs in force RIGHT NOW. These are already being enforced
+          // on generation, so the coach should describe them, not re-impose them.
+          injury_backoff: activeBackoffs(p?.injury_backoff, today),
         });
       }
       case "get_readiness": {
@@ -798,6 +864,86 @@ export async function executeTool(
         }).eq("id", userId);
         return JSON.stringify({ ok: true });
       }
+      case "set_injury_backoff": {
+        const area = String(args.area ?? "").trim();
+        if (!area) return "error: area is required";
+        const level = args.level === "avoid" ? "avoid" : args.level === "ease" ? "ease" : null;
+        if (!level) return "error: level must be 'ease' or 'avoid'";
+        const today = iso(Date.now());
+        const days = typeof args.days === "number" && isFinite(args.days)
+          ? Math.min(60, Math.max(1, Math.round(args.days)))
+          : BACKOFF_DAYS;
+        const reason = typeof args.reason === "string" && args.reason.trim()
+          ? args.reason.trim().slice(0, 200)
+          : undefined;
+        const { data: p } = await admin.from("user_profiles")
+          .select("injury_backoff").eq("id", userId).single();
+        const next = upsertBackoff(activeBackoffs(p?.injury_backoff, today), {
+          area, level, until: addDays(today, days), reason, set_at: today,
+        });
+        await admin.from("user_profiles").update({ injury_backoff: next }).eq("id", userId);
+        return JSON.stringify({
+          ok: true, area, level, until: addDays(today, days),
+          // Named back so the coach can say what it actually did rather than
+          // promising a vaguer version of it.
+          effect: level === "avoid"
+            ? "movements loading this area are removed from generated sessions, and the sports that stress it will not be scheduled"
+            : "the area is still trained, but hard zones and heavy loading through it are capped",
+        });
+      }
+      case "clear_injury_backoff": {
+        const today = iso(Date.now());
+        const area = typeof args.area === "string" ? args.area.trim() : "";
+        const { data: p } = await admin.from("user_profiles")
+          .select("injury_backoff").eq("id", userId).single();
+        const before = activeBackoffs(p?.injury_backoff, today);
+        const next = clearBackoff(before, area || undefined);
+        await admin.from("user_profiles").update({ injury_backoff: next }).eq("id", userId);
+        return JSON.stringify({ ok: true, cleared: before.length - next.length });
+      }
+      case "update_injury_status": {
+        const area = String(args.area ?? "").trim();
+        if (!area) return "error: area is required";
+        const status = args.status;
+        if (status !== "present" && status !== "better" && status !== "resolved") {
+          return "error: status must be 'present', 'better' or 'resolved'";
+        }
+        const today = iso(Date.now());
+        const { data: p } = await admin.from("user_profiles")
+          .select("onboarding, injury_backoff").eq("id", userId).single();
+        const o = (p?.onboarding ?? {}) as Record<string, unknown>;
+        const before = injuriesOf(o);
+        if (!before.some((i) => i.area.trim().toLowerCase() === area.toLowerCase())) {
+          return `error: no injury on file matching "${area}". Known: ${
+            before.map((i) => i.area).filter(Boolean).join(", ") || "none"
+          }`;
+        }
+        const injuries = markInjuryChecked(before, area, status, today);
+        // A resolved area must also stop backing off, or the athlete says "it's
+        // fine now" and keeps getting sessions built around it until the dated
+        // window happens to lapse.
+        const backoffs = status === "resolved"
+          ? clearBackoff(activeBackoffs(p?.injury_backoff, today), area)
+          : activeBackoffs(p?.injury_backoff, today);
+        await admin.from("user_profiles").update({
+          onboarding: { ...o, injuries },
+          injury_backoff: backoffs,
+        }).eq("id", userId);
+        return JSON.stringify({
+          ok: true, area, status,
+          removed_from_injuries: status === "resolved",
+          next_check_in_days: status === "resolved" ? null : FOLLOWUP_REPEAT_DAYS,
+        });
+      }
+      case "set_weather_prompt_pref": {
+        const optOut = args.opt_out === true;
+        const reason = typeof args.reason === "string" && args.reason.trim() ? args.reason.trim().slice(0, 200) : null;
+        await admin.from("user_profiles").update({
+          weather_prompt_opt_out: optOut,
+          weather_prompt_opt_out_reason: optOut ? reason : null,
+        }).eq("id", userId);
+        return JSON.stringify({ ok: true, opt_out: optOut, reason });
+      }
       case "make_easier": {
         const bad = dateError(args.date, minDate, { field: "date", required: false });
         if (bad) return bad;
@@ -945,22 +1091,21 @@ export async function executeTool(
         }
 
         // Only an A goal anchors periodization, matching setGoalRace on device.
+        //
+        // The anchor is a DATE pointing into `races`, never a copy of the name.
+        // onboarding.goal is the athlete's OVERARCHING training goal (the phone
+        // derives it from goals_by_sport), and writing the event name over it is
+        // what made every coach prompt say their goal was "Athens Marathon" and
+        // forget they also wanted to build muscle.
         let anchored = false;
         if (priority === "A") {
           const { data: p } = await admin.from("user_profiles").select("onboarding").eq("id", userId).single();
           const o = (p?.onboarding ?? {}) as Record<string, unknown>;
           const pace = sport === "run" && target ? { target_pace: target } : {};
           await admin.from("user_profiles").update({
-            onboarding: { ...o, goal: name, goal_date: date, ...pace },
+            onboarding: { ...o, goal_date: date, ...pace },
           }).eq("id", userId);
           anchored = true;
-        } else {
-          // A B/C goal leaves the anchor alone, which is correct, but an anchor
-          // set before this tool wrote to `races` has no row backing it and is
-          // therefore invisible (and un-deletable) in Goals and races. Give it
-          // one now, so adding a second goal surfaces the first rather than
-          // leaving a goal that only Home can see.
-          await backfillAnchorRace(admin, userId);
         }
 
         // Return the verdict WITH the write, so the coach cannot save a goal
@@ -1008,19 +1153,23 @@ export async function executeTool(
         }
 
         // The anchor lives in onboarding, separately from the races list, so
-        // deleting the row is only half the job: clear it here too when it
-        // pointed at what was just removed. This also covers a legacy anchor
-        // that never had a race row at all, which is the case that made a
-        // "removed" goal come back.
+        // deleting the row is only half the job: move it here too when it
+        // pointed at what was just removed.
+        //
+        // The anchor is a DATE pointing into `races` now, so this is a date
+        // comparison rather than the name match matchesGoal does on the rows.
+        // The second arm covers a DANGLING anchor, a date with no row behind it
+        // (left over from before the goal field was split): it clears only when
+        // the athlete asked for that exact date, so removing an unrelated race
+        // can never silently move their periodization.
         const { data: p } = await admin.from("user_profiles")
           .select("onboarding").eq("id", userId).single();
         const o = (p?.onboarding ?? {}) as Record<string, unknown>;
-        const anchor = {
-          name: typeof o.goal === "string" ? o.goal : "",
-          date: typeof o.goal_date === "string" ? o.goal_date : "",
-        };
-        const hadAnchor = Boolean(anchor.name || anchor.date);
-        const clearing = hadAnchor && matchesGoal(anchor, name, date);
+        const anchorDate = typeof o.goal_date === "string" ? o.goal_date : "";
+        const clearing = Boolean(anchorDate) && (
+          doomed.some((r) => r.date === anchorDate) ||
+          (date === anchorDate && !all.some((r) => r.date === anchorDate))
+        );
 
         let newAnchor: { name: string; date: string } | null = null;
         if (clearing) {
@@ -1032,13 +1181,12 @@ export async function executeTool(
             .filter((r) => !doomed.some((d) => d.id === r.id))
             .filter((r) => (r.priority ?? "A").toUpperCase() === "A" && r.date >= today)
             .sort((a, b) => a.date.localeCompare(b.date))[0];
+          // The name is reported back so the coach can say which goal took over,
+          // but only the date is persisted: onboarding.goal is the athlete's
+          // training goal and this tool has no business rewriting it.
           newAnchor = next ? { name: next.name, date: next.date } : null;
           await admin.from("user_profiles").update({
-            onboarding: {
-              ...o,
-              goal: newAnchor?.name ?? null,
-              goal_date: newAnchor?.date ?? null,
-            },
+            onboarding: { ...o, goal_date: newAnchor?.date ?? null },
           }).eq("id", userId);
         }
 

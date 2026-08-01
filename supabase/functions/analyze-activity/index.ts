@@ -7,7 +7,7 @@
 // force = true recomputes.
 
 import { handleOptions, json } from "../_shared/cors.ts";
-import { adminClient, getUserId } from "../_shared/supabase.ts";
+import { adminClient, getUserId, PROFILE_COLUMNS_ANALYSIS, type ProfileRow } from "../_shared/supabase.ts";
 import { runActivityAnalysis } from "../_shared/analyze_core.ts";
 
 Deno.serve(async (req) => {
@@ -37,11 +37,12 @@ Deno.serve(async (req) => {
     // peek: only return cached results — never trigger a fresh (LLM) analysis.
     if (body.peek === true) return json({ ok: false, not_analyzed: true });
 
-    const { data: profile } = await admin
+    const { data: profileRow } = await admin
       .from("user_profiles")
-      .select("*")
+      .select(PROFILE_COLUMNS_ANALYSIS)
       .eq("id", userId)
       .single();
+    const profile = profileRow as ProfileRow | null;
 
     const analysis = await runActivityAnalysis(admin, userId, act, profile);
     return json(analysis);

@@ -15,7 +15,7 @@ import {
   runHrZones,
   runPaceZones,
 } from "./intervals.ts";
-import { getWeather } from "./weather.ts";
+import { assessViability, getWeather } from "./weather.ts";
 import { paceToSec, paceZonesFromThreshold } from "./zones.ts";
 
 export type HrZone = { zone: string; min: number; max: number };
@@ -421,6 +421,50 @@ export function pickGoalRace<T extends RaceRow>(
 }
 
 /**
+ * The athlete's dated goals, soonest first. The single read behind racesBlock,
+ * the goal anchor and goalRaceLine, so five callers do not each write it.
+ *
+ * Best-effort like every other block here: a failed read costs a line, not a
+ * plan.
+ */
+export async function upcomingGoals(
+  admin: SupabaseClient,
+  userId: string,
+  today: string,
+): Promise<RaceRow[]> {
+  try {
+    const { data } = await admin
+      .from("races")
+      .select("name, date, priority, sport, distance, target, notes")
+      .eq("user_id", userId)
+      .gte("date", today)
+      .order("date", { ascending: true })
+      .limit(8);
+    return (data ?? []) as RaceRow[];
+  } catch (_e) {
+    return [];
+  }
+}
+
+/**
+ * The goal event as one clause of prose: "Athens Marathon on 2027-11-14, in 15
+ * weeks".
+ *
+ * racesBlock is the planner's version, every goal carrying the rule the week
+ * owes it. A chat turn, a morning brief or a week recap needs the opposite: one
+ * thing the coach can mention in passing, because the voice rule is that it
+ * interprets rather than reads a calendar back. "" when there is no upcoming
+ * goal, so a caller can append it blind.
+ */
+export function goalRaceLine(r: RaceRow | null | undefined, today: string): string {
+  if (!r?.name?.trim() || !r?.date) return "";
+  const w = weeksBetween(today, r.date);
+  if (w < 0) return "";
+  const when = w === 0 ? "this week" : w === 1 ? "in 1 week" : `in ${w} weeks`;
+  return `${r.name.trim()} on ${r.date}, ${when}`;
+}
+
+/**
  * Every upcoming goal, with what each one is owed. Renders "" when the athlete
  * has none, so the prompt never carries an empty heading.
  */
@@ -429,32 +473,33 @@ export async function racesBlock(
   userId: string,
   today: string,
 ): Promise<string> {
-  const { data } = await admin
-    .from("races")
-    .select("name, date, priority, sport, distance, target, notes")
-    .eq("user_id", userId)
-    .gte("date", today)
-    .order("date", { ascending: true })
-    .limit(8);
-  const lines = (data ?? []).map((r) => raceLine(r as RaceRow, today)).filter((l): l is string => !!l);
+  const data = await upcomingGoals(admin, userId, today);
+  const lines = data.map((r) => raceLine(r, today)).filter((l): l is string => !!l);
   if (!lines.length) return "";
   return `\n\nGOALS ON THE CALENDAR:\n${lines.join("\n")}\n` +
     `Prescribe for the nearest goal the session can serve. A target above is the athlete's own ` +
     `words for what a good day looks like: use it to pick the work, and never contradict it.`;
 }
 
+/**
+ * Weeks to the goal, the phase that implies, and which way fitness is moving.
+ *
+ * Takes the RESOLVED goal date (pickGoalRace's row), not onboarding.goal_date:
+ * an anchor left pointing at a race that was deleted used to keep driving phase
+ * and taper from a date with nothing behind it.
+ */
 export function goalBlock(
-  onboarding: { goal_date?: string },
+  goalDate: string | null,
   weeksToGoal: number | null,
   phase: string,
   acts28: ActivityRow[],
 ): string {
-  if (weeksToGoal == null && !onboarding.goal_date) return "";
+  if (weeksToGoal == null && !goalDate) return "";
   const ctlVals = acts28.filter((a) => a.ctl != null).map((a) => Number(a.ctl));
   const ctlTrend = ctlVals.length >= 2 ? ctlVals[0] - ctlVals[ctlVals.length - 1] : 0;
   const trendWord = ctlTrend > 1 ? "building" : ctlTrend < -1 ? "declining" : "flat";
   return `\n\nGOAL TRACKING:\n` +
-    (weeksToGoal != null ? `- ${weeksToGoal} weeks to goal (${onboarding.goal_date}); phase: ${phase}.\n` : "") +
+    (weeksToGoal != null ? `- ${weeksToGoal} weeks to goal (${goalDate}); phase: ${phase}.\n` : "") +
     `- Fitness (CTL) is ${trendWord} (${ctlTrend >= 0 ? "+" : ""}${ctlTrend.toFixed(1)} over 28d).\n` +
     `- Prioritise the work that moves the goal; ${weeksToGoal != null && weeksToGoal <= 2 ? "this is taper, sharpen, don't build." : "progress the limiter without spiking load."}`;
 }
@@ -492,10 +537,19 @@ export function calendarBlock(raw: unknown): string {
     `\nPut the long/hard sessions on days with the most free time; on tight days keep the session short, and treat an all-day commitment as little-to-no training time (rest or a very short easy session). Never prescribe a specific clock time.`;
 }
 
-export async function weatherBlock(lat: number, lon: number): Promise<string> {
+export async function weatherBlock(lat: number, lon: number, sport: "run" | "ride"): Promise<string> {
   const wx = await getWeather(lat, lon);
   if (!wx) return "";
+  const verdict = assessViability(wx, sport);
+  const sportWord = sport === "ride" ? "cycling" : "running";
+  const guidance = verdict.tier === "blocked"
+    ? `HARD CONSTRAINT: outdoor ${sportWord} is NOT safe/viable today (${verdict.reasons.join("; ")}). ` +
+      `Generate this as an INDOOR session (treadmill for a run, indoor trainer for a ride) instead of ` +
+      `an outdoor route, and say so plainly in coach_note.`
+    : verdict.tier === "caution"
+    ? `Caution: ${verdict.reasons.join("; ")}. Adjust pace/route accordingly but outdoor is still fine.`
+    : wx.summary;
   return `\n\nWEATHER (today, at the athlete's location):\n` +
     `- ${wx.tempC.toFixed(0)}°C (feels ${wx.apparentC.toFixed(0)}°C), ${wx.humidity}% RH, wind ${wx.windKmh.toFixed(0)} km/h, rain prob ${wx.precipProbMax}%.\n` +
-    `- Guidance: ${wx.summary}.`;
+    `- Guidance: ${guidance}.`;
 }

@@ -37,6 +37,63 @@ suspend fun WorkoutRepository.dailySummary(date: LocalDate = LocalDate.now()): D
     return s
 }
 
+// --- Injury follow-up loop ------------------------------------------------
+// Both answers go to the server rather than being written from here, because
+// both have consequences the phone should not be deciding: "resolved" also has
+// to drop any active backoff, and a pain score is escalated into a dated
+// instruction by one rule that lives (and is tested) in _shared/injury.ts.
+// Token-free: injury-checkin calls no LLM.
+
+// "Is it still bothering you?" -> present | better | resolved.
+suspend fun WorkoutRepository.answerInjuryCheckin(
+    area: String,
+    status: String,
+    date: LocalDate = LocalDate.now(),
+) {
+    val body = buildJsonObject {
+        put("kind", JsonPrimitive("followup"))
+        put("area", JsonPrimitive(area))
+        put("status", JsonPrimitive(status))
+        put("date", JsonPrimitive(date.toString()))
+    }.toString()
+    supabase.functions.invoke("injury-checkin") { setBody(body) }
+}
+
+// Post-workout pain, 1-5 on the same scale as the morning soreness check.
+// Returns what the server decided to do about it, so the UI can say so.
+suspend fun WorkoutRepository.reportPain(
+    area: String,
+    pain: Int,
+    plannedWorkoutId: String? = null,
+    date: LocalDate = LocalDate.now(),
+): PainReportResult = json.decodeFromString(
+    supabase.functions.invoke("injury-checkin") {
+        setBody(
+            buildJsonObject {
+                put("kind", JsonPrimitive("pain"))
+                put("area", JsonPrimitive(area))
+                put("pain", JsonPrimitive(pain))
+                put("date", JsonPrimitive(date.toString()))
+                plannedWorkoutId?.let { put("planned_workout_id", JsonPrimitive(it)) }
+            }.toString(),
+        )
+    }.body(),
+)
+
+// Token-free daily viability check (weather-check/index.ts calls no LLM).
+// Best-effort by design: a failed/null result just means no weather line on
+// the morning notification, never a broken reminder.
+suspend fun WorkoutRepository.weatherCheck(date: LocalDate, lat: Double?, lon: Double?): WeatherCheckResult {
+    val body = buildJsonObject {
+        put("date", JsonPrimitive(date.toString()))
+        lat?.let { put("lat", JsonPrimitive(it)) }
+        lon?.let { put("lon", JsonPrimitive(it)) }
+    }.toString()
+    return json.decodeFromString(
+        supabase.functions.invoke("weather-check") { setBody(body) }.body(),
+    )
+}
+
 // The coach's proactive daily note. Generated server-side at most once per
 // calendar day; cached in Room keyed by date so re-opening Home is free and
 // offline. Returns null when disabled, not yet generated offline, or empty.

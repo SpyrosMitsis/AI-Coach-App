@@ -181,9 +181,8 @@ internal fun ProSection(vm: SettingsViewModel) {
     }
 }
 
-// Ko-fi page used by builds without Play Billing (foss). TODO: replace the
-// placeholder handle with the real Ko-fi page before release.
-internal const val KOFI_URL = "https://ko-fi.com/PLACEHOLDER"
+// Ko-fi page used by builds without Play Billing (foss).
+internal const val KOFI_URL = "https://ko-fi.com/spyrosmitsis"
 
 @Composable
 internal fun SupportSection(vm: SettingsViewModel) {

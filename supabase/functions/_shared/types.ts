@@ -18,10 +18,33 @@ export type LlmProvider =
 // Mirrors shared/types.ts's InjuryEntry. Legacy profiles only have the
 // free-text injury_history string; injuriesOf() (profile.ts) is the single
 // place that reconciles the two shapes for every server-side reader.
+//
+// raised_at/last_checked/status are the follow-up loop (see _shared/injury.ts).
+// All three are optional: an injury captured before this existed simply has no
+// dates, and injuryFollowUpDue treats it as due once, which is the right
+// behavior for a fact nobody has revisited since onboarding.
 export interface InjuryEntry {
   area: string;
   severity: "mild" | "moderate" | "serious" | "";
   note?: string;
+  raised_at?: string; // YYYY-MM-DD, when the athlete first raised it
+  last_checked?: string; // YYYY-MM-DD, when they last answered a follow-up
+  status?: InjuryStatus;
+}
+
+// The answer to "is this still bothering you?". "" = never asked.
+export type InjuryStatus = "" | "present" | "better" | "resolved";
+
+// A dated, per-area instruction to back off, written by the post-workout pain
+// check or by the coach. The structured counterpart of training_paused_until:
+// prose in coach_knowledge cannot override a concrete prescription, this can.
+// Inclusive `until`, self-expiring against the client's local date.
+export interface InjuryBackoff {
+  area: string;
+  level: "ease" | "avoid";
+  until: string; // YYYY-MM-DD, inclusive
+  reason?: string;
+  set_at?: string; // YYYY-MM-DD
 }
 
 export interface WorkoutExercise {
@@ -67,4 +90,11 @@ export interface LlmResult {
   completionTokens: number;
   provider: LlmProvider;
   model: string;
+  // Prompt-cache accounting (_shared/llm_cache.ts). Both are a SUBSET of
+  // promptTokens, not extra tokens: they say how much of the prompt was billed
+  // at the write (~1.25x) and read (~0.1x) rates instead of full price. Zero
+  // when the provider reported nothing, which is also what "no caching" looks
+  // like, so llm:cost showing a flat zero is the signal that a cache broke.
+  cacheWriteTokens?: number;
+  cacheReadTokens?: number;
 }

@@ -50,3 +50,51 @@ function describe(w: WeatherSnapshot): string {
   if (w.windKmh >= 30) bits.push("strong wind, expect slower into-wind splits");
   return bits.length ? bits.join("; ") : "mild, no adjustment needed";
 }
+
+// Deterministic (non-LLM) sport-aware viability gate. Separate from describe()
+// above on purpose: describe() is prose fed to the model as a soft hint, this
+// is a hard threshold used to (a) escalate that prompt to a hard constraint
+// and (b) drive the token-free daily swap-prompt check in weather-check/.
+//
+// Running is heat/cold-limited per effort (no airflow cooling, no coasting
+// recovery); cycling is wind/rain-limited for bike control, braking, and
+// spray/visibility at speed — the two sports get different thresholds.
+export type ViabilityTier = "ok" | "caution" | "blocked";
+export interface ViabilityVerdict {
+  tier: ViabilityTier;
+  reasons: string[];
+}
+
+export function assessViability(w: WeatherSnapshot, sport: "run" | "ride"): ViabilityVerdict {
+  const blocked: string[] = [];
+  const caution: string[] = [];
+
+  if (sport === "run") {
+    if (w.apparentC >= 36) blocked.push(`extreme heat (feels ${w.apparentC.toFixed(0)}°C)`);
+    if (w.apparentC <= -10) blocked.push(`extreme cold (feels ${w.apparentC.toFixed(0)}°C)`);
+    if (blocked.length === 0) {
+      if (w.apparentC >= 28) caution.push(`hot (feels ${w.apparentC.toFixed(0)}°C)`);
+      if (w.apparentC <= 0) caution.push(`freezing (feels ${w.apparentC.toFixed(0)}°C)`);
+      if (w.humidity >= 80 && w.apparentC >= 24) caution.push(`very humid (${w.humidity}% RH)`);
+      if (w.windKmh >= 40) caution.push(`strong wind (${w.windKmh.toFixed(0)} km/h)`);
+      if (w.precipProbMax >= 70 && w.precipMm >= 3) caution.push(`heavy rain likely (${w.precipProbMax}%, ${w.precipMm.toFixed(1)}mm)`);
+    }
+  } else {
+    if (w.windKmh >= 45) blocked.push(`strong crosswind risk (${w.windKmh.toFixed(0)} km/h)`);
+    if (w.precipProbMax >= 70 && w.precipMm >= 2) {
+      blocked.push(`heavy rain likely (${w.precipProbMax}%, ${w.precipMm.toFixed(1)}mm) — poor traction/visibility on a bike`);
+    }
+    if (w.apparentC <= -5) blocked.push(`extreme wind-chill exposure (feels ${w.apparentC.toFixed(0)}°C)`);
+    if (w.apparentC >= 37) blocked.push(`extreme heat with no shade on a bike route (feels ${w.apparentC.toFixed(0)}°C)`);
+    if (blocked.length === 0) {
+      if (w.windKmh >= 30) caution.push(`elevated wind (${w.windKmh.toFixed(0)} km/h)`);
+      if (w.precipProbMax >= 50 || w.precipMm >= 0.5) caution.push(`rain likely (${w.precipProbMax}%, ${w.precipMm.toFixed(1)}mm)`);
+      if (w.apparentC <= 2) caution.push(`cold (feels ${w.apparentC.toFixed(0)}°C)`);
+      if (w.apparentC >= 30) caution.push(`hot (feels ${w.apparentC.toFixed(0)}°C)`);
+    }
+  }
+
+  if (blocked.length) return { tier: "blocked", reasons: blocked };
+  if (caution.length) return { tier: "caution", reasons: caution };
+  return { tier: "ok", reasons: [] };
+}

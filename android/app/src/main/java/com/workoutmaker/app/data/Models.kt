@@ -207,6 +207,55 @@ data class DailySummary(
     val active_llm_provider: String,
     val goal: GoalProgress? = null,
     val server: ServerCapabilities? = null,
+    // The injury follow-up loop (server-computed, see _shared/injury.ts). All
+    // three are read-only payload: nothing is written until the athlete answers,
+    // so re-fetching the summary never changes what is asked.
+    val injury_checkin: InjuryCheckin? = null,
+    val pain_check: PainCheck? = null,
+    val injury_backoff: List<InjuryBackoff> = emptyList(),
+)
+
+// "Is your knee still bothering you?", surfaced a few days after the athlete
+// raised it and then weekly while it persists. `question` is composed
+// server-side so the wording is identical wherever it gets asked.
+@Serializable
+data class InjuryCheckin(
+    val area: String,
+    val severity: String? = null,
+    val note: String? = null,
+    val raised_at: String? = null,
+    val days_since: Int? = null,
+    val question: String,
+)
+
+// Which injury today's session could have aggravated. Present only when the
+// session actually loads that area, so the question is never noise.
+@Serializable
+data class PainCheck(
+    val area: String,
+    val planned_workout_id: String? = null,
+)
+
+// What injury-checkin decided a pain answer meant. `severe` is the server
+// saying this is past the app's pay grade, not a diagnosis.
+@Serializable
+data class PainReportResult(
+    val ok: Boolean = false,
+    val area: String = "",
+    val pain: Int = 0,
+    val backoff: InjuryBackoff? = null,
+    val cleared: Boolean = false,
+    val severe: Boolean = false,
+)
+
+// A dated instruction the generator is already enforcing. Shown so the athlete
+// knows why their training changed shape.
+@Serializable
+data class InjuryBackoff(
+    val area: String,
+    val level: String,   // "ease" | "avoid"
+    val until: String,
+    val reason: String? = null,
 )
 
 // --- Body composition (weight / body fat / lean mass over time) --------------

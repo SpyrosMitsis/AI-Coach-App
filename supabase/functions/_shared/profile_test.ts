@@ -13,10 +13,14 @@ import {
 
 Deno.test("goalsText: combines several goals, falls back to legacy then default", () => {
   assertEquals(goalsText({ goals: ["Marathon", "Build Muscle"] }), "Marathon + Build Muscle");
+  // The `goal` fallback can be trusted again: it is only ever the flat mirror
+  // of goals[] now. It used to double as wherever set_goal_race last wrote a
+  // race NAME, so this line could return "Athens Marathon" as a training goal.
   assertEquals(goalsText({ goal: "10K pace" }), "10K pace");
   assertEquals(goalsText({}), "General fitness");
   // Blank entries are ignored.
   assertEquals(goalsText({ goals: ["", "Strength"] }), "Strength");
+  assertEquals(goalsText({ goal: "  " }), "General fitness");
 });
 
 Deno.test("experienceForSport: per-sport wins, then legacy global, then any, then default", () => {

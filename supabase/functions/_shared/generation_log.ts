@@ -45,6 +45,8 @@ export interface GenerationLogEntry {
   model?: string | null;
   promptTokens?: number;
   completionTokens?: number;
+  cacheWriteTokens?: number;
+  cacheReadTokens?: number;
   /** user_profiles row, for custom/OpenRouter pricing. */
   profile?: PricingProfile | Record<string, unknown> | null;
   systemPrompt?: string | null;
@@ -66,15 +68,18 @@ export function generationLogRow(
 ): Record<string, unknown> {
   const promptTokens = e.promptTokens ?? 0;
   const completionTokens = e.completionTokens ?? 0;
+  const cacheWriteTokens = e.cacheWriteTokens ?? 0;
+  const cacheReadTokens = e.cacheReadTokens ?? 0;
   // A failure row (no provider reached, no tokens) has no cost to estimate;
   // leave it null rather than claiming $0 was spent.
-  const cost = e.provider && promptTokens + completionTokens > 0
+  const cost = e.provider && promptTokens + completionTokens + cacheReadTokens > 0
     ? estimateCostUsd(
       e.provider as LlmProvider,
       promptTokens,
       completionTokens,
       customPriceFromProfile(e.provider, e.profile),
       e.model ?? undefined,
+      { writeTokens: cacheWriteTokens, readTokens: cacheReadTokens },
     )
     : null;
 
@@ -86,6 +91,11 @@ export function generationLogRow(
     model: e.model ?? null,
     prompt_tokens: e.promptTokens ?? null,
     completion_tokens: e.completionTokens ?? null,
+    // Subsets of the prompt billed at the cache rates, not extra tokens.
+    // A run of zeroes on a feature that should be caching is the signal that
+    // something invalidated the prefix (see _shared/llm_cache.ts).
+    cache_write_tokens: e.cacheWriteTokens ?? null,
+    cache_read_tokens: e.cacheReadTokens ?? null,
     estimated_cost_usd: cost,
     system_prompt: e.systemPrompt ?? null,
     user_prompt: e.userPrompt ?? null,
@@ -131,6 +141,8 @@ export function logLlmResult(
     model: out.model,
     promptTokens: out.promptTokens,
     completionTokens: out.completionTokens,
+    cacheWriteTokens: out.cacheWriteTokens,
+    cacheReadTokens: out.cacheReadTokens,
     profile,
     ...extra,
   });

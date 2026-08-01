@@ -37,6 +37,7 @@ import androidx.compose.ui.unit.dp
 import com.workoutmaker.app.data.InjuryEntry
 import com.workoutmaker.app.ui.screens.settings.INJURY_AREAS
 import com.workoutmaker.app.ui.theme.amberAccent
+import java.time.LocalDate
 
 // ===========================================================================
 // Injuries as HARD RULES, one card each.
@@ -101,7 +102,7 @@ internal fun InjuryEditor(injuries: List<InjuryEntry>, onChange: (List<InjuryEnt
                 onClick = {
                     val area = draft.trim()
                     if (area.isNotBlank() && injurySeverity(injuries, area) == null) {
-                        onChange(injuries + InjuryEntry(area = area))
+                        onChange(injuries + newInjury(area))
                     }
                     draft = ""
                     adding = false
@@ -260,17 +261,41 @@ private const val NOTE_AREA = ""
 internal fun injurySeverity(current: List<InjuryEntry>, area: String): String? =
     current.firstOrNull { it.area.equals(area, ignoreCase = true) }?.severity
 
+/**
+ * A brand-new injury, stamped with the day it was raised.
+ *
+ * The stamp is the whole reason the follow-up loop can exist: "a couple of days
+ * after you told me" needs a date, and adding the injury is the only moment the
+ * app knows one. Every path that creates an entry goes through here so none of
+ * them can quietly skip it. Entries saved before this shipped have no date, and
+ * the server reads that as "never asked", which is what they are.
+ */
+internal fun newInjury(
+    area: String,
+    severity: String = "",
+    today: String = LocalDate.now().toString(),
+): InjuryEntry = InjuryEntry(area = area, severity = severity, raised_at = today)
+
 /** Add [area] (unqualified) when absent, remove it entirely when present. */
-internal fun toggleInjury(current: List<InjuryEntry>, area: String): List<InjuryEntry> =
+internal fun toggleInjury(
+    current: List<InjuryEntry>,
+    area: String,
+    today: String = LocalDate.now().toString(),
+): List<InjuryEntry> =
     if (injurySeverity(current, area) != null) current.filterNot { it.area.equals(area, ignoreCase = true) }
-    else current + InjuryEntry(area = area)
+    else current + newInjury(area, today = today)
 
 /** Set [area]'s severity ("" clears the qualifier, keeping the area listed). */
-internal fun setInjurySeverity(current: List<InjuryEntry>, area: String, severity: String): List<InjuryEntry> =
+internal fun setInjurySeverity(
+    current: List<InjuryEntry>,
+    area: String,
+    severity: String,
+    today: String = LocalDate.now().toString(),
+): List<InjuryEntry> =
     if (current.any { it.area.equals(area, ignoreCase = true) }) {
         current.map { if (it.area.equals(area, ignoreCase = true)) it.copy(severity = severity) else it }
     } else {
-        current + InjuryEntry(area = area, severity = severity)
+        current + newInjury(area, severity, today)
     }
 
 /** The per-area specifics ("no deep lunges"), distinct from the catch-all note. */

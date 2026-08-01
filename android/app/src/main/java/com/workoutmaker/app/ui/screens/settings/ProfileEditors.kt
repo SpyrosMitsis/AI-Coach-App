@@ -19,7 +19,10 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.RadioButton
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.foundation.selection.selectable
+import androidx.compose.ui.graphics.luminance
+import androidx.compose.ui.semantics.Role
 import androidx.compose.material3.Text
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.foundation.text.KeyboardOptions
@@ -41,10 +44,14 @@ import com.workoutmaker.app.data.Periodization
 import com.workoutmaker.app.data.ThemeMode
 import com.workoutmaker.app.data.ThemePalette
 import com.workoutmaker.app.ui.theme.palette
+import com.workoutmaker.app.ui.theme.dynamicColorSupported
+import com.workoutmaker.app.ui.theme.dynamicScheme
 import androidx.compose.foundation.layout.ColumnScope
 import com.workoutmaker.app.data.StartingLift
 import com.workoutmaker.app.ui.theme.amberAccent
 import com.workoutmaker.app.ui.components.GroupedSection
+import com.workoutmaker.app.ui.components.SectionLabel
+import com.workoutmaker.app.ui.components.SegmentedChoice
 import com.workoutmaker.app.ui.components.SegmentedToggle
 
 // ===========================================================================
@@ -324,54 +331,96 @@ internal fun WeeklyAvailabilityEditor(
 // like the other eight.
 
 // Theme palette + light/dark, shared by onboarding Appearance and Settings.
+// Show, don't list: the mode is one pill track and every palette is a tile
+// painted in its OWN colours, so the choice is made by looking rather than by
+// reading six names next to identical radio buttons.
 @Composable
 internal fun AppearancePicker(
     themeMode: ThemeMode,
     palette: ThemePalette,
     onMode: (ThemeMode) -> Unit,
     onPalette: (ThemePalette) -> Unit,
+    // Settings already has its own detail header; onboarding needs the label.
+    label: String? = "Make it yours",
 ) {
-    Text("Palette", style = MaterialTheme.typography.labelLarge)
-    Text(
-        "Re-skin the whole app. “Serene Vanguard” is the original sage look; the rest are experiments you can switch any time.",
-        style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
-    )
-    ThemePalette.entries.forEach { p ->
-        Row(
-            Modifier.fillMaxWidth().clickable { onPalette(p) }.padding(vertical = 8.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            RadioButton(selected = palette == p, onClick = { onPalette(p) })
-            Text(p.label, Modifier.padding(start = 8.dp), style = MaterialTheme.typography.bodyLarge)
-            Box(Modifier.weight(1f))
-            PaletteSwatches(p)
-        }
-    }
-    Text("Light / Dark", style = MaterialTheme.typography.labelLarge, modifier = Modifier.padding(top = 6.dp))
-    ThemeMode.entries.forEach { mode ->
-        Row(
-            Modifier.fillMaxWidth().clickable { onMode(mode) }.padding(vertical = 8.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            RadioButton(selected = themeMode == mode, onClick = { onMode(mode) })
-            Text(mode.label, Modifier.padding(start = 8.dp), style = MaterialTheme.typography.bodyLarge)
+    Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+        if (label != null) SectionLabel(label)
+        // Short labels: "Follow system" does not fit a third of a pill track.
+        val modes = listOf(ThemeMode.DARK to "Dark", ThemeMode.LIGHT to "Light", ThemeMode.SYSTEM to "System")
+        SegmentedChoice(
+            labels = modes.map { it.second },
+            selectedIndex = modes.indexOfFirst { it.first == themeMode }.coerceAtLeast(0),
+            onSelect = { onMode(modes[it].first) },
+        )
+        val choices = ThemePalette.entries.filter { it != ThemePalette.DYNAMIC || dynamicColorSupported }
+        // DYNAMIC is the default but renders as Serene below Android 12, where it
+        // is also not offered — so highlight the tile the app is actually showing.
+        val shown = if (palette == ThemePalette.DYNAMIC && !dynamicColorSupported) ThemePalette.SERENE else palette
+        // Fixed 3-up grid built from chunks: the tiles must share a row width,
+        // and FlowRow would leave a ragged last row of full-width cards.
+        choices.chunked(PALETTE_COLUMNS).forEach { row ->
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                row.forEach { p ->
+                    PaletteTile(p, selected = shown == p, onClick = { onPalette(p) }, modifier = Modifier.weight(1f))
+                }
+                // Keep a short last row's tiles the same size as the ones above.
+                repeat(PALETTE_COLUMNS - row.size) { Box(Modifier.weight(1f)) }
+            }
         }
     }
 }
 
-// Three dots previewing a palette's primary/secondary/surface (its dark scheme).
+private const val PALETTE_COLUMNS = 3
+
+// One palette, painted in its own colours: tile = primaryContainer, name =
+// onPrimaryContainer, and three dots (primary / secondary / surface) so a palette
+// is judged by the trio it actually paints the app with, not by one accent.
+// Selected is a ring in that palette's primary, so the tile still reads as itself
+// and not as the currently active theme.
 @Composable
-internal fun PaletteSwatches(p: ThemePalette) {
-    val scheme = p.palette().dark
-    Row(horizontalArrangement = Arrangement.spacedBy(4.dp), verticalAlignment = Alignment.CenterVertically) {
-        listOf(scheme.primary, scheme.secondary, scheme.surface).forEach { c ->
-            Box(
-                Modifier.size(16.dp)
-                    .clip(CircleShape)
-                    .background(c)
-                    .border(1.dp, MaterialTheme.colorScheme.outlineVariant, CircleShape),
+internal fun PaletteTile(
+    p: ThemePalette,
+    selected: Boolean,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    // Preview the mode the app is actually rendering right now (a light-mode
+    // preview of a dark scheme is a lie about what tapping does).
+    val previewDark = MaterialTheme.colorScheme.surface.luminance() < 0.5f
+    val scheme = if (p == ThemePalette.DYNAMIC && dynamicColorSupported) {
+        dynamicScheme(LocalContext.current, darkTheme = previewDark)
+    } else {
+        p.palette().let { if (previewDark) it.dark else it.light }
+    }
+    val shape = RoundedCornerShape(14.dp)
+    Column(
+        modifier
+            .clip(shape)
+            .background(scheme.primaryContainer)
+            .border(
+                width = if (selected) 2.dp else 1.dp,
+                color = if (selected) scheme.primary else scheme.outlineVariant,
+                shape = shape,
             )
+            .selectable(selected = selected, role = Role.RadioButton, onClick = onClick)
+            .padding(horizontal = 10.dp, vertical = 10.dp),
+        verticalArrangement = Arrangement.spacedBy(10.dp),
+    ) {
+        Row(horizontalArrangement = Arrangement.spacedBy(5.dp), verticalAlignment = Alignment.CenterVertically) {
+            listOf(scheme.primary, scheme.secondary, scheme.surface).forEach { c ->
+                Box(
+                    Modifier.size(14.dp).clip(CircleShape).background(c)
+                        .border(1.dp, scheme.onPrimaryContainer.copy(alpha = 0.2f), CircleShape),
+                )
+            }
         }
+        Text(
+            p.label,
+            style = MaterialTheme.typography.labelMedium,
+            color = scheme.onPrimaryContainer,
+            fontWeight = if (selected) FontWeight.Bold else FontWeight.Normal,
+            maxLines = 2,
+        )
     }
 }
 

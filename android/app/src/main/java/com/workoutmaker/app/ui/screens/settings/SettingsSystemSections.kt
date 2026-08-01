@@ -10,6 +10,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.background
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.outlined.BugReport
 import androidx.compose.material.icons.outlined.DeleteForever
 import androidx.compose.material.icons.outlined.Download
 import androidx.compose.material.icons.outlined.UploadFile
@@ -95,7 +96,7 @@ internal fun ConnectionsSection(vm: SettingsViewModel) {
         if (granted.intersect(vm.healthPermissions).isNotEmpty()) vm.syncHealth()
         else vm.setHealthStatus(
             "Permission denied. Android stops asking after two denials. Use “Open Health Connect” below " +
-                "and grant Workout Maker access under App permissions.",
+                "and grant Metis access under App permissions.",
         )
     }
     val connected = intervalsSaved != null || intervalsStatus?.startsWith("✓") == true
@@ -463,6 +464,49 @@ internal fun ExportCard(vm: SettingsViewModel) {
             modifier = Modifier.fillMaxWidth(),
         ) { Text("Export strength CSV") }
         status?.let { Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.primary) }
+    }
+}
+
+@Composable
+internal fun DebugLogSection(vm: SettingsViewModel) {
+    val s by vm.appSettings.collectAsStateSafe()
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+    var exportStatus by remember { mutableStateOf<String?>(null) }
+    val exportLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.CreateDocument("text/plain"),
+    ) { uri ->
+        if (uri == null) { exportStatus = "Export cancelled." } else scope.launch {
+            exportStatus = "Exporting…"
+            val ok = runCatching {
+                val text = com.workoutmaker.app.util.AppLog.file()?.takeIf { it.exists() }?.readText().orEmpty()
+                context.contentResolver.openOutputStream(uri)?.use { it.write(text.toByteArray()) }
+            }
+            exportStatus = ok.fold({ "✓ Log exported." }, { "Export failed: ${it.message}" })
+        }
+    }
+    SectionCard {
+        SectionLabel("Debug logs")
+        Text(
+            "The app keeps a rolling log on your phone for troubleshooting. It never " +
+                "leaves the device unless you turn this on.",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.padding(bottom = 4.dp),
+        )
+        IconToggleRow(
+            Icons.Outlined.BugReport,
+            "Send debug logs to developer",
+            "Lets the developer see what went wrong",
+            s.debugLogSharingEnabled,
+        ) { vm.setDebugLogSharing(it) }
+    }
+    SectionCard {
+        OutlinedButton(
+            onClick = { exportLauncher.launch("workout-maker-debug-log-${java.time.LocalDate.now()}.txt") },
+            modifier = Modifier.fillMaxWidth(),
+        ) { Text("Export log to file") }
+        exportStatus?.let { Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.primary) }
     }
 }
 

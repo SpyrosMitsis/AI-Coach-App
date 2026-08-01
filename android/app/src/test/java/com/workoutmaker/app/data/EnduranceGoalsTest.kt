@@ -176,6 +176,10 @@ class EnduranceGoalsTest {
     }
 }
 
+// deriveLegacyFields is the ONLY writer of `goal` now. setGoalRace used to copy
+// the goal race's name over it, so what the coach was told the athlete's goal
+// was depended on which of the two wrote last. These tests are what holds that
+// field to one meaning.
 class DistanceGoalDerivationTest {
 
     @Test

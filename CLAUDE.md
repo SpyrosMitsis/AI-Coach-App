@@ -49,6 +49,9 @@ scripts/dev.sh db:push                 # run pending migrations
   until X" got scheduled over anyway until this was fixed). A fact that should override
   specific dates needs a structured field feeding `_shared/week_planning.ts`'s
   `computeDayList` — `training_paused_until`/`set_training_pause` is the reference example.
+  For a fact that must override a session's CONTENT rather than its date, copy
+  `injury_backoff` (`_shared/injury.ts`): dated, self-expiring, enforced by
+  `reviewWorkout`'s strip and plan-week's sports list, not by prompt text.
 - **Project ref & device serial** live in `scripts/dev.local.sh` (untracked) — `dev.sh`
   sources it automatically. Don't hardcode them in tracked files; this repo is public.
 
